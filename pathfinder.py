@@ -1,24 +1,23 @@
-# pathfinder.py (or main.py)
+# pathfinder.py
 
 import argparse
-import json # For potentially printing structured output
+# import json # Not strictly needed for current output format
 
-# Import your custom parser and mapper modules
 from nmap_parser import parse_nmap_xml
 from gobuster_parser import parse_gobuster_output
 from vulnerability_mapper import VulnerabilityMapper
-# You'll also need your AttackPathSynthesizer module here later
 
 def main():
-    parser = argparse.ArgumentParser(description="Pathfinder: Intelligent Recon Analysis & Attack Path Suggestion")
+    parser = argparse.ArgumentParser(
+        description="Pathfinder: Intelligent Recon Analysis & Attack Path Suggestion",
+        formatter_class=argparse.RawTextHelpFormatter # For better help text formatting
+    )
     parser.add_argument("--nmap-xml", help="Path to Nmap XML output file.")
     parser.add_argument("--gobuster-txt", help="Path to Gobuster output text file.")
-    parser.add_argument("--gobuster-host", help="Target host for Gobuster output (e.g., 10.10.10.5 or example.com). Required if --gobuster-txt is used.")
-    parser.add_argument("--gobuster-port", type=int, help="Target port for Gobuster output (e.g., 80, 443). Required if --gobuster-txt is used.")
-    parser.add_argument("--gobuster-mode", choices=['dir', 'vhost'], default='dir', help="Gobuster mode used (default: dir).")
-    # Add other arguments as needed (e.g., for other tool inputs, output formatting)
-    parser.add_argument("-v", "--verbose", action="count", default=0, help="Verbosity level (-v, -vv).")
-
+    parser.add_argument("--gobuster-host", help="Target host for Gobuster (e.g., example.com). Required if --gobuster-txt.")
+    parser.add_argument("--gobuster-port", type=int, help="Target port for Gobuster (e.g., 80). Required if --gobuster-txt.")
+    parser.add_argument("--gobuster-mode", choices=['dir', 'vhost'], default='dir', help="Gobuster mode (default: dir).")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose output mode.") # Changed to store_true
 
     args = parser.parse_args()
 
@@ -29,101 +28,76 @@ def main():
         parser.error("--gobuster-host and --gobuster-port are required when using --gobuster-txt.")
 
     all_raw_findings = []
+    verbose_level = 1 if args.verbose else 0 # 0 for default, 1 for verbose
 
-    # 1. Parse Nmap XML
     if args.nmap_xml:
-        if args.verbose > 0: print(f"[*] Parsing Nmap XML: {args.nmap_xml}")
-        nmap_findings = parse_nmap_xml(args.nmap_xml)
+        if verbose_level > 0: print(f"[*] Parsing Nmap XML: {args.nmap_xml}")
+        nmap_findings = parse_nmap_xml(args.nmap_xml) # Assuming this parser doesn't need verbosity
         all_raw_findings.extend(nmap_findings)
-        if args.verbose > 0: print(f"[+] Found {len(nmap_findings)} raw findings from Nmap.")
+        if verbose_level > 0: print(f"[+] Nmap: Found {len(nmap_findings)} raw findings.")
 
-    # 2. Parse Gobuster Output
     if args.gobuster_txt:
-        if args.verbose > 0: print(f"[*] Parsing Gobuster output: {args.gobuster_txt} for host {args.gobuster_host}:{args.gobuster_port} (mode: {args.gobuster_mode})")
+        if verbose_level > 0: print(f"[*] Parsing Gobuster: {args.gobuster_txt} for {args.gobuster_host}:{args.gobuster_port} (mode: {args.gobuster_mode})")
+        # Pass verbose_level if your gobuster_parser uses it for its own debug prints
         gobuster_findings = parse_gobuster_output(
             args.gobuster_txt,
             target_host=args.gobuster_host,
             target_port=args.gobuster_port,
             mode=args.gobuster_mode,
-            verbose=args.verbose # Pass verbosity here
+            verbose=verbose_level # Pass it along if gobuster_parser uses it
         )
         all_raw_findings.extend(gobuster_findings)
-        if args.verbose > 0: print(f"[+] Found {len(gobuster_findings)} raw findings from Gobuster.")
+        if verbose_level > 0: print(f"[+] Gobuster: Found {len(gobuster_findings)} raw findings.")
 
     if not all_raw_findings:
-        print("[!] No raw findings extracted from input files. Exiting.")
+        print("[!] No raw findings extracted. Exiting.")
         return
 
-    if args.verbose > 1:
-        print("\n--- All Raw Findings ---")
-        for i, finding in enumerate(all_raw_findings):
-            print(f"Raw Finding {i+1}: {finding.get('name')} ({finding.get('entity_type')}) from {finding.get('source_tool')}")
-            # Could pretty print the full finding here if very verbose
-
-    # 3. Vulnerability Mapping and Prioritization
-    if args.verbose > 0: print("\n[*] Running Vulnerability Mapper...")
-    vuln_mapper = VulnerabilityMapper()
+    if verbose_level > 0: print("\n[*] Running Vulnerability Mapper...")
+    vuln_mapper = VulnerabilityMapper(verbose_level=verbose_level)
     prioritized_findings = vuln_mapper.map_and_prioritize(all_raw_findings)
     
-    if args.verbose > 0: print(f"[+] Vulnerability Mapper identified {len(prioritized_findings)} prioritized findings.")
+    if verbose_level > 0: print(f"[+] Mapper identified {len(prioritized_findings)} prioritized findings.")
 
     if not prioritized_findings:
-        print("[!] No prioritized findings identified by the Vulnerability Mapper. Exiting.")
+        print("[!] No prioritized findings identified. Exiting.")
         return
 
-    # --- Output Prioritized Findings (Example) ---
-    # This section will be replaced/augmented by the Attack Path Synthesizer
     print("\n--- Prioritized Findings ---")
-    # Sort by score if available, high to low
     prioritized_findings.sort(key=lambda x: x.get("attributes", {}).get("score", 0), reverse=True)
 
     for i, p_finding in enumerate(prioritized_findings):
         score = p_finding.get("attributes", {}).get("score", "N/A")
-        print(f"\n[{i+1}] [Score: {score}] {p_finding.get('name')} ({p_finding.get('entity_type')})")
-        print(f"    Host: {p_finding.get('host')}, Port: {p_finding.get('port')}")
-        print(f"    Source: {p_finding.get('source_tool')}")
-        if p_finding.get("version"):
-            print(f"    Version: {p_finding.get('version')}")
+        name = p_finding.get('name', 'Unknown Finding')
+        entity_type = p_finding.get('entity_type', 'unknown_type')
         
-        # Print relevant attributes based on verbosity or finding type
-        attributes_to_show = ["title", "path", "url", "script_id", "script_output", "priority_reason", "potential_risk", "related_software_product"]
-        for attr_key, attr_val in p_finding.get("attributes", {}).items():
-            if attr_key in attributes_to_show or args.verbose > 1: # Show more with higher verbosity
-                 # Truncate long script outputs for concise view unless very verbose
-                if attr_key == "script_output" and args.verbose < 2 and isinstance(attr_val, str) and len(attr_val) > 100:
-                    attr_val_display = attr_val[:100] + "..."
-                else:
-                    attr_val_display = attr_val
-                print(f"    {attr_key.replace('_', ' ').capitalize()}: {attr_val_display}")
+        print(f"\n[{i+1}] [Score: {score}] {name} ({entity_type})")
+        
+        if verbose_level > 0: # Detailed output for -v
+            print(f"    Host: {p_finding.get('host')}, Port: {p_finding.get('port')}")
+            print(f"    Source: {p_finding.get('source_tool')}")
+            if p_finding.get("version"):
+                print(f"    Version: {p_finding.get('version')}")
+            
+            # Show specific, useful attributes
+            attrs = p_finding.get("attributes", {})
+            details_to_show = {
+                "title": "Title", "path": "SearchSploit Path", "url": "URL",
+                "script_id": "Nmap Script", "script_output": "Script Output",
+                "priority_reason": "Reason", "potential_risk": "Gobuster Risk",
+                "related_software_product": "Related Product", "cves": "CVEs",
+                "status_code": "Status Code", "description": "Description", "stars": "Stars"
+            }
+            for key, display_name in details_to_show.items():
+                if key in attrs and attrs[key] is not None:
+                    value = attrs[key]
+                    if key == "script_output" and isinstance(value, str) and len(value) > 100:
+                        value = value[:100] + "..."
+                    elif key == "cves" and isinstance(value, list):
+                        value = ", ".join(value) if value else "N/A"
 
-
-    # 4. Attack Path Synthesis (Placeholder for now)
-    # print("\n[*] Running Attack Path Synthesizer...")
-    # synthesizer = AttackPathSynthesizer(ruleset_file="default_rules.json") # Example
-    # suggested_paths = synthesizer.generate_attack_paths(prioritized_findings)
-    #
-    # if suggested_paths:
-    #     print("\n--- Suggested Attack Paths ---")
-    #     for i, path in enumerate(suggested_paths):
-    #         print(f"\nPath {i+1} [Priority: {path.get('priority_score', 'N/A')}]: {path.get('description')}")
-    #         print(f"  Rationale: {path.get('rationale')}")
-    #         if path.get('suggested_commands'):
-    #             print(f"  Commands:")
-    #             for cmd in path.get('suggested_commands'):
-    #                 print(f"    - {cmd}")
-    #         if path.get('references'):
-    #             print(f"  References:")
-    #             for ref in path.get('references'):
-    #                 print(f"    - {ref}")
-    # else:
-    #     print("[!] No specific attack paths synthesized from the prioritized findings.")
-
+                    print(f"    {display_name}: {value}")
+    print("") # Extra newline at the end
 
 if __name__ == "__main__":
-    # Example of how to set GITHUB_TOKEN for testing if not set globally
-    # import os
-    # if not os.environ.get('GITHUB_TOKEN'):
-    # print("INFO: GITHUB_TOKEN not set in environment, setting a dummy one for testing if needed by mapper")
-    # os.environ['GITHUB_TOKEN'] = "YOUR_DUMMY_OR_REAL_TOKEN_HERE_FOR_TESTING_ONLY" # Be careful with real tokens
-    
     main()
