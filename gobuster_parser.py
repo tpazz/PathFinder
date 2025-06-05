@@ -17,18 +17,15 @@ def parse_gobuster_output(gobuster_output_file, target_host, target_port=None, m
     findings = []
     
     # Regex for 'dir' mode
-    # Example line: /config.php (Status: 200) [Size: 1234]
-    # Example line: /images (Status: 301) [Size: 0] --> /images/
     dir_pattern = re.compile(
-        r"^(?P<path>/[^\s\(]+)"          # Path (starts with /, no spaces or opening parenthesis)
-        r"\s*"                           # Matches spaces between path and (Status:)
-        r"\(Status:\s*(?P<status>\d{3})\)" # Status code
-        r"(?:\s*\[Size:\s*(?P<size>\d+)\])?"  # Optional Size
-        r"(?:\s*-->\s*(?P<redirect_url>[^\s]+))?" # Optional Redirect URL
+        r"^(?P<path>/[^\s\(]+)"
+        r"\s*"
+        r"\(Status:\s*(?P<status>\d{3})\)"
+        r"(?:\s*\[Size:\s*(?P<size>\d+)\])?"
+        r"(?:\s*-->\s*(?P<redirect_url>[^\s]+))?"
     )
 
     # Regex for 'vhost' mode
-    # Example line: Found: sub.domain.com (Status: 200)
     vhost_pattern = re.compile(r"Found:\s*(?P<vhost>[^\s\(]+)(?:\s*\(Status:\s*(?P<status>\d{3})\))?")
 
     if verbose > 1: print(f"[DEBUG_GOBUSTER] Using dir_pattern: {dir_pattern.pattern}")
@@ -40,29 +37,28 @@ def parse_gobuster_output(gobuster_output_file, target_host, target_port=None, m
             line_number = 0
             for line_content in f:
                 line_number += 1
-                original_line_for_debug = line_content.rstrip('\n\r') # For debugging, keep original line ending
+                original_line_for_debug = line_content.rstrip('\n\r')
                 
                 if verbose > 2: print(f"[DEBUG_GOBUSTER] Raw line {line_number}: '{original_line_for_debug}'")
                 
-                line = line_content.strip() # Strip leading/trailing whitespace for processing
+                line = line_content.strip()
 
-                # Enhanced skipping logic for header, footer, and meta lines
-                if not line or \
-                   line.startswith("#") or \
-                   line.startswith("Gobuster v") or \
-                   line.startswith("===") or \
-                   line.startswith("[+]") or \
-                   line.startswith("-->") and not line.startswith("/"): \
-                   "Progress:" in line or \
-                   "Finished" in line or \
-                   "Timeout:" in line or \
-                   "Starting gobuster" in line or \
-                   "Use gobuster -h for list" in line or \
-                   "by OJ Reeves" in line: # Add more specific Gobuster header lines if needed
+                # Corrected Enhanced skipping logic
+                if (not line or
+                        line.startswith("#") or
+                        line.startswith("Gobuster v") or
+                        line.startswith("===") or
+                        line.startswith("[+]") or
+                        (line.startswith("-->") and not (line.startswith("/") or line.startswith("http"))) or # Skip if it's JUST a redirect arrow line
+                        "Progress:" in line or
+                        "Finished" in line or
+                        "Timeout:" in line or
+                        "Starting gobuster" in line or
+                        "Use gobuster -h for list" in line or
+                        "by OJ Reeves" in line):
                     if verbose > 1: print(f"[DEBUG_GOBUSTER] Skipping header/meta line {line_number}: '{line}'")
                     continue
                 
-                # This print should appear for any line that is NOT skipped
                 if verbose > 0: print(f"[DEBUG_GOBUSTER] Attempting to process potential data line {line_number}: '{line}' (mode: '{mode}')")
 
                 if mode == 'dir':
@@ -77,7 +73,7 @@ def parse_gobuster_output(gobuster_output_file, target_host, target_port=None, m
 
                         attributes = {
                             "status_code": status_code,
-                            "raw_line": original_line_for_debug # Store the original line for reference
+                            "raw_line": original_line_for_debug
                         }
                         if size is not None:
                             attributes["size_bytes"] = size
@@ -88,8 +84,6 @@ def parse_gobuster_output(gobuster_output_file, target_host, target_port=None, m
                         is_directory_guess = False
                         normalized_path = path.lower()
 
-                        # Basic heuristic for potential risk - can be greatly expanded
-                        # (This logic is from the vulnerability_mapper, consider centralizing if it grows complex)
                         INTERESTING_EXTENSIONS = ['.bak', '.old', '.swp', '.backup', '.copy', '.tmp', '.temp', '.config', '.cfg', '.ini', '.env', '.secret', '.sql', '.db', '.log', '.txt', '.zip', '.tar.gz', '.sh', '.php', '.asp', '.aspx', '.jsp']
                         INTERESTING_KEYWORDS_IN_PATH = ['admin', 'login', 'upload', 'config', 'backup', 'shell', 'console', 'manage', 'root', 'api', 'test', 'dev', 'prod', 'staging', 'user', 'passwd', 'shadow', 'secret', 'credential', 'key', 'token']
                         INTERESTING_FILENAMES = ['web.config', 'id_rsa', 'id_dsa', '.bash_history', '.ssh/known_hosts', '.git/config']
@@ -103,13 +97,12 @@ def parse_gobuster_output(gobuster_output_file, target_host, target_port=None, m
                         elif normalized_path.endswith(('/.git/', '/.git/config', '/.svn/', '/.hg/')):
                              potential_risk = "vcs_exposure"
 
-
                         if path.endswith('/'):
                             is_directory_guess = True
                         elif redirect_url and redirect_url.endswith('/') and redirect_url.startswith(path):
                             is_directory_guess = True
                         elif not '.' in path.split('/')[-1] and potential_risk != "vcs_exposure":
-                             if status_code == 200: # Only guess dir for 200s without extension
+                             if status_code == 200:
                                 is_directory_guess = True
                         
                         attributes["is_directory_guess"] = is_directory_guess
@@ -151,7 +144,6 @@ def parse_gobuster_output(gobuster_output_file, target_host, target_port=None, m
                         })
                     else:
                          if verbose > 0: print(f"[DEBUG_GOBUSTER] NO MATCH on data line {line_number}: '{line}' with vhost_pattern")
-                # Add other modes (dns, s3, etc.) here as needed
     
     except FileNotFoundError:
         print(f"[!] Error: Gobuster output file not found at {gobuster_output_file}")
@@ -182,6 +174,7 @@ Starting gobuster in directory enumeration mode
 /otherfile.txt        (Status: 200) [Size: 100]
 /.git/config          (Status: 200) [Size: 85]
 /admin/login.php      (Status: 200) [Size: 1200]
+--> Not a data line example
 ===============================================================
 Finished
 ===============================================================
@@ -196,7 +189,7 @@ Finished
         "192.168.171.72", 
         80, 
         mode='dir',
-        verbose=2 # Set verbosity level for debugging
+        verbose=2
     )
     
     if parsed_dir_findings:
@@ -214,7 +207,7 @@ Finished
     else:
         print("No 'dir' mode findings extracted.")
 
-    # --- Test VHOST mode ---
+    # (VHOST test remains the same)
     test_gobuster_content_vhost = """Gobuster v3.6
 ===============================================================
 [+] Url:          http://10.10.10.100
@@ -245,7 +238,6 @@ Finished
     if parsed_vhost_findings:
         print(f"\nFound {len(parsed_vhost_findings)} 'vhost' mode findings:\n")
         for i, finding in enumerate(parsed_vhost_findings):
-            # (Similar printing logic as above)
             print(f"--- Finding {i+1} ---")
             print(f"  Host: {finding.get('host')}, Port: {finding.get('port')}")
             print(f"  Name: {finding.get('name')}")
