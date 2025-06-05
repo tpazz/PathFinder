@@ -44,7 +44,8 @@ def main():
             args.gobuster_txt,
             target_host=args.gobuster_host,
             target_port=args.gobuster_port,
-            mode=args.gobuster_mode
+            mode=args.gobuster_mode,
+            verbose=args.verbose # Pass verbosity here
         )
         all_raw_findings.extend(gobuster_findings)
         if args.verbose > 0: print(f"[+] Found {len(gobuster_findings)} raw findings from Gobuster.")
