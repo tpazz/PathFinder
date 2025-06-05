@@ -1,4 +1,4 @@
-# PathfinderAdd commentMore actions
+# Pathfinder
 
 **Intelligent Reconnaissance Analysis and Attack Path Suggestion for Pentesters.**
 
