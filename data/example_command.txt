@@ -1,0 +1,6 @@
+python3 pathfinder.py \
+  --nmap-xml nmap_scan.xml \
+  --gobuster-txt gobuster_scan.txt --gobuster-host 10.10.10.123 --gobuster-port 80 \
+  --nikto-json nikto_scan.json \
+  --output-json output.json \
+  v

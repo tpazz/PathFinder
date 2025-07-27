@@ -3,6 +3,13 @@ import re
 import itertools
 from copy import deepcopy
 
+
+class C:
+    YELLOW = '\033[93m'
+    CYAN = '\033[96m'
+    BOLD = '\033[1m'
+    END = '\033[0m'
+
 # The default path for storing user-taught attack path rules.
 DEFAULT_RULES_FILE = "attack_rules.json"
 
@@ -24,10 +31,10 @@ class AttackPathSynthesizer:
             with open(self.rules_file_path, 'r') as f:
                 return json.load(f)
         except FileNotFoundError:
-            print(f"[!] Rules file '{self.rules_file_path}' not found. Starting with an empty ruleset.")
+            print(f"{C.BOLD}{C.YELLOW}[!] Rules file '{self.rules_file_path}' not found. Starting with an empty ruleset.{C.END}")
             return []
         except json.JSONDecodeError:
-            print(f"[!] Error: Could not decode JSON from '{self.rules_file_path}'. Starting with an empty ruleset.")
+            print(f"{C.BOLD}{C.YELLOW}[!] Error: Could not decode JSON from '{self.rules_file_path}'. Starting with an empty ruleset.")
             return []
 
     def _save_rules(self):

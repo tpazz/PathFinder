@@ -1,22 +1,28 @@
 import re
 
-def parse_gobuster_output(gobuster_output_file, target_host, target_port=None, mode='dir', verbose=0):
+# <<< NEW ADDITION 1 >>>
+# Regex to find and remove ANSI escape codes for colors/styles.
+# This pattern is the Python equivalent of your sed command.
+ANSI_ESCAPE_PATTERN = re.compile(r'\x1b\[[0-9;]*m')
+
+
+def parse_gobuster_output(gobuster_output_file, target_host, target_port=None, mode='dir'):
     """
     Parses Gobuster output and extracts findings into the specified format.
+    This parser's role is to extract facts, not to interpret them.
+    Interpretation is handled by the VulnerabilityMapper.
 
     Args:
         gobuster_output_file (str): Path to the Gobuster output text file.
         target_host (str): The target host/IP Gobuster was run against.
         target_port (int, optional): The target port.
         mode (str): The Gobuster mode used (e.g., 'dir', 'vhost').
-        verbose (int): Verbosity level for debugging prints.
 
     Returns:
         list: A list of finding dictionaries.
     """
     findings = []
     
-    # Regex for 'dir' mode
     dir_pattern = re.compile(
         r"^(?P<path>/[^\s\(]+)"
         r"\s*"
@@ -25,46 +31,37 @@ def parse_gobuster_output(gobuster_output_file, target_host, target_port=None, m
         r"(?:\s*-->\s*(?P<redirect_url>[^\s]+))?"
     )
 
-    # Regex for 'vhost' mode
     vhost_pattern = re.compile(r"Found:\s*(?P<vhost>[^\s\(]+)(?:\s*\(Status:\s*(?P<status>\d{3})\))?")
-
-    if verbose > 1: print(f"[DEBUG_GOBUSTER] Using dir_pattern: {dir_pattern.pattern}")
-    if verbose > 1 and mode == 'vhost': print(f"[DEBUG_GOBUSTER] Using vhost_pattern: {vhost_pattern.pattern}")
 
     try:
         with open(gobuster_output_file, 'r', encoding='utf-8', errors='ignore') as f:
-            if verbose > 1: print(f"[DEBUG_GOBUSTER] Opened file: {gobuster_output_file}")
-            line_number = 0
             for line_content in f:
-                line_number += 1
-                original_line_for_debug = line_content.rstrip('\n\r')
                 
-                if verbose > 2: print(f"[DEBUG_GOBUSTER] Raw line {line_number}: '{original_line_for_debug}'")
+                # <<< NEW ADDITION 2 >>>
+                # First, strip potential ANSI codes from the raw line.
+                sanitized_line_content = ANSI_ESCAPE_PATTERN.sub('', line_content)
                 
-                line = line_content.strip()
+                # Then, proceed with stripping whitespace from the sanitized line.
+                line = sanitized_line_content.strip()
 
-                # Corrected Enhanced skipping logic
+                # Skipping logic for header, footer, and meta lines
                 if (not line or
                         line.startswith("#") or
                         line.startswith("Gobuster v") or
                         line.startswith("===") or
                         line.startswith("[+]") or
-                        (line.startswith("-->") and not (line.startswith("/") or line.startswith("http"))) or # Skip if it's JUST a redirect arrow line
+                        (line.startswith("-->") and not (line.startswith("/") or line.startswith("http"))) or
                         "Progress:" in line or
                         "Finished" in line or
                         "Timeout:" in line or
                         "Starting gobuster" in line or
                         "Use gobuster -h for list" in line or
                         "by OJ Reeves" in line):
-                    if verbose > 1: print(f"[DEBUG_GOBUSTER] Skipping header/meta line {line_number}: '{line}'")
                     continue
                 
-                if verbose > 0: print(f"[DEBUG_GOBUSTER] Attempting to process potential data line {line_number}: '{line}' (mode: '{mode}')")
-
                 if mode == 'dir':
                     match = dir_pattern.match(line)
                     if match:
-                        if verbose > 0: print(f"[DEBUG_GOBUSTER] SUCCESSFUL MATCH on line {line_number}: '{line}'")
                         data = match.groupdict()
                         path = data['path']
                         status_code = int(data['status'])
@@ -73,41 +70,24 @@ def parse_gobuster_output(gobuster_output_file, target_host, target_port=None, m
 
                         attributes = {
                             "status_code": status_code,
-                            "raw_line": original_line_for_debug
+                            # We store the original, potentially colored line for true raw data
+                            "raw_line": line_content.rstrip('\n\r')
                         }
                         if size is not None:
                             attributes["size_bytes"] = size
                         if redirect_url:
                             attributes["redirect_url"] = redirect_url
                         
-                        potential_risk = None
                         is_directory_guess = False
-                        normalized_path = path.lower()
-
-                        INTERESTING_EXTENSIONS = ['.bak', '.old', '.swp', '.backup', '.copy', '.tmp', '.temp', '.config', '.cfg', '.ini', '.env', '.secret', '.sql', '.db', '.log', '.txt', '.zip', '.tar.gz', '.sh', '.php', '.asp', '.aspx', '.jsp']
-                        INTERESTING_KEYWORDS_IN_PATH = ['admin', 'login', 'upload', 'config', 'backup', 'shell', 'console', 'manage', 'root', 'api', 'test', 'dev', 'prod', 'staging', 'user', 'passwd', 'shadow', 'secret', 'credential', 'key', 'token']
-                        INTERESTING_FILENAMES = ['web.config', 'id_rsa', 'id_dsa', '.bash_history', '.ssh/known_hosts', '.git/config']
-                        
-                        if any(ext in normalized_path for ext in INTERESTING_EXTENSIONS):
-                            potential_risk = "interesting_extension"
-                        elif any(kw in normalized_path for kw in INTERESTING_KEYWORDS_IN_PATH):
-                            potential_risk = "interesting_keyword_in_path"
-                        elif normalized_path.split('/')[-1] in INTERESTING_FILENAMES:
-                             potential_risk = "interesting_filename"
-                        elif normalized_path.endswith(('/.git/', '/.git/config', '/.svn/', '/.hg/')):
-                             potential_risk = "vcs_exposure"
-
                         if path.endswith('/'):
                             is_directory_guess = True
                         elif redirect_url and redirect_url.endswith('/') and redirect_url.startswith(path):
                             is_directory_guess = True
-                        elif not '.' in path.split('/')[-1] and potential_risk != "vcs_exposure":
-                             if status_code == 200:
+                        elif '.' not in path.split('/')[-1] and not any(vcs in path for vcs in ['/.git', '/.svn', '/.hg']):
+                             if status_code in [200, 301, 302, 307, 308, 401, 403]:
                                 is_directory_guess = True
                         
                         attributes["is_directory_guess"] = is_directory_guess
-                        if potential_risk:
-                            attributes["potential_risk"] = potential_risk
 
                         findings.append({
                             "host": target_host,
@@ -118,18 +98,15 @@ def parse_gobuster_output(gobuster_output_file, target_host, target_port=None, m
                             "version": None,
                             "attributes": attributes
                         })
-                    else:
-                        if verbose > 0: print(f"[DEBUG_GOBUSTER] NO MATCH on data line {line_number}: '{line}' with dir_pattern")
                 
                 elif mode == 'vhost':
                     match = vhost_pattern.match(line)
                     if match:
-                        if verbose > 0: print(f"[DEBUG_GOBUSTER] SUCCESSFUL VHOST MATCH on line {line_number}: '{line}'")
                         data = match.groupdict()
                         vhost_name = data['vhost']
                         status_code_vhost = int(data['status']) if data['status'] else None
 
-                        attributes = {"raw_line": original_line_for_debug}
+                        attributes = {"raw_line": line_content.rstrip('\n\r')}
                         if status_code_vhost:
                             attributes["status_code"] = status_code_vhost
 
@@ -142,8 +119,6 @@ def parse_gobuster_output(gobuster_output_file, target_host, target_port=None, m
                             "version": None,
                             "attributes": attributes
                         })
-                    else:
-                         if verbose > 0: print(f"[DEBUG_GOBUSTER] NO MATCH on data line {line_number}: '{line}' with vhost_pattern")
     
     except FileNotFoundError:
         print(f"[!] Error: Gobuster output file not found at {gobuster_output_file}")
@@ -151,101 +126,3 @@ def parse_gobuster_output(gobuster_output_file, target_host, target_port=None, m
         print(f"[!] An error occurred while parsing Gobuster output: {e}")
         
     return findings
-
-# --- Example Usage (for standalone testing of this script) ---
-if __name__ == '__main__':
-    # Create a dummy gobuster_results.txt for testing
-    test_gobuster_content_dir = """Gobuster v3.6
-by OJ Reeves (@TheColonial) & Christian Mehlmauer (@firefart)
-===============================================================
-[+] Url:                     http://192.168.171.72
-[+] Method:                  GET
-[+] Threads:                 10
-[+] Wordlist:                /usr/share/wordlists/dirbuster/directory-list-2.3-small.txt
-[+] Negative Status codes:   404
-[+] User Agent:              gobuster/3.6
-[+] Timeout:                 10s
-===============================================================
-Starting gobuster in directory enumeration mode
-===============================================================
-/app                  (Status: 301) [Size: 314] [--> http://192.168.171.72/app/]
-/javascript           (Status: 301) [Size: 321] [--> http://192.168.171.72/javascript/]
-/backup               (Status: 301) [Size: 317] [--> http://192.168.171.72/backup/]
-/otherfile.txt        (Status: 200) [Size: 100]
-/.git/config          (Status: 200) [Size: 85]
-/admin/login.php      (Status: 200) [Size: 1200]
---> Not a data line example
-===============================================================
-Finished
-===============================================================
-"""
-    test_gobuster_file_dir = "test_gobuster_parser_standalone.txt"
-    with open(test_gobuster_file_dir, "w") as f:
-        f.write(test_gobuster_content_dir)
-
-    print("--- Testing Gobuster DIR mode parser (verbose=2) ---")
-    parsed_dir_findings = parse_gobuster_output(
-        test_gobuster_file_dir, 
-        "192.168.171.72", 
-        80, 
-        mode='dir',
-        verbose=2
-    )
-    
-    if parsed_dir_findings:
-        print(f"\nFound {len(parsed_dir_findings)} 'dir' mode findings:\n")
-        for i, finding in enumerate(parsed_dir_findings):
-            print(f"--- Finding {i+1} ---")
-            print(f"  Host: {finding.get('host')}, Port: {finding.get('port')}")
-            print(f"  Source: {finding.get('source_tool')}")
-            print(f"  Type: {finding.get('entity_type')}")
-            print(f"  Name: {finding.get('name')}")
-            print(f"  Attributes:")
-            for key, val in finding.get("attributes", {}).items():
-                print(f"    {key}: {val}")
-            print("")
-    else:
-        print("No 'dir' mode findings extracted.")
-
-    # (VHOST test remains the same)
-    test_gobuster_content_vhost = """Gobuster v3.6
-===============================================================
-[+] Url:          http://10.10.10.100
-[+] Threads:      50
-[+] Wordlist:     /path/to/vhost_wordlist.txt
-===============================================================
-Starting gobuster in VHOST enumeration mode
-===============================================================
-Found: dev.testserver.com (Status: 200)
-Found: api.testserver.com (Status: 200)
-===============================================================
-Finished
-===============================================================
-"""
-    test_gobuster_file_vhost = "test_gobuster_vhost_parser_standalone.txt"
-    with open(test_gobuster_file_vhost, "w") as f:
-        f.write(test_gobuster_content_vhost)
-
-    print("\n--- Testing Gobuster VHOST mode parser (verbose=2) ---")
-    parsed_vhost_findings = parse_gobuster_output(
-        test_gobuster_file_vhost, 
-        "10.10.10.100", 
-        80, 
-        mode='vhost',
-        verbose=2
-    )
-    
-    if parsed_vhost_findings:
-        print(f"\nFound {len(parsed_vhost_findings)} 'vhost' mode findings:\n")
-        for i, finding in enumerate(parsed_vhost_findings):
-            print(f"--- Finding {i+1} ---")
-            print(f"  Host: {finding.get('host')}, Port: {finding.get('port')}")
-            print(f"  Name: {finding.get('name')}")
-            print(f"  Attributes: {finding.get('attributes')}")
-            print("")
-    else:
-        print("No 'vhost' mode findings extracted.")
-
-    # import os
-    # os.remove(test_gobuster_file_dir)
-    # os.remove(test_gobuster_file_vhost)

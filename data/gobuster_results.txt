@@ -1,0 +1,2 @@
+/admin               [36m (Status: 301)[0m [Size: 318][34m [--> http://192.168.235.101/admin/][0m
+/potato              [36m (Status: 301)[0m [Size: 319][34m [--> http://192.168.235.101/potato/][0m
