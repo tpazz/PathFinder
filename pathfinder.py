@@ -6,6 +6,8 @@ import json
 from nmap_parser import parse_nmap_xml
 from gobuster_parser import parse_gobuster_output
 from nikto_parser import parse_nikto_json
+from whatweb_parser import parse_whatweb_json
+from enum4linux_parser import parse_enum4linux_json
 from vulnerability_mapper import VulnerabilityMapper
 from attack_path_synthesizer import AttackPathSynthesizer
 
@@ -73,9 +75,14 @@ def main():
     
     analysis_group = parser.add_argument_group('Analysis Input Arguments')
     analysis_group.add_argument("--nmap-xml", help="Path to Nmap XML output file.")
-    analysis_group.add_argument("--gobuster-txt", help="Path to Gobuster output text file.")
+    analysis_group.add_argument("--gobuster-txt", help="Path to Gobuster text output file.")
     analysis_group.add_argument("--nikto-json", help="Path to Nikto JSON output file.")
-    analysis_group.add_argument("--gobuster-host", help="Target host for Gobuster output.")
+    # <<< NEW ARGUMENTS >>>
+    analysis_group.add_argument("--whatweb-json", help="Path to WhatWeb JSON output file.")
+    analysis_group.add_argument("--enum4linux-json", help="Path to enum4linux-ng JSON output file.")
+    analysis_group.add_argument("--target-host", help="Target host IP. Required for parsers like enum4linux-ng that don't store it.")
+    # <<< END NEW ARGUMENTS >>>
+    analysis_group.add_argument("--gobuster-host", help="Target host for Gobuster. Deprecated, use --target-host.")
     analysis_group.add_argument("--gobuster-port", type=int, help="Target port for Gobuster output.")
     analysis_group.add_argument("--gobuster-mode", choices=['dir', 'vhost'], default='dir', help="Gobuster mode used (default: dir).")
 
@@ -87,8 +94,8 @@ def main():
     learning_group.add_argument("--learn", action="store_true", help="Enter interactive mode to teach Pathfinder a new attack path.")
 
     general_group = parser.add_argument_group('General Arguments')
-    general_group.add_argument("-v", "--verbose", action="count", default=0, help="Verbosity level (-v, -vv).")
-    general_group.add_argument("--max-vulns", type=int, default=10, help="Max number of EDB and GitHub exploits to display (default: 10).")
+    general_group.add_argument("-v", "--verbose", action="count", default=0, help="Verbosity level. -v for general steps, -vv for detailed processing.")
+    general_group.add_argument("--max-vulns", type=int, default=10, help="Max number of EDB and GitHub exploits to display respectively (default: 10).")
     
     args = parser.parse_args()
     synthesizer = AttackPathSynthesizer()
@@ -100,7 +107,7 @@ def main():
 
     # --- Data Acquisition Stage ---
     if args.input_json:
-        if args.nmap_xml or args.gobuster_txt or args.nikto_json:
+        if any([args.nmap_xml, args.gobuster_txt, args.nikto_json, args.whatweb_json, args.enum4linux_json]):
             parser.error("--input-json cannot be used with other parser inputs like --nmap-xml.")
         try:
             print(f"\n{C.BOLD}{C.CYAN}[*] Loading findings from file: {args.input_json}{C.END}")
@@ -114,44 +121,49 @@ def main():
             print(f"\n{C.BOLD}{C.YELLOW}[!] Error: Could not decode JSON from '{args.input_json}'.{C.END}")
             sys.exit(1)
     else:
-        if not any([args.nmap_xml, args.gobuster_txt, args.nikto_json]):
+        # <<< UPDATED CHECK >>>
+        if not any([args.nmap_xml, args.gobuster_txt, args.nikto_json, args.whatweb_json, args.enum4linux_json]):
             parser.error("For analysis, at least one input file (--nmap-xml, etc.) must be provided, or use --input-json.")
-        if args.gobuster_txt and (not args.gobuster_host or args.gobuster_port is None):
-            parser.error("--gobuster-host and --gobuster-port are required when using --gobuster-txt.")
+        
+        target_host = args.target_host or args.gobuster_host
+        if args.gobuster_txt and (not target_host or args.gobuster_port is None):
+            parser.error("--gobuster-txt requires --target-host (or --gobuster-host) and --gobuster-port.")
+        if args.enum4linux_json and not target_host:
+            parser.error("--enum4linux-json requires --target-host.")
 
         all_raw_findings = []
-        print(f"\n{C.BOLD}{C.CYAN}[*] Parsing Data...{C.END}")
+        print(f"\n{C.BOLD}{C.CYAN}[*] Parsing Data...{C.END}\n")
 
-        if args.nmap_xml:
-            if args.verbose > 0: print(f"[*] Parsing Nmap XML: {args.nmap_xml}")
-            nmap_findings = parse_nmap_xml(args.nmap_xml)
-            all_raw_findings.extend(nmap_findings)
-            if args.verbose > 0: print(f"    [+] Found {len(nmap_findings)} raw findings from Nmap.")
+        # <<< REFACTORED PARSING BLOCK >>>
+        parsers = {
+            "Nmap": (args.nmap_xml, lambda f: parse_nmap_xml(f)),
+            "Gobuster": (args.gobuster_txt, lambda f: parse_gobuster_output(f, target_host, args.gobuster_port, args.gobuster_mode)),
+            "Nikto": (args.nikto_json, lambda f: parse_nikto_json(f)),
+            "WhatWeb": (args.whatweb_json, lambda f: parse_whatweb_json(f)),
+            "Enum4Linux-NG": (args.enum4linux_json, lambda f: parse_enum4linux_json(f, target_host))
+        }
 
-        if args.gobuster_txt:
-            if args.verbose > 0: print(f"[*] Parsing Gobuster output: {args.gobuster_txt}")
-            gobuster_findings = parse_gobuster_output(args.gobuster_txt, args.gobuster_host, args.gobuster_port, args.gobuster_mode)
-            all_raw_findings.extend(gobuster_findings)
-            if args.verbose > 0: print(f"    [+] Found {len(gobuster_findings)} raw findings from Gobuster.")
-
-        if args.nikto_json:
-            if args.verbose > 0: print(f"[*] Parsing Nikto JSON: {args.nikto_json}")
-            nikto_findings = parse_nikto_json(args.nikto_json)
-            all_raw_findings.extend(nikto_findings)
-            if args.verbose > 0: print(f"    [+] Found {len(nikto_findings)} raw findings from Nikto.")
+        for name, (file_path, parser_func) in parsers.items():
+            if file_path:
+                if args.verbose > 0: print(f"[*] Parsing {name}: {file_path}")
+                new_findings = parser_func(file_path)
+                all_raw_findings.extend(new_findings)
+                if args.verbose > 0: print(f"    [+] Found {len(new_findings)} raw findings from {name}.")
+        # <<< END REFACTORED BLOCK >>>
 
         if not all_raw_findings:
             print(f"\n{C.BOLD}{C.YELLOW}[!] No raw findings extracted from input files. Exiting.{C.END}")
             sys.exit(1)
 
-        print(f"\n{C.BOLD}{C.CYAN}[*] Running Vulnerability Mapper...{C.END}")
+        print(f"\n{C.BOLD}{C.CYAN}[*] Running Vulnerability Mapper...{C.END}\n")
         vuln_mapper = VulnerabilityMapper()
         prioritized_findings = vuln_mapper.map_and_prioritize(all_raw_findings)
+        
         if args.verbose > 0: print(f"    [+] Vulnerability Mapper identified {len(prioritized_findings)} prioritized findings.")
 
     # --- Processing Stage ---
     if not prioritized_findings:
-        print(f"\n{C.BOLD}{C.YELLOW}[!] No findings to process. Exiting.{C.END}")
+        print(f"\n{C.BOLD}{C.YELLOW}[!] No prioritized findings identified by the Vulnerability Mapper. Exiting.{C.END}")
         sys.exit(0)
 
     if args.output_json:
@@ -163,7 +175,7 @@ def main():
         except IOError as e:
             print(f"\n{C.BOLD}{C.YELLOW}[!] Error saving to JSON file: {e}{C.END}")
 
-    print(f"\n{C.BOLD}{C.CYAN}[*] Running Attack Path Synthesizer...{C.END}")
+    print(f"\n{C.BOLD}{C.CYAN}[*] Running Attack Path Synthesizer...{C.END}\n")
     suggested_paths = synthesizer.generate_attack_paths(prioritized_findings)
     
     if not suggested_paths:
