@@ -10,6 +10,8 @@ from whatweb_parser import parse_whatweb_json
 from enum4linux_parser import parse_enum4linux_json
 from linpeas_parser import parse_linpeas
 from winpeas_parser import parse_winpeas
+from snmp_parser import parse_snmp_output
+from sharphound_parser import parse_sharphound_dir
 from vulnerability_mapper import VulnerabilityMapper
 from attack_path_synthesizer import AttackPathSynthesizer
 
@@ -87,6 +89,8 @@ def main():
     analysis_group.add_argument("--enum4linux-json", help="Path to enum4linux-ng JSON output file.")
     analysis_group.add_argument("--linpeas-txt", help="Path to LinPEAS output text file.")
     analysis_group.add_argument("--winpeas-txt", help="Path to WinPEAS output text file.")
+    analysis_group.add_argument("--snmp-txt", help="Path to snmp-check output text file.")
+    analysis_group.add_argument("--sharphound-dir", help="Path to directory with unzipped SharpHound JSON files.")
     analysis_group.add_argument("--target-host", help="Target host IP. Required for parsers that don't store it in their output.")
     analysis_group.add_argument("--gobuster-host", help="Target host for Gobuster. Deprecated, use --target-host.")
     analysis_group.add_argument("--gobuster-port", type=int, help="Target port for Gobuster output.")
@@ -114,7 +118,7 @@ def main():
     target_host = args.target_host or args.gobuster_host
     
     if args.input_json:
-        if any([args.nmap_xml, args.gobuster_txt, args.nikto_json, args.whatweb_json, args.enum4linux_json, args.linpeas_txt, args.winpeas_txt]):
+        if any([args.nmap_xml, args.gobuster_txt, args.nikto_json, args.whatweb_json, args.enum4linux_json, args.linpeas_txt, args.winpeas_txt, args.snmp_txt, args.sharphound_dir]):
             parser.error("--input-json cannot be used with other parser inputs.")
         try:
             print(f"\n{C.BOLD}{C.CYAN}[*] Loading findings from file: {args.input_json}{C.END}")
@@ -125,7 +129,7 @@ def main():
             print(f"\n{C.BOLD}{C.YELLOW}[!] Error loading {args.input_json}: {e}{C.END}")
             sys.exit(1)
     else:
-        input_files = [args.nmap_xml, args.gobuster_txt, args.nikto_json, args.whatweb_json, args.enum4linux_json, args.linpeas_txt, args.winpeas_txt]
+        input_files = [args.nmap_xml, args.gobuster_txt, args.nikto_json, args.whatweb_json, args.enum4linux_json, args.linpeas_txt, args.winpeas_txt, args.snmp_txt, args.sharphound_dir]
         if not any(input_files):
             parser.error("For analysis, at least one input file (--nmap-xml, etc.) or --input-json must be provided.")
         
@@ -139,12 +143,14 @@ def main():
             "WhatWeb": (args.whatweb_json, lambda f: parse_whatweb_json(f)),
             "Enum4Linux-NG": (args.enum4linux_json, lambda f: parse_enum4linux_json(f, target_host)),
             "LinPEAS": (args.linpeas_txt, lambda f: parse_linpeas(f, target_host)),
-            "WinPEAS": (args.winpeas_txt, lambda f: parse_winpeas(f, target_host))
+            "WinPEAS": (args.winpeas_txt, lambda f: parse_winpeas(f, target_host)),
+            "SNMP": (args.snmp_txt, lambda f: parse_snmp_output(f, target_host)),
+            "SharpHound": (args.sharphound_dir, lambda f: parse_sharphound_dir(f))
         }
 
         for name, (file_path, parser_func) in parsers.items():
             if file_path:
-                if (name in ["Gobuster", "Enum4Linux-NG", "LinPEAS", "WinPEAS"] and not target_host):
+                if (name in ["Gobuster", "Enum4Linux-NG", "LinPEAS", "WinPEAS", "SNMP"] and not target_host):
                     print(f"{C.BOLD}{C.YELLOW}[!] {name} parser requires --target-host to be set.{C.END}")
                     continue
                 if args.verbose > 0: print(f"[*] Parsing {name}: {file_path}")
