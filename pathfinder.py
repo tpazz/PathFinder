@@ -8,6 +8,8 @@ from gobuster_parser import parse_gobuster_output
 from nikto_parser import parse_nikto_json
 from whatweb_parser import parse_whatweb_json
 from enum4linux_parser import parse_enum4linux_json
+from linpeas_parser import parse_linpeas
+from winpeas_parser import parse_winpeas
 from vulnerability_mapper import VulnerabilityMapper
 from attack_path_synthesizer import AttackPathSynthesizer
 
@@ -44,11 +46,15 @@ def format_finding_display(name, entity_type):
     if "GitHub Exploit" in display_name:
         display_name = display_name.replace("GitHub Exploit", f"{C.BOLD}{C.GREEN}GitHub Exploit{C.END}")
 
-    display_type = f"({entity_type})"
-    # if entity_type == "web_content":
-    #     display_type = f"({C.LIGHT_BLUE}{C.BOLD}web_content{C.END})"
-    # elif entity_type == "misconfiguration":
-    #     display_type = f"({C.YELLOW}{C.BOLD}misconfiguration{C.END})"    
+    # Colorize the entity type for better visibility in the fallback list
+    if entity_type == "privilege_escalation":
+        display_type = f"({C.BOLD}{C.RED}{entity_type}{C.END})"
+    elif entity_type == "web_content":
+        display_type = f"({C.LIGHT_BLUE}{entity_type}{C.END})"
+    elif entity_type == "misconfiguration":
+        display_type = f"({C.YELLOW}{entity_type}{C.END})"
+    else:
+        display_type = f"({entity_type})"
     
     return display_name, display_type
 
@@ -77,11 +83,11 @@ def main():
     analysis_group.add_argument("--nmap-xml", help="Path to Nmap XML output file.")
     analysis_group.add_argument("--gobuster-txt", help="Path to Gobuster text output file.")
     analysis_group.add_argument("--nikto-json", help="Path to Nikto JSON output file.")
-    # <<< NEW ARGUMENTS >>>
     analysis_group.add_argument("--whatweb-json", help="Path to WhatWeb JSON output file.")
     analysis_group.add_argument("--enum4linux-json", help="Path to enum4linux-ng JSON output file.")
-    analysis_group.add_argument("--target-host", help="Target host IP. Required for parsers like enum4linux-ng that don't store it.")
-    # <<< END NEW ARGUMENTS >>>
+    analysis_group.add_argument("--linpeas-txt", help="Path to LinPEAS output text file.")
+    analysis_group.add_argument("--winpeas-txt", help="Path to WinPEAS output text file.")
+    analysis_group.add_argument("--target-host", help="Target host IP. Required for parsers that don't store it in their output.")
     analysis_group.add_argument("--gobuster-host", help="Target host for Gobuster. Deprecated, use --target-host.")
     analysis_group.add_argument("--gobuster-port", type=int, help="Target port for Gobuster output.")
     analysis_group.add_argument("--gobuster-mode", choices=['dir', 'vhost'], default='dir', help="Gobuster mode used (default: dir).")
@@ -94,7 +100,7 @@ def main():
     learning_group.add_argument("--learn", action="store_true", help="Enter interactive mode to teach Pathfinder a new attack path.")
 
     general_group = parser.add_argument_group('General Arguments')
-    general_group.add_argument("-v", "--verbose", action="count", default=0, help="Verbosity level. -v for general steps, -vv for detailed processing.")
+    general_group.add_argument("-v", "--verbose", action="count", default=0, help="Verbosity level (-v, -vv).")
     general_group.add_argument("--max-vulns", type=int, default=10, help="Max number of EDB and GitHub exploits to display respectively (default: 10).")
     
     args = parser.parse_args()
@@ -105,51 +111,46 @@ def main():
         synthesizer.learn_new_path_interactive()
         sys.exit(0)
 
-    # --- Data Acquisition Stage ---
+    target_host = args.target_host or args.gobuster_host
+    
     if args.input_json:
-        if any([args.nmap_xml, args.gobuster_txt, args.nikto_json, args.whatweb_json, args.enum4linux_json]):
-            parser.error("--input-json cannot be used with other parser inputs like --nmap-xml.")
+        if any([args.nmap_xml, args.gobuster_txt, args.nikto_json, args.whatweb_json, args.enum4linux_json, args.linpeas_txt, args.winpeas_txt]):
+            parser.error("--input-json cannot be used with other parser inputs.")
         try:
             print(f"\n{C.BOLD}{C.CYAN}[*] Loading findings from file: {args.input_json}{C.END}")
             with open(args.input_json, 'r', encoding='utf-8') as f:
                 prioritized_findings = json.load(f)
             print(f"    [+] Loaded {len(prioritized_findings)} findings.")
-        except FileNotFoundError:
-            print(f"\n{C.BOLD}{C.YELLOW}[!] Error: Input JSON file not found at '{args.input_json}'.{C.END}")
-            sys.exit(1)
-        except json.JSONDecodeError:
-            print(f"\n{C.BOLD}{C.YELLOW}[!] Error: Could not decode JSON from '{args.input_json}'.{C.END}")
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            print(f"\n{C.BOLD}{C.YELLOW}[!] Error loading {args.input_json}: {e}{C.END}")
             sys.exit(1)
     else:
-        # <<< UPDATED CHECK >>>
-        if not any([args.nmap_xml, args.gobuster_txt, args.nikto_json, args.whatweb_json, args.enum4linux_json]):
-            parser.error("For analysis, at least one input file (--nmap-xml, etc.) must be provided, or use --input-json.")
+        input_files = [args.nmap_xml, args.gobuster_txt, args.nikto_json, args.whatweb_json, args.enum4linux_json, args.linpeas_txt, args.winpeas_txt]
+        if not any(input_files):
+            parser.error("For analysis, at least one input file (--nmap-xml, etc.) or --input-json must be provided.")
         
-        target_host = args.target_host or args.gobuster_host
-        if args.gobuster_txt and (not target_host or args.gobuster_port is None):
-            parser.error("--gobuster-txt requires --target-host (or --gobuster-host) and --gobuster-port.")
-        if args.enum4linux_json and not target_host:
-            parser.error("--enum4linux-json requires --target-host.")
-
         all_raw_findings = []
         print(f"\n{C.BOLD}{C.CYAN}[*] Parsing Data...{C.END}\n")
 
-        # <<< REFACTORED PARSING BLOCK >>>
         parsers = {
             "Nmap": (args.nmap_xml, lambda f: parse_nmap_xml(f)),
             "Gobuster": (args.gobuster_txt, lambda f: parse_gobuster_output(f, target_host, args.gobuster_port, args.gobuster_mode)),
             "Nikto": (args.nikto_json, lambda f: parse_nikto_json(f)),
             "WhatWeb": (args.whatweb_json, lambda f: parse_whatweb_json(f)),
-            "Enum4Linux-NG": (args.enum4linux_json, lambda f: parse_enum4linux_json(f, target_host))
+            "Enum4Linux-NG": (args.enum4linux_json, lambda f: parse_enum4linux_json(f, target_host)),
+            "LinPEAS": (args.linpeas_txt, lambda f: parse_linpeas(f, target_host)),
+            "WinPEAS": (args.winpeas_txt, lambda f: parse_winpeas(f, target_host))
         }
 
         for name, (file_path, parser_func) in parsers.items():
             if file_path:
+                if (name in ["Gobuster", "Enum4Linux-NG", "LinPEAS", "WinPEAS"] and not target_host):
+                    print(f"{C.BOLD}{C.YELLOW}[!] {name} parser requires --target-host to be set.{C.END}")
+                    continue
                 if args.verbose > 0: print(f"[*] Parsing {name}: {file_path}")
                 new_findings = parser_func(file_path)
                 all_raw_findings.extend(new_findings)
                 if args.verbose > 0: print(f"    [+] Found {len(new_findings)} raw findings from {name}.")
-        # <<< END REFACTORED BLOCK >>>
 
         if not all_raw_findings:
             print(f"\n{C.BOLD}{C.YELLOW}[!] No raw findings extracted from input files. Exiting.{C.END}")
@@ -161,7 +162,6 @@ def main():
         
         if args.verbose > 0: print(f"    [+] Vulnerability Mapper identified {len(prioritized_findings)} prioritized findings.")
 
-    # --- Processing Stage ---
     if not prioritized_findings:
         print(f"\n{C.BOLD}{C.YELLOW}[!] No prioritized findings identified by the Vulnerability Mapper. Exiting.{C.END}")
         sys.exit(0)
@@ -185,7 +185,7 @@ def main():
         for i, p_finding in enumerate(filtered_list):
             score = p_finding.get("attributes", {}).get("score", "N/A")
             display_name, display_type = format_finding_display(p_finding.get('name'), p_finding.get('entity_type'))
-            print(f"\n[{i+1}] [Score: {score}] {display_name} {C.BOLD}{C.YELLOW}{display_type}{C.END}")
+            print(f"\n[{i+1}] [Score: {score}] {display_name} {display_type}")
             print(f"    Host: {p_finding.get('host')}, Port: {p_finding.get('port')}")
     else:
         print(f"\n--- Pathfinder has identified {len(suggested_paths)} potential attack path(s)! ---")
