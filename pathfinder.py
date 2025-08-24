@@ -43,8 +43,10 @@ def format_finding_display(name, entity_type):
         display_name = display_name.replace("GitHub Exploit", f"{C.BOLD}{C.GREEN}GitHub Exploit{C.END}")
 
     display_type = f"({entity_type})"
-    if entity_type == "web_content":
-        display_type = f"({C.LIGHT_BLUE}web_content{C.END})"
+    # if entity_type == "web_content":
+    #     display_type = f"({C.LIGHT_BLUE}{C.BOLD}web_content{C.END})"
+    # elif entity_type == "misconfiguration":
+    #     display_type = f"({C.YELLOW}{C.BOLD}misconfiguration{C.END})"    
     
     return display_name, display_type
 
@@ -121,22 +123,22 @@ def main():
         print(f"\n{C.BOLD}{C.CYAN}[*] Parsing Data...{C.END}")
 
         if args.nmap_xml:
-            if args.verbose > 0: print(f"    [*] Parsing Nmap XML: {args.nmap_xml}")
+            if args.verbose > 0: print(f"[*] Parsing Nmap XML: {args.nmap_xml}")
             nmap_findings = parse_nmap_xml(args.nmap_xml)
             all_raw_findings.extend(nmap_findings)
-            if args.verbose > 0: print(f"        [+] Found {len(nmap_findings)} raw findings from Nmap.")
+            if args.verbose > 0: print(f"    [+] Found {len(nmap_findings)} raw findings from Nmap.")
 
         if args.gobuster_txt:
-            if args.verbose > 0: print(f"    [*] Parsing Gobuster output: {args.gobuster_txt}")
+            if args.verbose > 0: print(f"[*] Parsing Gobuster output: {args.gobuster_txt}")
             gobuster_findings = parse_gobuster_output(args.gobuster_txt, args.gobuster_host, args.gobuster_port, args.gobuster_mode)
             all_raw_findings.extend(gobuster_findings)
-            if args.verbose > 0: print(f"        [+] Found {len(gobuster_findings)} raw findings from Gobuster.")
+            if args.verbose > 0: print(f"    [+] Found {len(gobuster_findings)} raw findings from Gobuster.")
 
         if args.nikto_json:
-            if args.verbose > 0: print(f"    [*] Parsing Nikto JSON: {args.nikto_json}")
+            if args.verbose > 0: print(f"[*] Parsing Nikto JSON: {args.nikto_json}")
             nikto_findings = parse_nikto_json(args.nikto_json)
             all_raw_findings.extend(nikto_findings)
-            if args.verbose > 0: print(f"        [+] Found {len(nikto_findings)} raw findings from Nikto.")
+            if args.verbose > 0: print(f"    [+] Found {len(nikto_findings)} raw findings from Nikto.")
 
         if not all_raw_findings:
             print(f"\n{C.BOLD}{C.YELLOW}[!] No raw findings extracted from input files. Exiting.{C.END}")
@@ -165,14 +167,13 @@ def main():
     suggested_paths = synthesizer.generate_attack_paths(prioritized_findings)
     
     if not suggested_paths:
-        print(f"\n{C.BOLD}{C.YELLOW}[!] No specific attack paths were synthesized from the findings.{C.END}")
-        print("--- Displaying Prioritized Findings as Fallback ---")
+        print(f"\n{C.BOLD}{C.YELLOW}[!] No specific attack paths were synthesized from the findings! Displaying Prioritized Findings as Fallback {C.END}")
         filtered_list = filter_prioritized_findings(prioritized_findings, args.max_vulns)
         filtered_list.sort(key=lambda x: x.get("attributes", {}).get("score", 0), reverse=True)
         for i, p_finding in enumerate(filtered_list):
             score = p_finding.get("attributes", {}).get("score", "N/A")
             display_name, display_type = format_finding_display(p_finding.get('name'), p_finding.get('entity_type'))
-            print(f"\n[{i+1}] [Score: {score}] {display_name} {display_type}")
+            print(f"\n[{i+1}] [Score: {score}] {display_name} {C.BOLD}{C.YELLOW}{display_type}{C.END}")
             print(f"    Host: {p_finding.get('host')}, Port: {p_finding.get('port')}")
     else:
         print(f"\n--- Pathfinder has identified {len(suggested_paths)} potential attack path(s)! ---")
