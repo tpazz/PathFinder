@@ -2,21 +2,22 @@ import argparse
 import sys
 import json
 
-# Import your custom modules
-from nmap_parser import parse_nmap_xml
-from gobuster_parser import parse_gobuster_output
-from nikto_parser import parse_nikto_json
-from whatweb_parser import parse_whatweb_json
-from enum4linux_parser import parse_enum4linux_json
-from linpeas_parser import parse_linpeas
-from winpeas_parser import parse_winpeas
-from snmp_parser import parse_snmp_output
-from sharphound_parser import parse_sharphound_dir
-from ldapdomaindump_parser import parse_ldapdomaindump_dir
-from kerberos_parser import parse_kerbrute_output, parse_getnpusers_output
-from sqlmap_parser import parse_sqlmap_log
-from vulnerability_mapper import VulnerabilityMapper
 from attack_path_synthesizer import AttackPathSynthesizer
+from parsers.active_directory.kerberos_parser import parse_getnpusers_output, parse_kerbrute_output
+from parsers.active_directory.ldapdomaindump_parser import parse_ldapdomaindump_dir
+from parsers.active_directory.sharphound_parser import parse_sharphound_dir
+from parsers.initial_foothold.enum4linux_parser import parse_enum4linux_json
+from parsers.initial_foothold.gobuster_parser import parse_gobuster_output
+from parsers.initial_foothold.nikto_parser import parse_nikto_json
+from parsers.initial_foothold.nmap_parser import parse_nmap_xml
+from parsers.initial_foothold.snmp_parser import parse_snmp_output
+from parsers.initial_foothold.sqlmap_parser import parse_sqlmap_log
+from parsers.initial_foothold.whatweb_parser import parse_whatweb_json
+from parsers.privilege_escalation.linpeas_parser import parse_linpeas
+from parsers.privilege_escalation.winpeas_parser import parse_winpeas
+from vulnerability_mapper import VulnerabilityMapper
+
+# Import your custom modules
 
 # ANSI color codes for formatted output
 class C:
