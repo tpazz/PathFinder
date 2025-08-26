@@ -12,21 +12,17 @@ from linpeas_parser import parse_linpeas
 from winpeas_parser import parse_winpeas
 from snmp_parser import parse_snmp_output
 from sharphound_parser import parse_sharphound_dir
+from ldapdomaindump_parser import parse_ldapdomaindump_dir
+from kerberos_parser import parse_kerbrute_output, parse_getnpusers_output
+from sqlmap_parser import parse_sqlmap_log
 from vulnerability_mapper import VulnerabilityMapper
 from attack_path_synthesizer import AttackPathSynthesizer
 
 # ANSI color codes for formatted output
 class C:
-    RED = '\033[91m'
-    GREEN = '\033[92m'
-    YELLOW = '\033[93m'
-    LIGHT_BLUE = '\033[94m'
-    CYAN = '\033[96m'
-    BOLD = '\033[1m'
-    END = '\033[0m'
+    RED, GREEN, YELLOW, LIGHT_BLUE, CYAN, BOLD, END = '\033[91m', '\033[92m', '\033[93m', '\033[94m', '\033[96m', '\033[1m', '\033[0m'
 
 def print_banner():
-    """Prints a cool banner for the tool."""
     banner = r"""
 __________          __   .__      _____ .__             .___              
 \______   \_____  _/  |_ |  |__ _/ ____\|__|  ____    __| _/ ____ _______ 
@@ -41,71 +37,60 @@ __________          __   .__      _____ .__             .___
     print(banner)
 
 def format_finding_display(name, entity_type):
-    """Applies color formatting to the name and entity_type of a finding."""
     display_name = name
-    if "EDB-ID" in display_name:
-        display_name = display_name.replace("EDB-ID", f"{C.BOLD}{C.RED}EDB-ID{C.END}")
-    if "GitHub Exploit" in display_name:
-        display_name = display_name.replace("GitHub Exploit", f"{C.BOLD}{C.GREEN}GitHub Exploit{C.END}")
-
-    # Colorize the entity type for better visibility in the fallback list
-    if entity_type == "privilege_escalation":
-        display_type = f"({C.BOLD}{C.RED}{entity_type}{C.END})"
-    elif entity_type == "web_content":
-        display_type = f"({C.LIGHT_BLUE}{entity_type}{C.END})"
-    elif entity_type == "misconfiguration":
-        display_type = f"({C.YELLOW}{entity_type}{C.END})"
-    else:
-        display_type = f"({entity_type})"
-    
+    if "EDB-ID" in display_name: display_name = display_name.replace("EDB-ID", f"{C.BOLD}{C.RED}EDB-ID{C.END}")
+    if "GitHub Exploit" in display_name: display_name = display_name.replace("GitHub Exploit", f"{C.BOLD}{C.GREEN}GitHub Exploit{C.END}")
+    if entity_type == "privilege_escalation": display_type = f"({C.BOLD}{C.RED}{entity_type}{C.END})"
+    elif entity_type == "web_content": display_type = f"({C.LIGHT_BLUE}{entity_type}{C.END})"
+    elif entity_type == "misconfiguration": display_type = f"({C.YELLOW}{entity_type}{C.END})"
+    elif entity_type == "vulnerability" and "sql" in name: display_type = f"({C.BOLD}{C.RED}{entity_type}{C.END})"
+    else: display_type = f"({entity_type})"
     return display_name, display_type
 
 def filter_prioritized_findings(findings, max_vulns):
-    """Filters the list of prioritized findings to limit the number of EDB/GitHub results."""
-    edb_findings, github_findings, other_findings = [], [], []
+    edb, github, other = [], [], []
     for f in findings:
         source = f.get("source_tool")
-        if source == "searchsploit_mapper": edb_findings.append(f)
-        elif source == "github_exploit_mapper": github_findings.append(f)
-        else: other_findings.append(f)
-    edb_findings.sort(key=lambda x: x.get("attributes", {}).get("score", 0), reverse=True)
-    github_findings.sort(key=lambda x: x.get("attributes", {}).get("score", 0), reverse=True)
-    return other_findings + edb_findings[:max_vulns] + github_findings[:max_vulns]
+        if source == "searchsploit_mapper": edb.append(f)
+        elif source == "github_exploit_mapper": github.append(f)
+        else: other.append(f)
+    edb.sort(key=lambda x: x.get("attributes", {}).get("score", 0), reverse=True)
+    github.sort(key=lambda x: x.get("attributes", {}).get("score", 0), reverse=True)
+    return other + edb[:max_vulns] + github[:max_vulns]
 
 def main():
-    """Main function to orchestrate the Pathfinder tool."""
     print_banner()
-
-    parser = argparse.ArgumentParser(
-        description="Pathfinder: Intelligent Recon Analysis & Attack Path Suggestion.",
-        formatter_class=argparse.RawTextHelpFormatter
-    )
+    parser = argparse.ArgumentParser(description="Pathfinder", formatter_class=argparse.RawTextHelpFormatter)
     
-    analysis_group = parser.add_argument_group('Analysis Input Arguments')
-    analysis_group.add_argument("--nmap-xml", help="Path to Nmap XML output file.")
-    analysis_group.add_argument("--gobuster-txt", help="Path to Gobuster text output file.")
-    analysis_group.add_argument("--nikto-json", help="Path to Nikto JSON output file.")
-    analysis_group.add_argument("--whatweb-json", help="Path to WhatWeb JSON output file.")
-    analysis_group.add_argument("--enum4linux-json", help="Path to enum4linux-ng JSON output file.")
-    analysis_group.add_argument("--linpeas-txt", help="Path to LinPEAS output text file.")
-    analysis_group.add_argument("--winpeas-txt", help="Path to WinPEAS output text file.")
-    analysis_group.add_argument("--snmp-txt", help="Path to snmp-check output text file.")
-    analysis_group.add_argument("--sharphound-dir", help="Path to directory with unzipped SharpHound JSON files.")
-    analysis_group.add_argument("--target-host", help="Target host IP. Required for parsers that don't store it in their output.")
-    analysis_group.add_argument("--gobuster-host", help="Target host for Gobuster. Deprecated, use --target-host.")
-    analysis_group.add_argument("--gobuster-port", type=int, help="Target port for Gobuster output.")
-    analysis_group.add_argument("--gobuster-mode", choices=['dir', 'vhost'], default='dir', help="Gobuster mode used (default: dir).")
+    ag = parser.add_argument_group('Analysis Input Arguments')
+    ag.add_argument("--nmap-xml", help="Path to Nmap XML output file.")
+    ag.add_argument("--gobuster-txt", help="Path to Gobuster text output file.")
+    ag.add_argument("--nikto-json", help="Path to Nikto JSON output file.")
+    ag.add_argument("--whatweb-json", help="Path to WhatWeb JSON output file.")
+    ag.add_argument("--enum4linux-json", help="Path to enum4linux-ng JSON output file.")
+    ag.add_argument("--linpeas-txt", help="Path to LinPEAS output text file.")
+    ag.add_argument("--winpeas-txt", help="Path to WinPEAS output text file.")
+    ag.add_argument("--snmp-txt", help="Path to snmp-check output text file.")
+    ag.add_argument("--sharphound-dir", help="Path to directory with unzipped SharpHound JSON files.")
+    ag.add_argument("--ldapdomaindump-dir", help="Path to directory with ldapdomaindump TSV files.")
+    ag.add_argument("--kerbrute-txt", help="Path to kerbrute valid user list.")
+    ag.add_argument("--getnpusers-hashes", help="Path to impacket-GetNPUsers hash file.")
+    ag.add_argument("--sqlmap-log", help="Path to sqlmap log file from its output directory.")
+    ag.add_argument("--target-host", help="Target host IP or domain. Required for many parsers.")
+    ag.add_argument("--gobuster-host", help="Target host for Gobuster. Deprecated, use --target-host.")
+    ag.add_argument("--gobuster-port", type=int, help="Target port for Gobuster output.")
+    ag.add_argument("--gobuster-mode", choices=['dir', 'vhost'], default='dir', help="Gobuster mode.")
 
     io_group = parser.add_argument_group('Data I/O Arguments')
-    io_group.add_argument("-i", "--input-json", help="Load prioritized findings from a JSON file, skipping all parsing and mapping stages.")
-    io_group.add_argument("-o", "--output-json", help="Save the final prioritized findings to a JSON file after parsing and mapping.")
+    io_group.add_argument("-i", "--input-json", help="Load prioritized findings from a JSON file.")
+    io_group.add_argument("-o", "--output-json", help="Save the final prioritized findings to a JSON file.")
 
-    learning_group = parser.add_argument_group('Learning Arguments')
-    learning_group.add_argument("--learn", action="store_true", help="Enter interactive mode to teach Pathfinder a new attack path.")
+    lg = parser.add_argument_group('Learning Arguments')
+    lg.add_argument("--learn", action="store_true", help="Enter interactive mode to teach a new rule.")
 
-    general_group = parser.add_argument_group('General Arguments')
-    general_group.add_argument("-v", "--verbose", action="count", default=0, help="Verbosity level (-v, -vv).")
-    general_group.add_argument("--max-vulns", type=int, default=10, help="Max number of EDB and GitHub exploits to display respectively (default: 10).")
+    gg = parser.add_argument_group('General Arguments')
+    gg.add_argument("-v", "--verbose", action="count", default=0, help="Verbosity level (-v, -vv).")
+    gg.add_argument("--max-vulns", type=int, default=10, help="Max number of EDB/GitHub exploits to display (default: 10).")
     
     args = parser.parse_args()
     synthesizer = AttackPathSynthesizer()
@@ -118,20 +103,19 @@ def main():
     target_host = args.target_host or args.gobuster_host
     
     if args.input_json:
-        if any([args.nmap_xml, args.gobuster_txt, args.nikto_json, args.whatweb_json, args.enum4linux_json, args.linpeas_txt, args.winpeas_txt, args.snmp_txt, args.sharphound_dir]):
+        if any([args.nmap_xml, args.gobuster_txt, args.nikto_json, args.whatweb_json, args.enum4linux_json, args.linpeas_txt, args.winpeas_txt, args.snmp_txt, args.sharphound_dir, args.ldapdomaindump_dir, args.kerbrute_txt, args.getnpusers_hashes, args.sqlmap_log]):
             parser.error("--input-json cannot be used with other parser inputs.")
         try:
             print(f"\n{C.BOLD}{C.CYAN}[*] Loading findings from file: {args.input_json}{C.END}")
-            with open(args.input_json, 'r', encoding='utf-8') as f:
-                prioritized_findings = json.load(f)
+            with open(args.input_json, 'r') as f: prioritized_findings = json.load(f)
             print(f"    [+] Loaded {len(prioritized_findings)} findings.")
         except (FileNotFoundError, json.JSONDecodeError) as e:
             print(f"\n{C.BOLD}{C.YELLOW}[!] Error loading {args.input_json}: {e}{C.END}")
             sys.exit(1)
     else:
-        input_files = [args.nmap_xml, args.gobuster_txt, args.nikto_json, args.whatweb_json, args.enum4linux_json, args.linpeas_txt, args.winpeas_txt, args.snmp_txt, args.sharphound_dir]
+        input_files = [args.nmap_xml, args.gobuster_txt, args.nikto_json, args.whatweb_json, args.enum4linux_json, args.linpeas_txt, args.winpeas_txt, args.snmp_txt, args.sharphound_dir, args.ldapdomaindump_dir, args.kerbrute_txt, args.getnpusers_hashes, args.sqlmap_log]
         if not any(input_files):
-            parser.error("For analysis, at least one input file (--nmap-xml, etc.) or --input-json must be provided.")
+            parser.error("At least one input file or --input-json must be provided.")
         
         all_raw_findings = []
         print(f"\n{C.BOLD}{C.CYAN}[*] Parsing Data...{C.END}\n")
@@ -145,13 +129,17 @@ def main():
             "LinPEAS": (args.linpeas_txt, lambda f: parse_linpeas(f, target_host)),
             "WinPEAS": (args.winpeas_txt, lambda f: parse_winpeas(f, target_host)),
             "SNMP": (args.snmp_txt, lambda f: parse_snmp_output(f, target_host)),
-            "SharpHound": (args.sharphound_dir, lambda f: parse_sharphound_dir(f))
+            "SharpHound": (args.sharphound_dir, lambda f: parse_sharphound_dir(f)),
+            "LDAPDomainDump": (args.ldapdomaindump_dir, lambda f: parse_ldapdomaindump_dir(f)),
+            "Kerbrute": (args.kerbrute_txt, lambda f: parse_kerbrute_output(f, target_host)),
+            "GetNPUsers": (args.getnpusers_hashes, lambda f: parse_getnpusers_output(f, target_host)),
+            "SQLMap": (args.sqlmap_log, lambda f: parse_sqlmap_log(f))
         }
 
         for name, (file_path, parser_func) in parsers.items():
             if file_path:
-                if (name in ["Gobuster", "Enum4Linux-NG", "LinPEAS", "WinPEAS", "SNMP"] and not target_host):
-                    print(f"{C.BOLD}{C.YELLOW}[!] {name} parser requires --target-host to be set.{C.END}")
+                if (name in ["Gobuster", "Enum4Linux-NG", "LinPEAS", "WinPEAS", "SNMP", "Kerbrute", "GetNPUsers"] and not target_host):
+                    print(f"{C.BOLD}{C.YELLOW}[!] {name} parser requires --target-host (or domain) to be set.{C.END}")
                     continue
                 if args.verbose > 0: print(f"[*] Parsing {name}: {file_path}")
                 new_findings = parser_func(file_path)
@@ -175,8 +163,7 @@ def main():
     if args.output_json:
         try:
             print(f"\n{C.BOLD}{C.CYAN}[*] Saving prioritized findings to: {args.output_json}{C.END}")
-            with open(args.output_json, 'w', encoding='utf-8') as f:
-                json.dump(prioritized_findings, f, indent=4)
+            with open(args.output_json, 'w') as f: json.dump(prioritized_findings, f, indent=4)
             print(f"    [+] Successfully saved {len(prioritized_findings)} findings.")
         except IOError as e:
             print(f"\n{C.BOLD}{C.YELLOW}[!] Error saving to JSON file: {e}{C.END}")
@@ -185,7 +172,7 @@ def main():
     suggested_paths = synthesizer.generate_attack_paths(prioritized_findings)
     
     if not suggested_paths:
-        print(f"\n{C.BOLD}{C.YELLOW}[!] No specific attack paths were synthesized from the findings! Displaying Prioritized Findings as Fallback {C.END}")
+        print(f"\n{C.BOLD}{C.YELLOW}[!] No specific attack paths were synthesized! Displaying Prioritized Findings as Fallback {C.END}")
         filtered_list = filter_prioritized_findings(prioritized_findings, args.max_vulns)
         filtered_list.sort(key=lambda x: x.get("attributes", {}).get("score", 0), reverse=True)
         for i, p_finding in enumerate(filtered_list):
@@ -201,19 +188,14 @@ def main():
             print(f"Name:       {path['name']} [Priority: {path['priority']}]")
             print(f"Target:     {path['host']}")
             print("="*80)
-            print(f"\n  [{C.BOLD}+{C.END}] Description:")
-            print(f"      {path['suggestion']['description']}")
-            
+            print(f"\n  [{C.BOLD}+{C.END}] Description:\n      {path['suggestion']['description']}")
             if args.verbose > 0: print(f"\n  [{C.BOLD}+{C.END}] Rationale:\n      {path['suggestion']['rationale']}")
-
             if path['suggestion'].get('commands'):
                 print(f"\n  [{C.BOLD}+{C.END}] Suggested Commands:")
                 for cmd in path['suggestion']['commands']: print(f"      - {cmd}")
-            
             if path['suggestion'].get('references'):
                  print(f"\n  [{C.BOLD}+{C.END}] References:")
                  for ref in path['suggestion']['references']: print(f"      - {ref}")
-
             if args.verbose > 0 and path.get('evidence'):
                  print(f"\n  [{C.BOLD}+{C.END}] Matched Evidence:")
                  for ev in path['evidence']: print(f"      - {ev}")
