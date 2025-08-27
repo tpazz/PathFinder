@@ -1,6 +1,7 @@
 import argparse
 import sys
 import json
+import os
 
 from attack_path_synthesizer import AttackPathSynthesizer
 from parsers.active_directory.kerberos_parser import parse_getnpusers_output, parse_kerbrute_output
@@ -17,11 +18,11 @@ from parsers.privilege_escalation.linpeas_parser import parse_linpeas
 from parsers.privilege_escalation.winpeas_parser import parse_winpeas
 from vulnerability_mapper import VulnerabilityMapper
 
-# Import your custom modules
-
 # ANSI color codes for formatted output
 class C:
     RED, GREEN, YELLOW, LIGHT_BLUE, CYAN, BOLD, END = '\033[91m', '\033[92m', '\033[93m', '\033[94m', '\033[96m', '\033[1m', '\033[0m'
+
+CREDENTIALS_FILE = "credentials.json"
 
 def print_banner():
     banner = r"""
@@ -59,6 +60,58 @@ def filter_prioritized_findings(findings, max_vulns):
     github.sort(key=lambda x: x.get("attributes", {}).get("score", 0), reverse=True)
     return other + edb[:max_vulns] + github[:max_vulns]
 
+def deduplicate_findings(findings_list):
+    seen = set()
+    unique_findings = []
+    for finding in findings_list:
+        identifier = (finding.get('host'), finding.get('port'), finding.get('name'), finding.get('entity_type'))
+        if identifier not in seen:
+            seen.add(identifier)
+            unique_findings.append(finding)
+    return unique_findings
+
+def manage_credentials():
+    """Provides an interactive wizard for users to add credentials they have found."""
+    print(f"\n{C.BOLD}{C.CYAN}[*] Pathfinder Credential Manager{C.END}")
+    creds = []
+    if os.path.exists(CREDENTIALS_FILE):
+        try:
+            with open(CREDENTIALS_FILE, 'r') as f:
+                content = f.read()
+                if content: creds = json.loads(content)
+        except json.JSONDecodeError:
+            print(f"{C.BOLD}{C.YELLOW}[!] Warning: {CREDENTIALS_FILE} is corrupted. Starting fresh.{C.END}")
+    
+    print(f"    [+] Found {len(creds)} existing credentials.")
+    
+    try:
+        while True:
+            print("\n--- Adding a New Credential ---")
+            username = input(" > Enter username (or press Enter to finish): ").strip()
+            if not username: break
+            cred_type = input(" > Is this a [p]assword or a [h]ash? [p]: ").strip().lower() or 'p'
+            
+            password, hash_val, hash_type = None, None, None
+            if cred_type == 'p':
+                password = input(" > Enter password: ").strip()
+            elif cred_type == 'h':
+                hash_val = input(" > Enter full hash: ").strip()
+                hash_type = input(" > Enter hash type (e.g., NTLM, Kerberos AS-REP (18200)): ").strip()
+            else:
+                print(f"{C.BOLD}{C.YELLOW}[!] Invalid type. Skipping.{C.END}"); continue
+            
+            source = input(" > Where did you find this credential? (e.g., 'config.php.bak'): ").strip()
+            creds.append({"username": username, "password": password, "hash": hash_val, "hash_type": hash_type, "source": source})
+            print(f"    {C.BOLD}{C.GREEN}[+] Credential for '{username}' added.{C.END}")
+    except KeyboardInterrupt:
+        print("\n[!] User interrupted credential entry.")
+    
+    try:
+        with open(CREDENTIALS_FILE, 'w') as f: json.dump(creds, f, indent=4)
+        print(f"\n{C.BOLD}{C.CYAN}[*] {len(creds)} total credentials saved to {CREDENTIALS_FILE}.{C.END}")
+    except IOError as e:
+        print(f"\n{C.BOLD}{C.YELLOW}[!] Error saving credentials: {e}{C.END}")
+
 def main():
     print_banner()
     parser = argparse.ArgumentParser(description="Pathfinder", formatter_class=argparse.RawTextHelpFormatter)
@@ -83,11 +136,12 @@ def main():
     ag.add_argument("--gobuster-mode", choices=['dir', 'vhost'], default='dir', help="Gobuster mode.")
 
     io_group = parser.add_argument_group('Data I/O Arguments')
-    io_group.add_argument("-i", "--input-json", help="Load prioritized findings from a JSON file.")
+    io_group.add_argument("-i", "--input-json", help="Load prioritized findings from a JSON file (can be used with other inputs).")
     io_group.add_argument("-o", "--output-json", help="Save the final prioritized findings to a JSON file.")
 
-    lg = parser.add_argument_group('Learning Arguments')
-    lg.add_argument("--learn", action="store_true", help="Enter interactive mode to teach a new rule.")
+    lg = parser.add_argument_group('Intelligence Management Arguments')
+    lg.add_argument("--learn", action="store_true", help="Enter interactive mode to teach Pathfinder a new attack path.")
+    lg.add_argument("--add-cred", action="store_true", help="Enter interactive mode to manually add a found credential.")
 
     gg = parser.add_argument_group('General Arguments')
     gg.add_argument("-v", "--verbose", action="count", default=0, help="Verbosity level (-v, -vv).")
@@ -100,42 +154,31 @@ def main():
     if args.learn:
         synthesizer.learn_new_path_interactive()
         sys.exit(0)
+    
+    if args.add_cred:
+        manage_credentials()
+        sys.exit(0)
 
-    target_host = args.target_host or args.gobuster_host
+    base_prioritized_findings = []
+    new_raw_findings = []
     
     if args.input_json:
-        if any([args.nmap_xml, args.gobuster_txt, args.nikto_json, args.whatweb_json, args.enum4linux_json, args.linpeas_txt, args.winpeas_txt, args.snmp_txt, args.sharphound_dir, args.ldapdomaindump_dir, args.kerbrute_txt, args.getnpusers_hashes, args.sqlmap_log]):
-            parser.error("--input-json cannot be used with other parser inputs.")
         try:
-            print(f"\n{C.BOLD}{C.CYAN}[*] Loading findings from file: {args.input_json}{C.END}")
-            with open(args.input_json, 'r') as f: prioritized_findings = json.load(f)
-            print(f"    [+] Loaded {len(prioritized_findings)} findings.")
+            print(f"\n{C.BOLD}{C.CYAN}[*] Loading base findings from file: {args.input_json}{C.END}")
+            with open(args.input_json, 'r', encoding='utf-8') as f:
+                base_prioritized_findings = json.load(f)
+            print(f"    [+] Loaded {len(base_prioritized_findings)} base findings.")
         except (FileNotFoundError, json.JSONDecodeError) as e:
             print(f"\n{C.BOLD}{C.YELLOW}[!] Error loading {args.input_json}: {e}{C.END}")
             sys.exit(1)
-    else:
-        input_files = [args.nmap_xml, args.gobuster_txt, args.nikto_json, args.whatweb_json, args.enum4linux_json, args.linpeas_txt, args.winpeas_txt, args.snmp_txt, args.sharphound_dir, args.ldapdomaindump_dir, args.kerbrute_txt, args.getnpusers_hashes, args.sqlmap_log]
-        if not any(input_files):
-            parser.error("At least one input file or --input-json must be provided.")
-        
-        all_raw_findings = []
-        print(f"\n{C.BOLD}{C.CYAN}[*] Parsing Data...{C.END}\n")
 
-        parsers = {
-            "Nmap": (args.nmap_xml, lambda f: parse_nmap_xml(f)),
-            "Gobuster": (args.gobuster_txt, lambda f: parse_gobuster_output(f, target_host, args.gobuster_port, args.gobuster_mode)),
-            "Nikto": (args.nikto_json, lambda f: parse_nikto_json(f)),
-            "WhatWeb": (args.whatweb_json, lambda f: parse_whatweb_json(f)),
-            "Enum4Linux-NG": (args.enum4linux_json, lambda f: parse_enum4linux_json(f, target_host)),
-            "LinPEAS": (args.linpeas_txt, lambda f: parse_linpeas(f, target_host)),
-            "WinPEAS": (args.winpeas_txt, lambda f: parse_winpeas(f, target_host)),
-            "SNMP": (args.snmp_txt, lambda f: parse_snmp_output(f, target_host)),
-            "SharpHound": (args.sharphound_dir, lambda f: parse_sharphound_dir(f)),
-            "LDAPDomainDump": (args.ldapdomaindump_dir, lambda f: parse_ldapdomaindump_dir(f)),
-            "Kerbrute": (args.kerbrute_txt, lambda f: parse_kerbrute_output(f, target_host)),
-            "GetNPUsers": (args.getnpusers_hashes, lambda f: parse_getnpusers_output(f, target_host)),
-            "SQLMap": (args.sqlmap_log, lambda f: parse_sqlmap_log(f))
-        }
+    target_host = args.target_host or args.gobuster_host
+    parser_inputs = [args.nmap_xml, args.gobuster_txt, args.nikto_json, args.whatweb_json, args.enum4linux_json, args.linpeas_txt, args.winpeas_txt, args.snmp_txt, args.sharphound_dir, args.ldapdomaindump_dir, args.kerbrute_txt, args.getnpusers_hashes, args.sqlmap_log]
+
+    if any(parser_inputs):
+        print(f"\n{C.BOLD}{C.CYAN}[*] Parsing new data files...{C.END}\n")
+        
+        parsers = { "Nmap": (args.nmap_xml, lambda f: parse_nmap_xml(f)), "Gobuster": (args.gobuster_txt, lambda f: parse_gobuster_output(f, target_host, args.gobuster_port, args.gobuster_mode)), "Nikto": (args.nikto_json, lambda f: parse_nikto_json(f)), "WhatWeb": (args.whatweb_json, lambda f: parse_whatweb_json(f)), "Enum4Linux-NG": (args.enum4linux_json, lambda f: parse_enum4linux_json(f, target_host)), "LinPEAS": (args.linpeas_txt, lambda f: parse_linpeas(f, target_host)), "WinPEAS": (args.winpeas_txt, lambda f: parse_winpeas(f, target_host)), "SNMP": (args.snmp_txt, lambda f: parse_snmp_output(f, target_host)), "SharpHound": (args.sharphound_dir, lambda f: parse_sharphound_dir(f)), "LDAPDomainDump": (args.ldapdomaindump_dir, lambda f: parse_ldapdomaindump_dir(f)), "Kerbrute": (args.kerbrute_txt, lambda f: parse_kerbrute_output(f, target_host)), "GetNPUsers": (args.getnpusers_hashes, lambda f: parse_getnpusers_output(f, target_host)), "SQLMap": (args.sqlmap_log, lambda f: parse_sqlmap_log(f)) }
 
         for name, (file_path, parser_func) in parsers.items():
             if file_path:
@@ -143,22 +186,28 @@ def main():
                     print(f"{C.BOLD}{C.YELLOW}[!] {name} parser requires --target-host (or domain) to be set.{C.END}")
                     continue
                 if args.verbose > 0: print(f"[*] Parsing {name}: {file_path}")
-                new_findings = parser_func(file_path)
-                all_raw_findings.extend(new_findings)
-                if args.verbose > 0: print(f"    [+] Found {len(new_findings)} raw findings from {name}.")
+                findings_from_parser = parser_func(file_path)
+                new_raw_findings.extend(findings_from_parser)
+                if args.verbose > 0: print(f"    [+] Found {len(findings_from_parser)} raw findings from {name}.")
+    
+    if not base_prioritized_findings and not new_raw_findings:
+         parser.error("For analysis, at least one input file (--nmap-xml, etc.) or --input-json must be provided.")
 
-        if not all_raw_findings:
-            print(f"\n{C.BOLD}{C.YELLOW}[!] No raw findings extracted from input files. Exiting.{C.END}")
-            sys.exit(1)
-
-        print(f"\n{C.BOLD}{C.CYAN}[*] Running Vulnerability Mapper...{C.END}\n")
+    newly_prioritized_findings = []
+    if new_raw_findings:
+        print(f"\n{C.BOLD}{C.CYAN}[*] Running Vulnerability Mapper on new findings...{C.END}\n")
         vuln_mapper = VulnerabilityMapper()
-        prioritized_findings = vuln_mapper.map_and_prioritize(all_raw_findings)
-        
-        if args.verbose > 0: print(f"    [+] Vulnerability Mapper identified {len(prioritized_findings)} prioritized findings.")
+        newly_prioritized_findings = vuln_mapper.map_and_prioritize(new_raw_findings)
+        if args.verbose > 0: print(f"    [+] Mapper prioritized {len(newly_prioritized_findings)} of the new findings.")
+
+    combined_findings = base_prioritized_findings + newly_prioritized_findings
+    prioritized_findings = deduplicate_findings(combined_findings)
+    
+    if len(combined_findings) != len(prioritized_findings):
+        if args.verbose > 0: print(f"\n{C.BOLD}{C.CYAN}[*]{C.END} Deduplicated {len(combined_findings) - len(prioritized_findings)} overlapping findings.")
 
     if not prioritized_findings:
-        print(f"\n{C.BOLD}{C.YELLOW}[!] No prioritized findings identified by the Vulnerability Mapper. Exiting.{C.END}")
+        print(f"\n{C.BOLD}{C.YELLOW}[!] No findings to process. Exiting.{C.END}")
         sys.exit(0)
 
     if args.output_json:
@@ -181,6 +230,11 @@ def main():
             display_name, display_type = format_finding_display(p_finding.get('name'), p_finding.get('entity_type'))
             print(f"\n[{i+1}] [Score: {score}] {display_name} {display_type}")
             print(f"    Host: {p_finding.get('host')}, Port: {p_finding.get('port')}")
+            attributes = p_finding.get("attributes", {})
+            if attributes.get("metasploit_module"):
+                print(f"    {C.BOLD}Metasploit Module:{C.END} {attributes['metasploit_module']}")
+            if attributes.get("url"):
+                 print(f"    {C.BOLD}URL:{C.END} {attributes['url']}")
     else:
         print(f"\n--- Pathfinder has identified {len(suggested_paths)} potential attack path(s)! ---")
         for i, path in enumerate(suggested_paths):
@@ -200,6 +254,9 @@ def main():
             if args.verbose > 0 and path.get('evidence'):
                  print(f"\n  [{C.BOLD}+{C.END}] Matched Evidence:")
                  for ev in path['evidence']: print(f"      - {ev}")
+                 for finding in path.get('evidence_findings', []):
+                     if finding.get("attributes", {}).get("metasploit_module"):
+                         print(f"        {C.BOLD}Metasploit Module:{C.END} {finding['attributes']['metasploit_module']}")
         print("\n" + "="*80)
 
 if __name__ == "__main__":

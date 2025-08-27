@@ -1,0 +1,81 @@
+[
+    {
+        "name": "Found Credential - Test Against Login Services",
+        "priority": 98,
+        "triggers": [
+            {
+                "id": 1,
+                "entity_type": "credential",
+                "name_match": {
+                    "type": "regex",
+                    "value": ".*"
+                }
+            },
+            {
+                "id": 2,
+                "entity_type": "service",
+                "name_match": {
+                    "type": "regex",
+                    "value": "(ssh|ftp|rdp|ms-wbt-server|winrm|http|https|smb|microsoft-ds)"
+                }
+            }
+        ],
+        "suggestion": {
+            "description": "A credential for user '{trigger.1.name}' was found. An open login service ('{trigger.2.name}') was also discovered. Attempt to reuse the credential.",
+            "rationale": "Credential reuse is a highly effective attack. Credentials found on one system or in one context (e.g., a web config file) should be tested against all other available login services (e.g., SSH, RDP, SMB).",
+            "commands": [
+                "For SSH/FTP/SMB/RDP/WinRM, try direct login or password spraying tools.",
+                "Example with crackmapexec: crackmapexec {trigger.2.name} {trigger.2.host} -u '{trigger.1.name}' -p '{trigger.1.attributes.password}'",
+                "For HTTP/HTTPS, look for a web login form at http://{trigger.2.host}:{trigger.2.port}/ and try these credentials.",
+                "If the credential is a hash ('{trigger.1.attributes.hash}'), attempt Pass-the-Hash attacks for services like SMB and WinRM."
+            ],
+            "references": [
+                "https://attack.mitre.org/techniques/T1078/ (Valid Accounts)",
+                "https://attack.mitre.org/techniques/T1110/ (Brute Force)"
+            ]
+        }
+    },
+    {
+        "name": "Credential Reuse on Discovered Web Login Page",
+        "priority": 95,
+        "triggers": [
+            {
+                "id": 1,
+                "entity_type": "credential",
+                "name_match": {
+                    "type": "regex",
+                    "value": ".*"
+                }
+            },
+            {
+                "id": 2,
+                "entity_type": "service",
+                "name_match": {
+                    "type": "regex",
+                    "value": "(http|https)"
+                }
+            },
+            {
+                "id": 3,
+                "entity_type": "web_content",
+                "name_match": {
+                    "type": "regex",
+                    "value": "(login|signin|auth|admin|user|account|portal)"
+                }
+            }
+        ],
+        "suggestion": {
+            "description": "A credential for user '{trigger.1.name}' was found, and a potential web login page '{trigger.3.name}' was discovered on the web server.",
+            "rationale": "Testing known credentials against discovered web application login portals is a high-impact technique for gaining initial access or escalating privileges.",
+            "commands": [
+                "Navigate to the login page to verify: http://{trigger.2.host}:{trigger.2.port}{trigger.3.name}",
+                "Attempt to log in manually with user '{trigger.1.name}' and password '{trigger.1.attributes.password}'.",
+                "For automated testing, inspect the login form's POST request and use a tool like Hydra.",
+                "Example Hydra command (YOU MUST CUSTOMIZE THE FORM DATA): hydra -l '{trigger.1.name}' -p '{trigger.1.attributes.password}' {trigger.2.host} http-post-form '/{trigger.3.name}:username=^USER^&password=^PASS^:F=Login Failed'"
+            ],
+            "references": [
+                "https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/04-Authentication_Testing/05-Testing_for_Weak_Lock_Out_Mechanism"
+            ]
+        }
+    }
+]
