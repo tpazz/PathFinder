@@ -176,5 +176,9 @@ python3 pathfinder.py \
     ```
 *   **Load analysis results from a file (skips parsing):**
     ```bash
-    python3 pathfinder.py --input-json saved_findings.json
+    python3 pathfinder.py -i saved_findings.json
+    ```
+    **Max number of EDB/GitHub exploits to display (default: 10):**
+    ```bash
+    python3 pathfinder.py --max-vulns 25
     ```
