@@ -20,7 +20,7 @@ This guide shows the exact commands to run for each supported tool to generate a
     ```
 *   **Run Pathfinder:**
     ```bash
-    python3 pathfinder.py --nmap-xml nmap_results.xml
+    python3 -m main.pathfinder.py --nmap-xml nmap_results.xml
     ```
 
 #### 2. Gobuster
@@ -30,7 +30,7 @@ This guide shows the exact commands to run for each supported tool to generate a
     ```
 *   **Run Pathfinder:** Requires `--target-host` and `--gobuster-port`.
     ```bash
-    python3 pathfinder.py --gobuster-txt gobuster_results.txt --target-host TARGET_HOST --gobuster-port PORT
+    python3 -m main.pathfinder.py --gobuster-txt gobuster_results.txt --target-host TARGET_HOST --gobuster-port PORT
     ```
     *Note: For `vhost` mode, add `--gobuster-mode vhost`.*
 
@@ -41,7 +41,7 @@ This guide shows the exact commands to run for each supported tool to generate a
     ```
 *   **Run Pathfinder:**
     ```bash
-    python3 pathfinder.py --nikto-json nikto_results.json
+    python3 -m main.pathfinder.py --nikto-json nikto_results.json
     ```
 
 #### 4. WhatWeb
@@ -51,7 +51,7 @@ This guide shows the exact commands to run for each supported tool to generate a
     ```
 *   **Run Pathfinder:**
     ```bash
-    python3 pathfinder.py --whatweb-json whatweb.json
+    python3 -m main.pathfinder.py --whatweb-json whatweb.json
     ```
 
 #### 5. enum4linux-ng
@@ -61,7 +61,7 @@ This guide shows the exact commands to run for each supported tool to generate a
     ```
 *   **Run Pathfinder:** Requires `--target-host`.
     ```bash
-    python3 pathfinder.py --enum4linux-json enum4linux_results.json --target-host TARGET_IP
+    python3 -m main.pathfinder.py --enum4linux-json enum4linux_results.json --target-host TARGET_IP
     ```
 
 #### 6. SNMP (`snmp-check`)
@@ -71,7 +71,7 @@ This guide shows the exact commands to run for each supported tool to generate a
     ```
 *   **Run Pathfinder:** Requires `--target-host`.
     ```bash
-    python3 pathfinder.py --snmp-txt snmp_results.txt --target-host TARGET_IP
+    python3 -m main.pathfinder.py --snmp-txt snmp_results.txt --target-host TARGET_IP
     ```
 
 #### 7. sqlmap
@@ -81,7 +81,7 @@ This guide shows the exact commands to run for each supported tool to generate a
     ```
 *   **Run Pathfinder:** You must provide the full path to the `log` file inside the `sqlmap` output directory.
     ```bash
-    python3 pathfinder.py --sqlmap-log /home/kali/.local/share/sqlmap/output/TARGET_HOST/log
+    python3 -m main.pathfinder.py --sqlmap-log /home/kali/.local/share/sqlmap/output/TARGET_HOST/log
     ```
 
 ---
@@ -95,7 +95,7 @@ This guide shows the exact commands to run for each supported tool to generate a
     ```
 *   **Run Pathfinder:** Requires `--target-host`.
     ```bash
-    python3 pathfinder.py --linpeas-txt linpeas_results.txt --target-host TARGET_IP
+    python3 -m main.pathfinder.py --linpeas-txt linpeas_results.txt --target-host TARGET_IP
     ```
 
 #### 9. WinPEAS
@@ -105,7 +105,7 @@ This guide shows the exact commands to run for each supported tool to generate a
     ```
 *   **Run Pathfinder:** Requires `--target-host`.
     ```bash
-    python3 pathfinder.py --winpeas-txt winpeas_results.txt --target-host TARGET_IP
+    python3 -m main.pathfinder.py --winpeas-txt winpeas_results.txt --target-host TARGET_IP
     ```
 
 ---
@@ -121,7 +121,7 @@ This guide shows the exact commands to run for each supported tool to generate a
         ```
 *   **Run Pathfinder:** Provide the path to the **directory** containing the JSON files.
     ```bash
-    python3 pathfinder.py --sharphound-dir sharphound_data
+    python3 -m main.pathfinder.py --sharphound-dir sharphound_data
     ```
 
 #### 11. ldapdomaindump
@@ -131,7 +131,7 @@ This guide shows the exact commands to run for each supported tool to generate a
     ```
 *   **Run Pathfinder:** Provide the path to the **directory** containing the TSV files.
     ```bash
-    python3 pathfinder.py --ldapdomaindump-dir ldap_data
+    python3 -m main.pathfinder.py --ldapdomaindump-dir ldap_data
     ```
 
 #### 12. Kerbrute & impacket-GetNPUsers
@@ -146,7 +146,7 @@ This guide shows the exact commands to run for each supported tool to generate a
         ```
 *   **Run Pathfinder:** Requires `--target-host` (use the domain name).
     ```bash
-    python3 pathfinder.py --kerbrute-txt valid_users.txt --getnpusers-hashes asrep_hashes.txt --target-host DOMAIN.COM
+    python3 -m main.pathfinder.py --kerbrute-txt valid_users.txt --getnpusers-hashes asrep_hashes.txt --target-host DOMAIN.COM
     ```
 
 ---
@@ -156,7 +156,7 @@ This guide shows the exact commands to run for each supported tool to generate a
 This is the most common and powerful way to use Pathfinder.
 
 ```bash
-python3 pathfinder.py \
+python3 -m main.pathfinder.py \
   --nmap-xml nmap_results.xml \
   --gobuster-txt gobuster_results.txt --target-host TARGET_IP --gobuster-port 80 \
   --nikto-json nikto_results.json \
@@ -165,28 +165,35 @@ python3 pathfinder.py \
 ```
 
 ### Utility Commands
-
+*   ** Add GitHub token for more requests:**
+    ```bash
+    export GITHUB_TOKEN="ghp_YourLongGitHubPersonalAccessTokenHere"
+    ```
+*   **Add a credential:**
+*   ```bash
+    python3 -m main.pathfinder.py --add-cred
+    ```    
 *   **Teach a new rule:**
     ```bash
-    python3 pathfinder.py --learn
+    python3 -m main.pathfinder.py --learn
     ```
 *   **Save analysis results to a file:**
     ```bash
-    python3 pathfinder.py --nmap-xml nmap.xml -o saved_findings.json
+    python3 -m main.pathfinder.py --nmap-xml nmap.xml -o saved_findings.json
     ```
 *   **Load analysis results from a file (skips parsing):**
     ```bash
-    python3 pathfinder.py -i saved_findings.json
+    python3 -m main.pathfinder.py -i saved_findings.json
     ```
 *   **Load analysis results from file + ingest more data:**
     ```bash
-    python3 pathfinder.py -i initial_recon.json --linpeas-txt linpeas.txt --target-host 10.10.10.123
+    python3 -m main.pathfinder.py -i initial_recon.json --linpeas-txt linpeas.txt --target-host 10.10.10.123
     ```
 *   **Load analysis results from file + ingest additional data + save output (can be iterative):**
     ```bash
-    python3 pathfinder.py -i saved_findings.json --nikto-json nikto_results.json -o saved_findings.json
+    python3 -m main.pathfinder.py -i saved_findings.json --nikto-json nikto_results.json -o saved_findings.json
     ```    
 *   **Max number of EDB/GitHub exploits to display (default: 10):**
     ```bash
-    python3 pathfinder.py --max-vulns 25
+    python3 -m main.pathfinder.py --max-vulns 25
     ```
