@@ -178,6 +178,10 @@ python3 pathfinder.py \
     ```bash
     python3 pathfinder.py -i saved_findings.json
     ```
+    **Load analysis results from file and ingest more data:**
+    ```bash
+    python3 pathfinder.py --input-json initial_recon.json --linpeas-txt linpeas.txt --target-host 10.10.10.123
+    ```
     **Max number of EDB/GitHub exploits to display (default: 10):**
     ```bash
     python3 pathfinder.py --max-vulns 25
