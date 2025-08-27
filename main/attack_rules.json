@@ -1,37 +1,29 @@
 [
     {
-        "name": "Found Credential - Test Against Login Services",
+        "name": "Credential Reuse on Login Service",
         "priority": 98,
         "triggers": [
             {
                 "id": 1,
                 "entity_type": "credential",
-                "name_match": {
-                    "type": "regex",
-                    "value": ".*"
-                }
+                "name_match": { "type": "regex", "value": ".*" }
             },
             {
                 "id": 2,
                 "entity_type": "service",
                 "name_match": {
                     "type": "regex",
-                    "value": "(ssh|ftp|rdp|ms-wbt-server|winrm|http|https|smb|microsoft-ds)"
+                    "value": "(ssh|ftp|rdp|ms-wbt-server|winrm|smb|microsoft-ds)"
                 }
             }
         ],
         "suggestion": {
-            "description": "A credential for user '{trigger.1.name}' was found. An open login service ('{trigger.2.name}') was also discovered. Attempt to reuse the credential.",
-            "rationale": "Credential reuse is a highly effective attack. Credentials found on one system or in one context (e.g., a web config file) should be tested against all other available login services (e.g., SSH, RDP, SMB).",
+            "description": "A credential for user '{trigger.1.name}' can be tested against the open '{trigger.2.name}' service on host {trigger.2.host}.",
+            "rationale": "Credential reuse is a highly effective attack. Credentials found in one context should be tested against all available login services on all discovered hosts.",
             "commands": [
-                "For SSH/FTP/SMB/RDP/WinRM, try direct login or password spraying tools.",
+                "Attempt to log in to the '{trigger.2.name}' service at {trigger.2.host}:{trigger.2.port} using the username '{trigger.1.name}' and password '{trigger.1.attributes.password}'.",
                 "Example with crackmapexec: crackmapexec {trigger.2.name} {trigger.2.host} -u '{trigger.1.name}' -p '{trigger.1.attributes.password}'",
-                "For HTTP/HTTPS, look for a web login form at http://{trigger.2.host}:{trigger.2.port}/ and try these credentials.",
                 "If the credential is a hash ('{trigger.1.attributes.hash}'), attempt Pass-the-Hash attacks for services like SMB and WinRM."
-            ],
-            "references": [
-                "https://attack.mitre.org/techniques/T1078/ (Valid Accounts)",
-                "https://attack.mitre.org/techniques/T1110/ (Brute Force)"
             ]
         }
     },
@@ -42,21 +34,10 @@
             {
                 "id": 1,
                 "entity_type": "credential",
-                "name_match": {
-                    "type": "regex",
-                    "value": ".*"
-                }
+                "name_match": { "type": "regex", "value": ".*" }
             },
             {
                 "id": 2,
-                "entity_type": "service",
-                "name_match": {
-                    "type": "regex",
-                    "value": "(http|https)"
-                }
-            },
-            {
-                "id": 3,
                 "entity_type": "web_content",
                 "name_match": {
                     "type": "regex",
@@ -65,16 +46,11 @@
             }
         ],
         "suggestion": {
-            "description": "A credential for user '{trigger.1.name}' was found, and a potential web login page '{trigger.3.name}' was discovered on the web server.",
-            "rationale": "Testing known credentials against discovered web application login portals is a high-impact technique for gaining initial access or escalating privileges.",
+            "description": "A credential for user '{trigger.1.name}' can be tested against the discovered web login page '{trigger.2.name}' on host {trigger.2.host}.",
+            "rationale": "Testing known credentials against discovered web application login portals is a high-impact technique for gaining initial access.",
             "commands": [
-                "Navigate to the login page to verify: http://{trigger.2.host}:{trigger.2.port}{trigger.3.name}",
-                "Attempt to log in manually with user '{trigger.1.name}' and password '{trigger.1.attributes.password}'.",
-                "For automated testing, inspect the login form's POST request and use a tool like Hydra.",
-                "Example Hydra command (YOU MUST CUSTOMIZE THE FORM DATA): hydra -l '{trigger.1.name}' -p '{trigger.1.attributes.password}' {trigger.2.host} http-post-form '/{trigger.3.name}:username=^USER^&password=^PASS^:F=Login Failed'"
-            ],
-            "references": [
-                "https://owasp.org/www-project-web-security-testing-guide/latest/4-Web_Application_Security_Testing/04-Authentication_Testing/05-Testing_for_Weak_Lock_Out_Mechanism"
+                "Navigate to the login page to verify: http://{trigger.2.host}:{trigger.2.port}{trigger.2.name}",
+                "Attempt to log in manually with user '{trigger.1.name}' and password '{trigger.1.attributes.password}'."
             ]
         }
     }

@@ -3,7 +3,8 @@ import sys
 import json
 import os
 
-from attack_path_synthesizer import AttackPathSynthesizer
+from .attack_path_synthesizer import AttackPathSynthesizer
+from .vulnerability_mapper import VulnerabilityMapper
 from parsers.active_directory.kerberos_parser import parse_getnpusers_output, parse_kerbrute_output
 from parsers.active_directory.ldapdomaindump_parser import parse_ldapdomaindump_dir
 from parsers.active_directory.sharphound_parser import parse_sharphound_dir
@@ -16,25 +17,28 @@ from parsers.initial_foothold.sqlmap_parser import parse_sqlmap_log
 from parsers.initial_foothold.whatweb_parser import parse_whatweb_json
 from parsers.privilege_escalation.linpeas_parser import parse_linpeas
 from parsers.privilege_escalation.winpeas_parser import parse_winpeas
-from vulnerability_mapper import VulnerabilityMapper
 
 # ANSI color codes for formatted output
 class C:
     RED, GREEN, YELLOW, LIGHT_BLUE, CYAN, BOLD, END = '\033[91m', '\033[92m', '\033[93m', '\033[94m', '\033[96m', '\033[1m', '\033[0m'
 
-CREDENTIALS_FILE = "credentials.json"
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CREDENTIALS_FILE = os.path.join(SCRIPT_DIR, "credentials.json")
 
 def print_banner():
-    banner = r"""
-__________          __   .__      _____ .__             .___              
-\______   \_____  _/  |_ |  |__ _/ ____\|__|  ____    __| _/ ____ _______ 
- |     ___/\__  \ \   __\|  |  \\   __\ |  | /    \  / __ |_/ __ \\_  __ \
- |    |     / __ \_|  |  |   Y  \|  |   |  ||   |  \/ /_/ |\  ___/ |  | \/
- |____|    (____  /|__|  |___|  /|__|   |__||___|  /\____ | \___  >|__|   
-                \/            \/                 \/      \/     \/        
+    """Prints a cool banner for the tool."""
+    # Using an f-string to embed the color codes. The 'r' prefix is removed,
+    # and all backslashes in the art must be escaped by doubling them (\\).
+    banner = f"""
+{C.RED}__________          __   .__      _____ .__             .___              
+\\______   \\_____  _/  |_ |  |__ _/ ____\\|__|  ____    __| _/ ____ _______ 
+ |     ___/\\__  \\ \\   __\\|  |  \\\\   __\\ |  | /    \\  / __ |_/ __ \\\\_  __ \\
+ |    |     / __ \\_|  |  |   Y  \\|  |   |  ||   |  \\/ /_/ |\\  ___/ |  | \\/
+ |____|    (____  /|__|  |___|  /|__|   |__||___|  /\\____ | \\___  >|__|   
+                \\/            \\/                 \\/      \\/     \\/        
+{C.END}
 
-
-  >> [Intelligent Reconnaissance Analysis for Pentesters] << 
+  {C.BOLD}{C.YELLOW}>> [Intelligent Reconnaissance Analysis for Pentesters] <<{C.END} 
 """
     print(banner)
 
@@ -46,7 +50,7 @@ def format_finding_display(name, entity_type):
     elif entity_type == "web_content": display_type = f"({C.LIGHT_BLUE}{entity_type}{C.END})"
     elif entity_type == "misconfiguration": display_type = f"({C.YELLOW}{entity_type}{C.END})"
     elif entity_type == "vulnerability" and "sql" in name: display_type = f"({C.BOLD}{C.RED}{entity_type}{C.END})"
-    else: display_type = f"({entity_type})"
+    else: display_type = f"({C.YELLOW}{entity_type}{C.END})"
     return display_name, display_type
 
 def filter_prioritized_findings(findings, max_vulns):
@@ -176,7 +180,7 @@ def main():
     parser_inputs = [args.nmap_xml, args.gobuster_txt, args.nikto_json, args.whatweb_json, args.enum4linux_json, args.linpeas_txt, args.winpeas_txt, args.snmp_txt, args.sharphound_dir, args.ldapdomaindump_dir, args.kerbrute_txt, args.getnpusers_hashes, args.sqlmap_log]
 
     if any(parser_inputs):
-        print(f"\n{C.BOLD}{C.CYAN}[*] Parsing new data files...{C.END}\n")
+        print(f"\n{C.BOLD}{C.CYAN}[*] Parsing new data files...{C.END}")
         
         parsers = { "Nmap": (args.nmap_xml, lambda f: parse_nmap_xml(f)), "Gobuster": (args.gobuster_txt, lambda f: parse_gobuster_output(f, target_host, args.gobuster_port, args.gobuster_mode)), "Nikto": (args.nikto_json, lambda f: parse_nikto_json(f)), "WhatWeb": (args.whatweb_json, lambda f: parse_whatweb_json(f)), "Enum4Linux-NG": (args.enum4linux_json, lambda f: parse_enum4linux_json(f, target_host)), "LinPEAS": (args.linpeas_txt, lambda f: parse_linpeas(f, target_host)), "WinPEAS": (args.winpeas_txt, lambda f: parse_winpeas(f, target_host)), "SNMP": (args.snmp_txt, lambda f: parse_snmp_output(f, target_host)), "SharpHound": (args.sharphound_dir, lambda f: parse_sharphound_dir(f)), "LDAPDomainDump": (args.ldapdomaindump_dir, lambda f: parse_ldapdomaindump_dir(f)), "Kerbrute": (args.kerbrute_txt, lambda f: parse_kerbrute_output(f, target_host)), "GetNPUsers": (args.getnpusers_hashes, lambda f: parse_getnpusers_output(f, target_host)), "SQLMap": (args.sqlmap_log, lambda f: parse_sqlmap_log(f)) }
 
@@ -185,10 +189,10 @@ def main():
                 if (name in ["Gobuster", "Enum4Linux-NG", "LinPEAS", "WinPEAS", "SNMP", "Kerbrute", "GetNPUsers"] and not target_host):
                     print(f"{C.BOLD}{C.YELLOW}[!] {name} parser requires --target-host (or domain) to be set.{C.END}")
                     continue
-                if args.verbose > 0: print(f"[*] Parsing {name}: {file_path}")
+                if args.verbose > 0: print(f"    [*] Parsing {name}: {file_path}")
                 findings_from_parser = parser_func(file_path)
                 new_raw_findings.extend(findings_from_parser)
-                if args.verbose > 0: print(f"    [+] Found {len(findings_from_parser)} raw findings from {name}.")
+                if args.verbose > 0: print(f"        [+] Found {len(findings_from_parser)} raw findings from {name}.")
     
     if not base_prioritized_findings and not new_raw_findings:
          parser.error("For analysis, at least one input file (--nmap-xml, etc.) or --input-json must be provided.")
@@ -221,26 +225,12 @@ def main():
     print(f"\n{C.BOLD}{C.CYAN}[*] Running Attack Path Synthesizer...{C.END}\n")
     suggested_paths = synthesizer.generate_attack_paths(prioritized_findings)
     
-    if not suggested_paths:
-        print(f"\n{C.BOLD}{C.YELLOW}[!] No specific attack paths were synthesized! Displaying Prioritized Findings as Fallback {C.END}")
-        filtered_list = filter_prioritized_findings(prioritized_findings, args.max_vulns)
-        filtered_list.sort(key=lambda x: x.get("attributes", {}).get("score", 0), reverse=True)
-        for i, p_finding in enumerate(filtered_list):
-            score = p_finding.get("attributes", {}).get("score", "N/A")
-            display_name, display_type = format_finding_display(p_finding.get('name'), p_finding.get('entity_type'))
-            print(f"\n[{i+1}] [Score: {score}] {display_name} {display_type}")
-            print(f"    Host: {p_finding.get('host')}, Port: {p_finding.get('port')}")
-            attributes = p_finding.get("attributes", {})
-            if attributes.get("metasploit_module"):
-                print(f"    {C.BOLD}Metasploit Module:{C.END} {attributes['metasploit_module']}")
-            if attributes.get("url"):
-                 print(f"    {C.BOLD}URL:{C.END} {attributes['url']}")
-    else:
-        print(f"\n--- Pathfinder has identified {len(suggested_paths)} potential attack path(s)! ---")
+    if suggested_paths:
+        print(f"{C.BOLD}{C.YELLOW}--- Pathfinder has identified {len(suggested_paths)} potential attack path(s)! ---{C.END}")
         for i, path in enumerate(suggested_paths):
             print("\n" + "="*80)
-            print(f"ATTACK PATH #{i+1}")
-            print(f"Name:       {path['name']} [Priority: {path['priority']}]")
+            print(f"{C.BOLD}ATTACK PATH #{i+1}{C.END}")
+            print(f"Name:       {C.BOLD}{path['name']}{C.END} {C.YELLOW}{C.BOLD}[Priority: {path['priority']}]{C.END}")
             print(f"Target:     {path['host']}")
             print("="*80)
             print(f"\n  [{C.BOLD}+{C.END}] Description:\n      {path['suggestion']['description']}")
@@ -254,10 +244,41 @@ def main():
             if args.verbose > 0 and path.get('evidence'):
                  print(f"\n  [{C.BOLD}+{C.END}] Matched Evidence:")
                  for ev in path['evidence']: print(f"      - {ev}")
-                 for finding in path.get('evidence_findings', []):
-                     if finding.get("attributes", {}).get("metasploit_module"):
-                         print(f"        {C.BOLD}Metasploit Module:{C.END} {finding['attributes']['metasploit_module']}")
         print("\n" + "="*80)
+    else:
+        print(f"\n{C.BOLD}{C.YELLOW}[!] No specific attack paths were synthesized from the findings.{C.END}")
+
+    # Step 2: Always display the list of individual prioritized findings afterwards.
+
+    total_exploit_count = sum(1 for f in prioritized_findings if f.get("source_tool") in ["searchsploit_mapper", "github_exploit_mapper"])
+    
+    filtered_list = filter_prioritized_findings(prioritized_findings, args.max_vulns)
+    
+    displayed_exploit_count = 0
+    displayed_other_count = 0
+    for f in filtered_list:
+        if f.get("source_tool") in ["searchsploit_mapper", "github_exploit_mapper"]:
+            displayed_exploit_count += 1
+        else:
+            displayed_other_count += 1
+    
+    total_displayed = len(filtered_list)
+        
+    print(f"\n{C.BOLD}{C.YELLOW}--- Total Findings: {total_displayed} (Public Exploits limited to --max-vulns, total discovered: {total_exploit_count}):{C.END}")
+
+    filtered_list = filter_prioritized_findings(prioritized_findings, args.max_vulns)
+    filtered_list.sort(key=lambda x: x.get("attributes", {}).get("score", 0), reverse=True)
+    
+    for i, p_finding in enumerate(filtered_list):
+        score = p_finding.get("attributes", {}).get("score", "N/A")
+        display_name, display_type = format_finding_display(p_finding.get('name'), p_finding.get('entity_type'))
+        print(f"\n[{i+1}] [Score: {score}] {display_name} {display_type}")
+        print(f"    Host: {p_finding.get('host')}, Port: {p_finding.get('port')}")
+        attributes = p_finding.get("attributes", {})
+        if attributes.get("metasploit_module"):
+            print(f"    {C.BOLD}Metasploit Module:{C.END} {attributes['metasploit_module']}")
+        if attributes.get("url"):
+             print(f"    {C.BOLD}URL:{C.END} {attributes['url']}")
 
 if __name__ == "__main__":
     main()
