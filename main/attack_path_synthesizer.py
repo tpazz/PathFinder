@@ -4,7 +4,9 @@ import itertools
 from copy import deepcopy
 import os
 
+# Get the absolute path to the directory where this script is located.
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Build a full, unambiguous path to the rules file, ensuring it's always found.
 DEFAULT_RULES_FILE = os.path.join(SCRIPT_DIR, "attack_rules.json")
 
 class C:
@@ -23,6 +25,7 @@ class AttackPathSynthesizer:
         try:
             with open(self.rules_file_path, 'r') as f:
                 content = f.read()
+                # Handle case where the JSON file is empty.
                 if not content: return []
                 return json.loads(content)
         except FileNotFoundError:
@@ -85,6 +88,7 @@ class AttackPathSynthesizer:
         match_type = name_match_rule.get('type', 'exact')
         match_value = name_match_rule.get('value')
         finding_name = finding.get('name', '')
+        # Only perform match if a value is specified in the rule.
         if match_value:
             if match_type == 'exact' and finding_name.lower() != match_value.lower(): return False
             if match_type == 'contains' and match_value.lower() not in finding_name.lower(): return False
@@ -94,33 +98,33 @@ class AttackPathSynthesizer:
     def _format_suggestion(self, suggestion_template, matched_findings):
         """
         Replaces placeholders in the suggestion text with actual finding data,
-        now with support for nested attributes like 'attributes.password'.
+        with support for nested attributes like 'attributes.password'.
         """
         formatted_suggestion = deepcopy(suggestion_template)
         text_to_format = json.dumps(formatted_suggestion)
         
-        # <<< THIS IS THE UPGRADED TEMPLATING LOGIC >>>
-        # Regex now finds patterns like {trigger.ID.key} or {trigger.ID.key.subkey}
+        # Regex finds all valid placeholders, e.g., {trigger.1.name}, {trigger.2.attributes.password}
         for placeholder in re.findall(r'(\{trigger\.\d+\.[\w\.]+\})', text_to_format):
-            # Strip the curly braces for processing: '{trigger.1.attributes.password}' -> 'trigger.1.attributes.password'
+            # Strip braces: '{trigger.1.attributes.password}' -> 'trigger.1.attributes.password'
             path_str = placeholder.strip('{}')
             parts = path_str.split('.')
             
             try:
-                # parts are ['trigger', '1', 'attributes', 'password']
+                # parts[0] is 'trigger', parts[1] is the trigger ID (e.g., '1')
                 trigger_id = int(parts[1])
+                # The corresponding finding is at index trigger_id - 1
                 finding = matched_findings[trigger_id - 1]
                 
-                # Start with the finding object and walk down the path
+                # Start with the finding object and "walk down" the key path.
                 current_value = finding
-                for key in parts[2:]: # Walk through ['attributes', 'password']
+                for key in parts[2:]: # e.g., walk through ['attributes', 'password']
                     current_value = current_value[key]
                 
-                # Replace the placeholder with the final value
+                # Replace the placeholder with the final value found.
                 text_to_format = text_to_format.replace(placeholder, str(current_value))
 
             except (IndexError, KeyError, TypeError):
-                # If any key is not found, leave the placeholder as-is for debugging
+                # If a key is not found (e.g., rule asks for a nonexistent attribute), warn the user.
                 print(f"{C.BOLD}{C.YELLOW}[!] Warning: Could not resolve placeholder '{placeholder}'. Check your rule syntax.{C.END}")
 
         return json.loads(text_to_format)
@@ -135,8 +139,10 @@ class AttackPathSynthesizer:
         for rule in self.rules:
             triggers = rule['triggers']
             candidate_lists = []
+            # For each trigger in the rule, find all matching findings from the main list.
             for trigger in triggers:
                 candidates = [f for f in prioritized_findings if self._check_finding_against_trigger(f, trigger)]
+                # If any trigger has zero matching candidates, this rule cannot be satisfied.
                 if not candidates:
                     candidate_lists = []
                     break
@@ -144,25 +150,27 @@ class AttackPathSynthesizer:
             
             if not candidate_lists: continue
 
+            # Create every possible combination of candidates for the triggers.
+            # e.g., if trigger 1 has 2 candidates (A,B) and trigger 2 has 3 (C,D,E),
+            # this creates combinations (A,C), (A,D), (A,E), (B,C), (B,D), (B,E).
             for combination in itertools.product(*candidate_lists):
-                # Upgraded relationship check to make credentials host-agnostic.
+                # This special logic makes credentials host-agnostic.
                 
-                # 1. Identify all non-credential findings in the combination
+                # 1. Separate findings that must be on a specific host from those that don't (like creds).
                 host_specific_findings = [f for f in combination if f.get('entity_type') != 'credential']
                 
-                # 2. If there are host-specific findings, they must ALL be on the SAME host.
+                # 2. If there are any host-specific findings, they must all be on the SAME host.
                 if host_specific_findings:
                     first_host = host_specific_findings[0].get('host')
-                    # Skip if host-specific findings are on different hosts
+                    # If findings are on different hosts (e.g., a web page on host A and a service on host B), this combination is invalid.
                     if not all(f.get('host') == first_host for f in host_specific_findings):
                         continue 
                     target_host = first_host
                 else:
-                    # Handles rules that might only use credentials or other global findings.
+                    # This handles rules that might only use credentials or other global findings.
                     target_host = "GLOBAL"
 
-                # 3. If this point is reached, the combination is valid for synthesis.
-                
+                # 3. If the combination is valid, generate the final suggestion.
                 if 'suggestion' in rule:
                     suggestion = self._format_suggestion(rule['suggestion'], combination)
                     suggested_paths.append({
@@ -173,5 +181,6 @@ class AttackPathSynthesizer:
                         "evidence": [f"Trigger {i+1}: {f.get('name')} ({f.get('entity_type')})" for i, f in enumerate(combination)]
                     })
 
+        # Sort final paths by priority, so the most critical ones appear first.
         suggested_paths.sort(key=lambda x: x.get('priority', 0), reverse=True)
         return suggested_paths

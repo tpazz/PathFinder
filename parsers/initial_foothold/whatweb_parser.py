@@ -1,7 +1,8 @@
 import json
 from urllib.parse import urlparse
 
-# A list of whatweb plugins that are informational and not a 'software_product'
+# A list of WhatWeb plugins that are purely informational (like HTTP headers)
+# and do not represent a distinct software product. We filter these out to reduce noise.
 PLUGINS_TO_IGNORE = [
     'HTTPServer', 'HttpOnly', 'Strict-Transport-Security', 'X-Frame-Options',
     'X-XSS-Protection', 'X-Content-Type-Options', 'Country', 'IP', 'Cookies',
@@ -29,12 +30,14 @@ def parse_whatweb_json(json_file_path):
         print(f"[!] Error: Could not decode JSON from '{json_file_path}'.")
         return findings
 
+    # The WhatWeb JSON output is a list of results, one for each target scanned.
     for target_result in data:
         try:
+            # Parse the target URL to reliably extract the hostname and port.
             parsed_url = urlparse(target_result.get('target', ''))
             host = parsed_url.hostname
             port = parsed_url.port
-            # Handle default ports if not specified in the URL
+            # If a port is not specified in the URL, infer the default based on the scheme (http/https).
             if not port:
                 if parsed_url.scheme == 'https':
                     port = 443
@@ -43,16 +46,19 @@ def parse_whatweb_json(json_file_path):
             if not host:
                 continue
         except (ValueError, AttributeError):
-            continue # Skip if the target URL is malformed
+            continue # Skip this target if the URL is malformed.
 
+        # Iterate through all the plugins that WhatWeb identified for the target.
         for plugin_name, plugin_data in target_result.get("plugins", {}).items():
+            # Skip any plugins that are on our ignore list.
             if plugin_name in PLUGINS_TO_IGNORE:
                 continue
 
-            # WhatWeb version is often a list, take the first one.
+            # WhatWeb's version field is often a list, so we just take the first element.
             version = plugin_data.get("version", [None])[0]
 
-            # Create a clean attributes dictionary, removing version if we already have it
+            # Create a clean attributes dictionary, dumping all other plugin data into it.
+            # We remove 'version' since it's already a top-level key in our finding object.
             attributes = {k: v for k, v in plugin_data.items() if k != 'version'}
 
             finding = {

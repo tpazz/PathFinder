@@ -13,6 +13,7 @@ def parse_snmp_output(file_path, target_host):
     """
     findings = []
     try:
+        # Read the entire file content at once, as we'll use regex on the whole block.
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
     except FileNotFoundError:
@@ -22,7 +23,8 @@ def parse_snmp_output(file_path, target_host):
         print(f"[!] An unexpected error occurred while parsing SNMP: {e}")
         return []
 
-    # System Information
+    # Use regex to find the "System information" section and capture its content.
+    # re.DOTALL allows '.' to match newline characters, capturing multi-line blocks.
     sys_info_match = re.search(r"System information:\s*\n(.*?)\n\n", content, re.DOTALL)
     if sys_info_match:
         findings.append({
@@ -33,9 +35,10 @@ def parse_snmp_output(file_path, target_host):
             "attributes": {"description": sys_info_match.group(1).strip()}
         })
 
-    # User Accounts
+    # Find the "User accounts" section.
     user_accounts_match = re.search(r"User accounts:\s*\n(.*?)\n\n", content, re.DOTALL)
     if user_accounts_match:
+        # Split the captured block by newlines and create a 'user' finding for each one.
         for user_line in user_accounts_match.group(1).strip().split('\n'):
             findings.append({
                 "host": target_host, "port": 161, "source_tool": "snmp",
@@ -45,11 +48,11 @@ def parse_snmp_output(file_path, target_host):
                 "attributes": {"source": "SNMP enumeration"}
             })
 
-    # Running Processes
+    # Find the "Running processes" section.
     processes_match = re.search(r"Running processes:\s*\n(.*?)\n\n", content, re.DOTALL)
     if processes_match:
         for process_line in processes_match.group(1).strip().split('\n'):
-            # Simple process name extraction, might need refinement
+            # A simple heuristic to extract the process name, usually the last word on the line.
             process_name = process_line.strip().split()[-1]
             findings.append({
                 "host": target_host, "port": 161, "source_tool": "snmp",
@@ -59,10 +62,10 @@ def parse_snmp_output(file_path, target_host):
                 "attributes": {"description": process_line.strip(), "source": "SNMP enumeration"}
             })
 
-    # Network Interfaces
+    # Find the "Network interfaces" section.
     interfaces_match = re.search(r"Network interfaces:\s*\n(.*?)\n\n", content, re.DOTALL)
     if interfaces_match:
-        # Just log this as a single info leak for now
+        # Treat the entire block of interface data as a single information leak finding.
         findings.append({
             "host": target_host, "port": 161, "source_tool": "snmp",
             "entity_type": "information_leak",

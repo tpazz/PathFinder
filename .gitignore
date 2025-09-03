@@ -1,1 +1,12 @@
 data/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.env
+.venv/
+venv/
+env/
+.vscode/
+.idea/

@@ -3,6 +3,7 @@ import sys
 import json
 import os
 
+# Import all custom parser modules and the core logic components.
 from .attack_path_synthesizer import AttackPathSynthesizer
 from .vulnerability_mapper import VulnerabilityMapper
 from parsers.active_directory.kerberos_parser import parse_getnpusers_output, parse_kerbrute_output
@@ -22,13 +23,13 @@ from parsers.privilege_escalation.winpeas_parser import parse_winpeas
 class C:
     RED, GREEN, YELLOW, LIGHT_BLUE, CYAN, BOLD, END = '\033[91m', '\033[92m', '\033[93m', '\033[94m', '\033[96m', '\033[1m', '\033[0m'
 
+# Build a full, unambiguous path to the credentials file relative to this script's location.
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CREDENTIALS_FILE = os.path.join(SCRIPT_DIR, "credentials.json")
 
 def print_banner():
     """Prints a cool banner for the tool."""
-    # Using an f-string to embed the color codes. The 'r' prefix is removed,
-    # and all backslashes in the art must be escaped by doubling them (\\).
+    # Using an f-string to embed color codes; backslashes must be escaped (\\).
     banner = f"""
 {C.RED}__________          __   .__      _____ .__             .___              
 \\______   \\_____  _/  |_ |  |__ _/ ____\\|__|  ____    __| _/ ____ _______ 
@@ -38,11 +39,13 @@ def print_banner():
                 \\/            \\/                 \\/      \\/     \\/        
 {C.END}
 
-  {C.BOLD}{C.YELLOW}>> [Intelligent Reconnaissance Analysis for Pentesters] <<{C.END} 
+  {C.BOLD}{C.YELLOW}>> [Intelligent Reconnaissance Analysis for Pentesters] <<{C.END}
+  {C.BOLD}{C.YELLOW}         >> [By {C.END}{C.BOLD}{C.RED}tpazz {C.END}{C.BOLD}{C.YELLOW}-{C.END}{C.BOLD}{C.GREEN} Green Lemon Company{C.END}{C.BOLD}{C.YELLOW}] << {C.END}
 """
     print(banner)
 
 def format_finding_display(name, entity_type):
+    """Applies color formatting to the name and entity_type of a finding."""
     display_name = name
     if "EDB-ID" in display_name: display_name = display_name.replace("EDB-ID", f"{C.BOLD}{C.RED}EDB-ID{C.END}")
     if "GitHub Exploit" in display_name: display_name = display_name.replace("GitHub Exploit", f"{C.BOLD}{C.GREEN}GitHub Exploit{C.END}")
@@ -50,24 +53,31 @@ def format_finding_display(name, entity_type):
     elif entity_type == "web_content": display_type = f"({C.LIGHT_BLUE}{entity_type}{C.END})"
     elif entity_type == "misconfiguration": display_type = f"({C.YELLOW}{entity_type}{C.END})"
     elif entity_type == "vulnerability" and "sql" in name: display_type = f"({C.BOLD}{C.RED}{entity_type}{C.END})"
+    # Fallback color for any other entity type.
     else: display_type = f"({C.YELLOW}{entity_type}{C.END})"
     return display_name, display_type
 
 def filter_prioritized_findings(findings, max_vulns):
+    """Filters the list of prioritized findings to limit the number of EDB/GitHub results."""
     edb, github, other = [], [], []
+    # Separate findings into exploit categories and "other".
     for f in findings:
         source = f.get("source_tool")
         if source == "searchsploit_mapper": edb.append(f)
         elif source == "github_exploit_mapper": github.append(f)
         else: other.append(f)
+    # Sort each exploit list by score to ensure we keep the most important ones.
     edb.sort(key=lambda x: x.get("attributes", {}).get("score", 0), reverse=True)
     github.sort(key=lambda x: x.get("attributes", {}).get("score", 0), reverse=True)
+    # Return all "other" findings plus the top N exploits from each category.
     return other + edb[:max_vulns] + github[:max_vulns]
 
 def deduplicate_findings(findings_list):
+    """Removes duplicate findings from a list based on host, port, name, and type."""
     seen = set()
     unique_findings = []
     for finding in findings_list:
+        # Create a unique but stable identifier for each finding.
         identifier = (finding.get('host'), finding.get('port'), finding.get('name'), finding.get('entity_type'))
         if identifier not in seen:
             seen.add(identifier)
@@ -82,6 +92,7 @@ def manage_credentials():
         try:
             with open(CREDENTIALS_FILE, 'r') as f:
                 content = f.read()
+                # Handle case where credentials file is empty.
                 if content: creds = json.loads(content)
         except json.JSONDecodeError:
             print(f"{C.BOLD}{C.YELLOW}[!] Warning: {CREDENTIALS_FILE} is corrupted. Starting fresh.{C.END}")
@@ -144,7 +155,7 @@ def main():
     io_group.add_argument("-o", "--output-json", help="Save the final prioritized findings to a JSON file.")
 
     lg = parser.add_argument_group('Intelligence Management Arguments')
-    lg.add_argument("--learn", action="store_true", help="Enter interactive mode to teach Pathfinder a new attack path.")
+    lg.add_argument("--learn", action="store_true", help="Enter interactive mode to teach a new attack path.")
     lg.add_argument("--add-cred", action="store_true", help="Enter interactive mode to manually add a found credential.")
 
     gg = parser.add_argument_group('General Arguments')
@@ -155,6 +166,7 @@ def main():
     synthesizer = AttackPathSynthesizer()
     prioritized_findings = []
 
+    # Handle standalone modes like --learn or --add-cred first.
     if args.learn:
         synthesizer.learn_new_path_interactive()
         sys.exit(0)
@@ -166,6 +178,7 @@ def main():
     base_prioritized_findings = []
     new_raw_findings = []
     
+    # If a previous session is provided, load its findings first.
     if args.input_json:
         try:
             print(f"\n{C.BOLD}{C.CYAN}[*] Loading base findings from file: {args.input_json}{C.END}")
@@ -179,8 +192,9 @@ def main():
     target_host = args.target_host or args.gobuster_host
     parser_inputs = [args.nmap_xml, args.gobuster_txt, args.nikto_json, args.whatweb_json, args.enum4linux_json, args.linpeas_txt, args.winpeas_txt, args.snmp_txt, args.sharphound_dir, args.ldapdomaindump_dir, args.kerbrute_txt, args.getnpusers_hashes, args.sqlmap_log]
 
+    # If new scan files are provided, parse them.
     if any(parser_inputs):
-        print(f"\n{C.BOLD}{C.CYAN}[*] Parsing new data files...{C.END}")
+        print(f"\n{C.BOLD}{C.CYAN}[*] Parsing new data files...{C.END}\n")
         
         parsers = { "Nmap": (args.nmap_xml, lambda f: parse_nmap_xml(f)), "Gobuster": (args.gobuster_txt, lambda f: parse_gobuster_output(f, target_host, args.gobuster_port, args.gobuster_mode)), "Nikto": (args.nikto_json, lambda f: parse_nikto_json(f)), "WhatWeb": (args.whatweb_json, lambda f: parse_whatweb_json(f)), "Enum4Linux-NG": (args.enum4linux_json, lambda f: parse_enum4linux_json(f, target_host)), "LinPEAS": (args.linpeas_txt, lambda f: parse_linpeas(f, target_host)), "WinPEAS": (args.winpeas_txt, lambda f: parse_winpeas(f, target_host)), "SNMP": (args.snmp_txt, lambda f: parse_snmp_output(f, target_host)), "SharpHound": (args.sharphound_dir, lambda f: parse_sharphound_dir(f)), "LDAPDomainDump": (args.ldapdomaindump_dir, lambda f: parse_ldapdomaindump_dir(f)), "Kerbrute": (args.kerbrute_txt, lambda f: parse_kerbrute_output(f, target_host)), "GetNPUsers": (args.getnpusers_hashes, lambda f: parse_getnpusers_output(f, target_host)), "SQLMap": (args.sqlmap_log, lambda f: parse_sqlmap_log(f)) }
 
@@ -189,21 +203,23 @@ def main():
                 if (name in ["Gobuster", "Enum4Linux-NG", "LinPEAS", "WinPEAS", "SNMP", "Kerbrute", "GetNPUsers"] and not target_host):
                     print(f"{C.BOLD}{C.YELLOW}[!] {name} parser requires --target-host (or domain) to be set.{C.END}")
                     continue
-                if args.verbose > 0: print(f"    [*] Parsing {name}: {file_path}")
+                if args.verbose > 0: print(f"[*] Parsing {name}: {file_path}")
                 findings_from_parser = parser_func(file_path)
                 new_raw_findings.extend(findings_from_parser)
-                if args.verbose > 0: print(f"        [+] Found {len(findings_from_parser)} raw findings from {name}.")
+                if args.verbose > 0: print(f"    [+] Found {len(findings_from_parser)} raw findings from {name}.")
     
     if not base_prioritized_findings and not new_raw_findings:
          parser.error("For analysis, at least one input file (--nmap-xml, etc.) or --input-json must be provided.")
 
     newly_prioritized_findings = []
+    # Only run the heavy mapping process if new raw data was parsed.
     if new_raw_findings:
         print(f"\n{C.BOLD}{C.CYAN}[*] Running Vulnerability Mapper on new findings...{C.END}\n")
         vuln_mapper = VulnerabilityMapper()
         newly_prioritized_findings = vuln_mapper.map_and_prioritize(new_raw_findings)
         if args.verbose > 0: print(f"    [+] Mapper prioritized {len(newly_prioritized_findings)} of the new findings.")
 
+    # Combine findings from a previous session with newly processed ones.
     combined_findings = base_prioritized_findings + newly_prioritized_findings
     prioritized_findings = deduplicate_findings(combined_findings)
     
@@ -214,6 +230,7 @@ def main():
         print(f"\n{C.BOLD}{C.YELLOW}[!] No findings to process. Exiting.{C.END}")
         sys.exit(0)
 
+    # If requested, save the final, combined list of findings to a file.
     if args.output_json:
         try:
             print(f"\n{C.BOLD}{C.CYAN}[*] Saving prioritized findings to: {args.output_json}{C.END}")
@@ -225,6 +242,7 @@ def main():
     print(f"\n{C.BOLD}{C.CYAN}[*] Running Attack Path Synthesizer...{C.END}\n")
     suggested_paths = synthesizer.generate_attack_paths(prioritized_findings)
     
+    # First, display any high-level synthesized attack paths.
     if suggested_paths:
         print(f"{C.BOLD}{C.YELLOW}--- Pathfinder has identified {len(suggested_paths)} potential attack path(s)! ---{C.END}")
         for i, path in enumerate(suggested_paths):
@@ -248,25 +266,15 @@ def main():
     else:
         print(f"\n{C.BOLD}{C.YELLOW}[!] No specific attack paths were synthesized from the findings.{C.END}")
 
-    # Step 2: Always display the list of individual prioritized findings afterwards.
-
+    # Then, always display the list of individual prioritized findings.
     total_exploit_count = sum(1 for f in prioritized_findings if f.get("source_tool") in ["searchsploit_mapper", "github_exploit_mapper"])
-    
     filtered_list = filter_prioritized_findings(prioritized_findings, args.max_vulns)
-    
-    displayed_exploit_count = 0
-    displayed_other_count = 0
-    for f in filtered_list:
-        if f.get("source_tool") in ["searchsploit_mapper", "github_exploit_mapper"]:
-            displayed_exploit_count += 1
-        else:
-            displayed_other_count += 1
-    
+    displayed_exploit_count = sum(1 for f in filtered_list if f.get("source_tool") in ["searchsploit_mapper", "github_exploit_mapper"])
+    displayed_other_count = len(filtered_list) - displayed_exploit_count
     total_displayed = len(filtered_list)
         
     print(f"\n{C.BOLD}{C.YELLOW}--- Total Findings: {total_displayed} (Public Exploits limited to --max-vulns, total discovered: {total_exploit_count}):{C.END}")
 
-    filtered_list = filter_prioritized_findings(prioritized_findings, args.max_vulns)
     filtered_list.sort(key=lambda x: x.get("attributes", {}).get("score", 0), reverse=True)
     
     for i, p_finding in enumerate(filtered_list):

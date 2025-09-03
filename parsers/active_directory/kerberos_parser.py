@@ -14,6 +14,7 @@ def parse_kerbrute_output(file_path, domain):
     findings = []
     try:
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            # Kerbrute output is a simple list of usernames, one per line.
             for line in f:
                 username = line.strip()
                 if username:
@@ -39,12 +40,13 @@ def parse_getnpusers_output(file_path, domain):
         list: A list of 'privilege_escalation' finding dictionaries.
     """
     findings = []
-    # Regex to capture the username from a TGS hash line: $krb5asrep$23$user@DOMAIN:HEXDATA
+    # Regex to capture the username from a hash line, e.g., $krb5asrep$23$user@DOMAIN:HEXDATA
     hash_pattern = re.compile(r'^\$krb5asrep\$\d+\$(.*?)@.*?:.*')
     try:
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             for line in f:
                 match = hash_pattern.match(line.strip())
+                # If a line matches the hash format, extract the username.
                 if match:
                     username = match.group(1)
                     findings.append({

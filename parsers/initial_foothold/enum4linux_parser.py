@@ -22,7 +22,7 @@ def parse_enum4linux_json(json_file_path, target_host):
         print(f"[!] Error: Could not decode JSON from '{json_file_path}'.")
         return findings
 
-    # Users
+    # Extract user accounts discovered via RPC.
     for user in data.get('users', []):
         findings.append({
             "host": target_host, "port": 445, "source_tool": "enum4linux-ng",
@@ -30,7 +30,7 @@ def parse_enum4linux_json(json_file_path, target_host):
             "attributes": {"rid": user.get('rid')}
         })
     
-    # Groups
+    # Extract group memberships.
     for group in data.get('groups', []):
         findings.append({
             "host": target_host, "port": 445, "source_tool": "enum4linux-ng",
@@ -38,25 +38,24 @@ def parse_enum4linux_json(json_file_path, target_host):
             "attributes": {"rid": group.get('rid')}
         })
 
-    # Shares
+    # Extract available SMB shares.
     for share in data.get('shares', []):
-        # We can try to infer permissions if available in future versions
         findings.append({
             "host": target_host, "port": 445, "source_tool": "enum4linux-ng",
             "entity_type": "share", "name": share.get('name'), "version": None,
             "attributes": {"comment": share.get('comment'), "type": share.get('type')}
         })
         
-    # Password Policy
+    # Extract the domain password policy.
     passpol = data.get('passpol')
     if passpol:
         findings.append({
             "host": target_host, "port": 445, "source_tool": "enum4linux-ng",
             "entity_type": "misconfiguration", "name": "password_policy_details", "version": None,
-            "attributes": passpol # Dump the whole policy into attributes
+            "attributes": passpol # Dump the entire policy object into attributes for context.
         })
         
-    # OS Info
+    # Extract detailed OS information.
     os_info = data.get('osinfo')
     if os_info:
         os_name = f"{os_info.get('os_name', '')} {os_info.get('os_version', '')}".strip()

@@ -6,13 +6,14 @@ def parse_sqlmap_log(file_path):
     Parses a sqlmap log file to find confirmed injectable parameters.
 
     Args:
-        file_path (str): Path to the sqlmap 'log' file.
+        file_path (str): Path to the sqlmap 'log' file from its output directory.
 
     Returns:
         list: A list of 'vulnerability' finding dictionaries for each injectable parameter.
     """
     findings = []
     try:
+        # Read the entire log file content at once for multi-line regex searching.
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
     except FileNotFoundError:
@@ -22,26 +23,29 @@ def parse_sqlmap_log(file_path):
         print(f"[!] An unexpected error occurred while parsing sqlmap log: {e}")
         return []
 
-    # Regex to find all confirmed vulnerable parameters. Captures method, name, and position.
+    # Regex to find the high-confidence line that confirms a vulnerability.
     # Example: "[INFO] GET parameter 'id' is vulnerable"
     vuln_pattern = re.compile(r"\[INFO\] (GET|POST|URI|HEADER) parameter '([^']+)' is vulnerable")
     
-    # Find the target URL, usually one of the first lines
+    # Extract contextual information from the log file to enrich the finding.
+    # Find the target URL, usually one of the first lines.
     target_url_match = re.search(r"\[INFO\] testing '(\S+)'", content)
     target_url = target_url_match.group(1) if target_url_match else "http://UNKNOWN_HOST"
 
-    # Find the identified DBMS
+    # Find the identified Database Management System (DBMS).
     dbms_match = re.search(r"back-end DBMS is '([^']+)'", content)
     dbms = dbms_match.group(1) if dbms_match else None
     
-    # Find the identified injection technique
+    # Find the identified injection technique(s).
     technique_match = re.search(r"following injection techniques are supported: (.*)", content)
     technique = technique_match.group(1) if technique_match else None
 
+    # Find all occurrences of vulnerable parameters in the log.
     vulnerable_params = vuln_pattern.findall(content)
 
     for method, parameter_name in vulnerable_params:
         try:
+            # Parse the target URL to extract the hostname and port.
             parsed_url = urlparse(target_url)
             host = parsed_url.hostname
             port = parsed_url.port or (443 if parsed_url.scheme == 'https' else 80)

@@ -1,13 +1,15 @@
 import re
 
-# Regex to find and remove all ANSI escape codes.
+# General regex to find and remove all ANSI escape codes to get a clean text line.
 ANSI_ESCAPE_PATTERN = re.compile(r'\x1b\[[0-9;]*[mK]')
 
-# Regex to specifically find the "red on yellow" signature for PE vectors.
-# Looks for codes like [31;43m or [1;31;43m etc.
+# Specific regex to find the "red text on yellow background" signature that LinPEAS
+# uses for "95% pwnable" privilege escalation vectors.
+# It looks for the color codes for red (31) and yellow background (43) appearing in any order.
 PE_COLOR_SIGNATURE = re.compile(r'\x1b\[[0-9;]*31[0-9;]*m.*\x1b\[[0-9;]*43[0-9;]*m|\x1b\[[0-9;]*43[0-9;]*m.*\x1b\[[0-9;]*31[0-9;]*m')
 
-# Keywords for secondary PE vector detection (case-insensitive)
+# A dictionary of keywords for a secondary, broader search for PE vectors.
+# Maps a regex pattern to a standardized finding name.
 LINUX_PE_KEYWORDS = {
     "suid": "suid_binary_found",
     "guid": "guid_binary_found",
@@ -33,16 +35,18 @@ def parse_linpeas(file_path, target_host):
         list: A list of 'privilege_escalation' finding dictionaries.
     """
     findings = []
-    found_lines = set() # To avoid duplicate findings from color and keyword
+    # Use a set to track clean lines we've already processed to avoid creating duplicate findings.
+    found_lines = set()
 
     try:
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             for line in f:
+                # Create a clean version of the line for keyword matching and storing.
                 clean_line = ANSI_ESCAPE_PATTERN.sub('', line).strip()
                 if not clean_line or len(clean_line) < 5:
                     continue
 
-                # Primary Method: Check for "red on yellow" color signature
+                # Primary Method: Check the raw line for the "red on yellow" color signature.
                 if PE_COLOR_SIGNATURE.search(line):
                     if clean_line in found_lines:
                         continue
@@ -59,13 +63,14 @@ def parse_linpeas(file_path, target_host):
                         }
                     })
                     found_lines.add(clean_line)
-                    continue # Prioritize color findings
+                    # Prioritize the color-based finding and skip keyword checks for this line.
+                    continue
 
-                # Secondary Method: Check for keywords
+                # Secondary Method: If no color match, check the clean line for keywords.
                 for keyword, vector_name in LINUX_PE_KEYWORDS.items():
                     if re.search(keyword, clean_line, re.IGNORECASE):
                         if clean_line in found_lines:
-                            break # Already found, don't re-add
+                            break # Line was already processed (e.g., as a color find), so skip.
                         
                         findings.append({
                             "host": target_host, "port": None, "source_tool": "linpeas",
@@ -79,7 +84,8 @@ def parse_linpeas(file_path, target_host):
                             }
                         })
                         found_lines.add(clean_line)
-                        break # Move to next line after first keyword match
+                        # Once a keyword is matched, we're done with this line.
+                        break
     except FileNotFoundError:
         print(f"[!] Error: LinPEAS output file not found at {file_path}")
     except Exception as e:
