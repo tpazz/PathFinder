@@ -165,7 +165,7 @@ python3 -m main.pathfinder.py \
 ```
 
 ### Utility Commands
-*   ** Add GitHub token for more requests:**
+*   **Add GitHub token for more requests:**
     ```bash
     export GITHUB_TOKEN="ghp_YourLongGitHubPersonalAccessTokenHere"
     ```
