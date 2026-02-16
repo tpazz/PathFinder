@@ -9,6 +9,9 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # Build a full, unambiguous path to the rules file, ensuring it's always found.
 DEFAULT_RULES_FILE = os.path.join(SCRIPT_DIR, "attack_rules.json")
 
+VALID_HOST_SCOPES = {"same_host", "any_host"}
+VALID_TRIGGER_HOST_SCOPES = {"same_host", "any_host"}
+
 class C:
     YELLOW = '\033[93m'
     CYAN = '\033[96m'
@@ -21,13 +24,76 @@ class AttackPathSynthesizer:
         self.rules = self._load_rules()
         print(f"{C.BOLD}{C.CYAN}[*] Attack Path Synthesizer initialized with {len(self.rules)} rules from {self.rules_file_path}{C.END}")
 
+    def _extract_placeholders(self, suggestion):
+        if not suggestion:
+            return []
+        serialized = json.dumps(suggestion)
+        return re.findall(r'(\{trigger\.\d+\.[\w\.]+\})', serialized)
+
+    def _validate_rule_structure(self, rule):
+        if not isinstance(rule, dict):
+            return False, "Rule entry is not an object"
+
+        required = ["name", "priority", "triggers", "suggestion"]
+        missing = [field for field in required if field not in rule]
+        if missing:
+            return False, f"Missing required rule field(s): {', '.join(missing)}"
+
+        triggers = rule.get("triggers", [])
+        if not isinstance(triggers, list) or not triggers:
+            return False, "Rule 'triggers' must be a non-empty list"
+
+        trigger_ids = set()
+        for trigger in triggers:
+            trigger_id = trigger.get("id")
+            entity_type = trigger.get("entity_type")
+            if not isinstance(trigger_id, int):
+                return False, f"Trigger has invalid 'id': {trigger_id}"
+            if trigger_id in trigger_ids:
+                return False, f"Duplicate trigger id found: {trigger_id}"
+            trigger_ids.add(trigger_id)
+
+            if not isinstance(entity_type, str) or not entity_type.strip():
+                return False, f"Trigger {trigger_id} has invalid 'entity_type'"
+
+            trigger_scope = trigger.get("host_scope", "same_host")
+            if trigger_scope not in VALID_TRIGGER_HOST_SCOPES:
+                return False, f"Trigger {trigger_id} has invalid host_scope '{trigger_scope}'"
+
+        rule_scope = rule.get("host_scope", "same_host")
+        if rule_scope not in VALID_HOST_SCOPES:
+            return False, f"Rule has invalid host_scope '{rule_scope}'"
+
+        placeholders = self._extract_placeholders(rule.get("suggestion"))
+        for placeholder in placeholders:
+            parts = placeholder.strip('{}').split('.')
+            trigger_id = int(parts[1])
+            if trigger_id not in trigger_ids:
+                return False, f"Placeholder references undefined trigger id: {trigger_id}"
+
+        return True, None
+
+    def _validate_rules(self, rules):
+        valid_rules = []
+        for idx, rule in enumerate(rules, start=1):
+            is_valid, reason = self._validate_rule_structure(rule)
+            if not is_valid:
+                print(f"{C.BOLD}{C.YELLOW}[!] Warning: Skipping invalid rule #{idx}: {reason}{C.END}")
+                continue
+            valid_rules.append(rule)
+        return valid_rules
+
     def _load_rules(self):
         try:
             with open(self.rules_file_path, 'r') as f:
                 content = f.read()
                 # Handle case where the JSON file is empty.
                 if not content: return []
-                return json.loads(content)
+                loaded_rules = json.loads(content)
+                if not isinstance(loaded_rules, list):
+                    print(f"{C.BOLD}{C.YELLOW}[!] Warning: Rules file must contain a JSON list. Starting with an empty ruleset.{C.END}")
+                    return []
+                return self._validate_rules(loaded_rules)
         except FileNotFoundError:
             print(f"{C.BOLD}{C.YELLOW}[!] Rules file '{self.rules_file_path}' not found. Starting with an empty ruleset.{C.END}")
             return []
@@ -49,12 +115,14 @@ class AttackPathSynthesizer:
         try:
             new_rule['name'] = input("[?] Name for this attack path? > ")
             new_rule['priority'] = int(input("[?] Priority? (1-100) > "))
+            new_rule['host_scope'] = input("[?] Host scope? (same_host/any_host) [same_host] > ").strip() or "same_host"
             num_triggers = int(input("[?] How many trigger findings? > "))
             triggers = []
             for i in range(num_triggers):
                 print(f"\n--- Defining Trigger {i+1} ---")
                 trigger = {'id': i + 1, 'name_match': {}}
                 trigger['entity_type'] = input(f" > Trigger {i+1} entity_type? (e.g., software_product) > ").strip()
+                trigger['host_scope'] = input(f" > Trigger {i+1} host scope? (same_host/any_host) [same_host] > ").strip() or "same_host"
                 trigger['name_match']['type'] = input(f" > Trigger {i+1} name match type? (exact, contains, regex) [exact] > ").strip().lower() or 'exact'
                 trigger['name_match']['value'] = input(f" > Trigger {i+1} name match value? (e.g., PHP) > ").strip()
                 triggers.append(trigger)
@@ -74,7 +142,12 @@ class AttackPathSynthesizer:
         except (ValueError, IndexError) as e:
             print(f"\n{C.BOLD}{C.YELLOW}[!] Invalid input. Aborting. Error: {e}{C.END}")
             return
-        
+
+        is_valid, reason = self._validate_rule_structure(new_rule)
+        if not is_valid:
+            print(f"{C.BOLD}{C.YELLOW}[!] Rule validation failed: {reason}{C.END}")
+            return
+
         print("\n--- Review New Rule ---\n", json.dumps(new_rule, indent=2))
         if input("[?] Save this rule? (y/n) > ").lower() == 'y':
             self.rules.append(new_rule)
@@ -95,44 +168,66 @@ class AttackPathSynthesizer:
             if match_type == 'regex' and not re.search(match_value, finding_name, re.IGNORECASE): return False
         return True
 
-    def _format_suggestion(self, suggestion_template, matched_findings):
+    def _format_suggestion(self, suggestion_template, matched_findings_by_id):
         """
         Replaces placeholders in the suggestion text with actual finding data,
         with support for nested attributes like 'attributes.password'.
         """
         formatted_suggestion = deepcopy(suggestion_template)
         text_to_format = json.dumps(formatted_suggestion)
-        
+
         # Regex finds all valid placeholders, e.g., {trigger.1.name}, {trigger.2.attributes.password}
         for placeholder in re.findall(r'(\{trigger\.\d+\.[\w\.]+\})', text_to_format):
             # Strip braces: '{trigger.1.attributes.password}' -> 'trigger.1.attributes.password'
             path_str = placeholder.strip('{}')
             parts = path_str.split('.')
-            
+
             try:
                 # parts[0] is 'trigger', parts[1] is the trigger ID (e.g., '1')
                 trigger_id = int(parts[1])
-                # The corresponding finding is at index trigger_id - 1
-                finding = matched_findings[trigger_id - 1]
-                
+                finding = matched_findings_by_id[trigger_id]
+
                 # Start with the finding object and "walk down" the key path.
                 current_value = finding
                 for key in parts[2:]: # e.g., walk through ['attributes', 'password']
                     current_value = current_value[key]
-                
+
                 # Replace the placeholder with the final value found.
                 text_to_format = text_to_format.replace(placeholder, str(current_value))
 
-            except (IndexError, KeyError, TypeError):
+            except (KeyError, TypeError):
                 # If a key is not found (e.g., rule asks for a nonexistent attribute), warn the user.
                 print(f"{C.BOLD}{C.YELLOW}[!] Warning: Could not resolve placeholder '{placeholder}'. Check your rule syntax.{C.END}")
 
         return json.loads(text_to_format)
 
+    def _combination_satisfies_host_scope(self, rule, triggers, combination):
+        rule_scope = rule.get("host_scope", "same_host")
+        if rule_scope == "any_host":
+            return True
+
+        same_host_findings = []
+        for trigger, finding in zip(triggers, combination):
+            trigger_scope = trigger.get("host_scope", "same_host")
+            if trigger_scope == "same_host" and finding.get("entity_type") != "credential":
+                same_host_findings.append(finding)
+
+        if not same_host_findings:
+            return True
+
+        first_host = same_host_findings[0].get('host')
+        return all(f.get('host') == first_host for f in same_host_findings)
+
+    def _target_host_for_combination(self, combination):
+        host_specific_findings = [f for f in combination if f.get('entity_type') != 'credential']
+        if host_specific_findings:
+            return host_specific_findings[0].get('host')
+        return "GLOBAL"
+
     def generate_attack_paths(self, prioritized_findings):
         """
         Analyzes findings against rules to generate suggested attack paths,
-        handling host-agnostic credentials correctly.
+        handling host-agnostic credentials and host-scope controls.
         """
         suggested_paths = []
 
@@ -147,38 +242,26 @@ class AttackPathSynthesizer:
                     candidate_lists = []
                     break
                 candidate_lists.append(candidates)
-            
-            if not candidate_lists: continue
 
-            # Create every possible combination of candidates for the triggers.
-            # e.g., if trigger 1 has 2 candidates (A,B) and trigger 2 has 3 (C,D,E),
-            # this creates combinations (A,C), (A,D), (A,E), (B,C), (B,D), (B,E).
+            if not candidate_lists:
+                continue
+
             for combination in itertools.product(*candidate_lists):
-                # This special logic makes credentials host-agnostic.
-                
-                # 1. Separate findings that must be on a specific host from those that don't (like creds).
-                host_specific_findings = [f for f in combination if f.get('entity_type') != 'credential']
-                
-                # 2. If there are any host-specific findings, they must all be on the SAME host.
-                if host_specific_findings:
-                    first_host = host_specific_findings[0].get('host')
-                    # If findings are on different hosts (e.g., a web page on host A and a service on host B), this combination is invalid.
-                    if not all(f.get('host') == first_host for f in host_specific_findings):
-                        continue 
-                    target_host = first_host
-                else:
-                    # This handles rules that might only use credentials or other global findings.
-                    target_host = "GLOBAL"
+                if not self._combination_satisfies_host_scope(rule, triggers, combination):
+                    continue
 
-                # 3. If the combination is valid, generate the final suggestion.
                 if 'suggestion' in rule:
-                    suggestion = self._format_suggestion(rule['suggestion'], combination)
+                    matched_findings_by_id = {
+                        trigger.get("id", idx + 1): finding
+                        for idx, (trigger, finding) in enumerate(zip(triggers, combination))
+                    }
+                    suggestion = self._format_suggestion(rule['suggestion'], matched_findings_by_id)
                     suggested_paths.append({
                         "name": rule['name'],
                         "priority": rule['priority'],
-                        "host": target_host,
+                        "host": self._target_host_for_combination(combination),
                         "suggestion": suggestion,
-                        "evidence": [f"Trigger {i+1}: {f.get('name')} ({f.get('entity_type')})" for i, f in enumerate(combination)]
+                        "evidence": [f"Trigger {trigger.get('id', i+1)}: {f.get('name')} ({f.get('entity_type')})" for i, (trigger, f) in enumerate(zip(triggers, combination))]
                     })
 
         # Sort final paths by priority, so the most critical ones appear first.
