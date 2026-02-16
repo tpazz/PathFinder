@@ -2,5 +2,4 @@
 Gobuster v3.6
 ===============================================================
 /admin (Status: 301) [Size: 0] --> /admin/
-/admin (Status: 301) [Size: 0] --> /admin/
 /login.php (Status: 200) [Size: 123]

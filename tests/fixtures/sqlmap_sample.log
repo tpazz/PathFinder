@@ -2,8 +2,3 @@
 [INFO] GET parameter 'id' is vulnerable
 [INFO] back-end DBMS is 'MySQL'
 [INFO] following injection techniques are supported: boolean-based blind
-[INFO] risk level: 2
-[INFO] level: 3
-Payload: id=1 AND 1=1
-[INFO] testing 'https://10.10.10.11/search.php?q=x'
-[INFO] GET parameter 'q' is vulnerable

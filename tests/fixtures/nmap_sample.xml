@@ -6,15 +6,8 @@
     <ports>
       <port protocol="tcp" portid="22">
         <state state="open"/>
-        <service name="ssh" product="OpenSSH" version="8.2p1" extrainfo="Ubuntu">
-          <cpe>cpe:/a:openbsd:openssh:8.2p1</cpe>
-        </service>
+        <service name="ssh" product="OpenSSH" version="8.2p1" extrainfo="Ubuntu"/>
         <script id="ssh-vuln-cve-2020-15778" output="Potential issue CVE-2020-15778"/>
-        <script id="ssh-hostkey">
-          <table>
-            <elem key="fingerprint">SHA256:abc123</elem>
-          </table>
-        </script>
       </port>
     </ports>
   </host>

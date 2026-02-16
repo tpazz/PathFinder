@@ -47,15 +47,12 @@ def validate_and_normalize_finding(finding):
     version = normalized.get("version")
     if version is not None and not isinstance(version, str):
         raise FindingValidationError("'version' must be a string or None")
+
     if normalized.get("attributes") is None:
         normalized["attributes"] = {}
 
     if not isinstance(normalized.get("attributes"), dict):
         raise FindingValidationError("'attributes' must be a dictionary")
-
-    # Standardized parser evidence metadata defaults.
-    normalized["attributes"].setdefault("confidence", "medium")
-    normalized["attributes"].setdefault("evidence_type", "direct")
 
     return normalized
 

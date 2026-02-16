@@ -200,7 +200,6 @@ def parse_new_data_files(args, target_host):
     }
 
     findings = []
-    stats = {"parsers_run": 0, "records_raw": 0, "records_valid": 0, "records_dropped": 0}
     host_required_parsers = ["Gobuster", "Enum4Linux-NG", "LinPEAS", "WinPEAS", "SNMP", "Kerbrute", "GetNPUsers"]
 
     for name, (file_path, parser_func) in parsers.items():
@@ -218,17 +217,11 @@ def parse_new_data_files(args, target_host):
         findings_from_parser = parser_func(file_path)
         validated_findings = validate_parser_output(name, findings_from_parser)
         findings.extend(validated_findings)
-        stats["parsers_run"] += 1
-        stats["records_raw"] += len(findings_from_parser)
-        stats["records_valid"] += len(validated_findings)
-        dropped = len(findings_from_parser) - len(validated_findings)
-        stats["records_dropped"] += dropped if dropped > 0 else 0
-        logger.info("Parser %s produced %s validated findings (dropped=%s)", name, len(validated_findings), max(dropped, 0))
+        logger.info("Parser %s produced %s validated findings", name, len(validated_findings))
 
         if args.verbose > 0:
             print(f"    [+] Found {len(validated_findings)} valid raw findings from {name}.")
 
-    logger.info("Parser telemetry: parsers_run=%s raw=%s valid=%s dropped=%s", stats["parsers_run"], stats["records_raw"], stats["records_valid"], stats["records_dropped"])
     return findings
 
 
