@@ -1,0 +1,9 @@
+[
+  {
+    "target": "http://10.10.10.10",
+    "plugins": {
+      "WordPress": {"version": ["6.5.2"], "string": ["WordPress"]},
+      "HTTPServer": {"string": ["Apache"]}
+    }
+  }
+]

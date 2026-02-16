@@ -1,0 +1,14 @@
+<?xml version="1.0"?>
+<nmaprun>
+  <host>
+    <status state="up"/>
+    <address addr="10.10.10.10" addrtype="ipv4"/>
+    <ports>
+      <port protocol="tcp" portid="22">
+        <state state="open"/>
+        <service name="ssh" product="OpenSSH" version="8.2p1" extrainfo="Ubuntu"/>
+        <script id="ssh-vuln-cve-2020-15778" output="Potential issue CVE-2020-15778"/>
+      </port>
+    </ports>
+  </host>
+</nmaprun>
