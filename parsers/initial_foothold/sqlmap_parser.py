@@ -1,6 +1,22 @@
 import re
 from urllib.parse import urlparse
 
+
+def _split_target_blocks(content):
+    """Split sqlmap output into per-target blocks based on testing lines."""
+    starts = list(re.finditer(r"\[INFO\] testing '(\S+)'", content))
+    if not starts:
+        return [("http://UNKNOWN_HOST", content)]
+
+    blocks = []
+    for i, match in enumerate(starts):
+        target_url = match.group(1)
+        start_idx = match.start()
+        end_idx = starts[i + 1].start() if i + 1 < len(starts) else len(content)
+        blocks.append((target_url, content[start_idx:end_idx]))
+    return blocks
+
+
 def parse_sqlmap_log(file_path):
     """
     Parses a sqlmap log file to find confirmed injectable parameters.
@@ -13,7 +29,6 @@ def parse_sqlmap_log(file_path):
     """
     findings = []
     try:
-        # Read the entire log file content at once for multi-line regex searching.
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
     except FileNotFoundError:
@@ -23,51 +38,50 @@ def parse_sqlmap_log(file_path):
         print(f"[!] An unexpected error occurred while parsing sqlmap log: {e}")
         return []
 
-    # Regex to find the high-confidence line that confirms a vulnerability.
-    # Example: "[INFO] GET parameter 'id' is vulnerable"
     vuln_pattern = re.compile(r"\[INFO\] (GET|POST|URI|HEADER) parameter '([^']+)' is vulnerable")
-    
-    # Extract contextual information from the log file to enrich the finding.
-    # Find the target URL, usually one of the first lines.
-    target_url_match = re.search(r"\[INFO\] testing '(\S+)'", content)
-    target_url = target_url_match.group(1) if target_url_match else "http://UNKNOWN_HOST"
 
-    # Find the identified Database Management System (DBMS).
-    dbms_match = re.search(r"back-end DBMS is '([^']+)'", content)
-    dbms = dbms_match.group(1) if dbms_match else None
-    
-    # Find the identified injection technique(s).
-    technique_match = re.search(r"following injection techniques are supported: (.*)", content)
-    technique = technique_match.group(1) if technique_match else None
+    for target_url, block in _split_target_blocks(content):
+        dbms_match = re.search(r"back-end DBMS is '([^']+)'", block)
+        dbms = dbms_match.group(1) if dbms_match else None
 
-    # Find all occurrences of vulnerable parameters in the log.
-    vulnerable_params = vuln_pattern.findall(content)
+        technique_match = re.search(r"following injection techniques are supported: (.*)", block)
+        technique = technique_match.group(1).strip() if technique_match else None
 
-    for method, parameter_name in vulnerable_params:
+        risk_match = re.search(r"risk level: (\d+)", block, re.IGNORECASE)
+        level_match = re.search(r"level: (\d+)", block, re.IGNORECASE)
+
+        payload_match = re.search(r"Payload:\s*(.*)", block)
+        payload = payload_match.group(1).strip() if payload_match else None
+
+        vulnerable_params = vuln_pattern.findall(block)
+
         try:
-            # Parse the target URL to extract the hostname and port.
             parsed_url = urlparse(target_url)
-            host = parsed_url.hostname
+            host = parsed_url.hostname or "UNKNOWN_HOST"
             port = parsed_url.port or (443 if parsed_url.scheme == 'https' else 80)
         except (ValueError, AttributeError):
             host = "UNKNOWN_HOST"
             port = 0
 
-        findings.append({
-            "host": host,
-            "port": port,
-            "source_tool": "sqlmap",
-            "entity_type": "vulnerability",
-            "name": "sql_injection_found",
-            "version": None,
-            "attributes": {
-                "url": target_url,
-                "parameter": parameter_name,
-                "method": method,
-                "dbms": dbms,
-                "technique": technique,
-                "description": f"SQL Injection confirmed in '{parameter_name}' parameter via {method} request."
-            }
-        })
+        for method, parameter_name in vulnerable_params:
+            findings.append({
+                "host": host,
+                "port": port,
+                "source_tool": "sqlmap",
+                "entity_type": "vulnerability",
+                "name": "sql_injection_found",
+                "version": None,
+                "attributes": {
+                    "url": target_url,
+                    "parameter": parameter_name,
+                    "method": method,
+                    "dbms": dbms,
+                    "technique": technique,
+                    "risk": int(risk_match.group(1)) if risk_match else None,
+                    "level": int(level_match.group(1)) if level_match else None,
+                    "payload_snippet": payload,
+                    "description": f"SQL Injection confirmed in '{parameter_name}' parameter via {method} request."
+                }
+            })
 
     return findings

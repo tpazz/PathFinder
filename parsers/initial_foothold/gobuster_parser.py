@@ -20,6 +20,7 @@ def parse_gobuster_output(gobuster_output_file, target_host, target_port=None, m
         list: A list of finding dictionaries.
     """
     findings = []
+    seen_identifiers = set()
     
     # Regex for 'dir' mode, captures path, status, and optional size/redirect.
     # Example: /images (Status: 301) [Size: 0] --> /images/
@@ -91,15 +92,18 @@ def parse_gobuster_output(gobuster_output_file, target_host, target_port=None, m
                         
                         attributes["is_directory_guess"] = is_directory_guess
 
-                        findings.append({
-                            "host": target_host,
-                            "port": target_port,
-                            "source_tool": "gobuster",
-                            "entity_type": "web_content",
-                            "name": path,
-                            "version": None,
-                            "attributes": attributes
-                        })
+                        identifier = (target_host, target_port, "web_content", path, status_code)
+                        if identifier not in seen_identifiers:
+                            seen_identifiers.add(identifier)
+                            findings.append({
+                                "host": target_host,
+                                "port": target_port,
+                                "source_tool": "gobuster",
+                                "entity_type": "web_content",
+                                "name": path,
+                                "version": None,
+                                "attributes": attributes
+                            })
                 
                 elif mode == 'vhost':
                     match = vhost_pattern.match(line)
@@ -112,15 +116,18 @@ def parse_gobuster_output(gobuster_output_file, target_host, target_port=None, m
                         if status_code_vhost:
                             attributes["status_code"] = status_code_vhost
 
-                        findings.append({
-                            "host": target_host,
-                            "port": target_port,
-                            "source_tool": "gobuster",
-                            "entity_type": "virtual_host",
-                            "name": vhost_name,
-                            "version": None,
-                            "attributes": attributes
-                        })
+                        identifier = (target_host, target_port, "virtual_host", vhost_name, status_code_vhost)
+                        if identifier not in seen_identifiers:
+                            seen_identifiers.add(identifier)
+                            findings.append({
+                                "host": target_host,
+                                "port": target_port,
+                                "source_tool": "gobuster",
+                                "entity_type": "virtual_host",
+                                "name": vhost_name,
+                                "version": None,
+                                "attributes": attributes
+                            })
     
     except FileNotFoundError:
         print(f"[!] Error: Gobuster output file not found at {gobuster_output_file}")

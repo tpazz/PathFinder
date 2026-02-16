@@ -2,10 +2,12 @@ import argparse
 import sys
 import json
 import os
+import logging
 
 # Import all custom parser modules and the core logic components.
 from .attack_path_synthesizer import AttackPathSynthesizer
 from .vulnerability_mapper import VulnerabilityMapper
+from .finding_schema import FindingValidationError, validate_findings
 from parsers.active_directory.kerberos_parser import parse_getnpusers_output, parse_kerbrute_output
 from parsers.active_directory.ldapdomaindump_parser import parse_ldapdomaindump_dir
 from parsers.active_directory.sharphound_parser import parse_sharphound_dir
@@ -26,6 +28,21 @@ class C:
 # Build a full, unambiguous path to the credentials file relative to this script's location.
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CREDENTIALS_FILE = os.path.join(SCRIPT_DIR, "credentials.json")
+
+
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s - %(message)s"
+logger = logging.getLogger("pathfinder")
+
+
+def configure_logging(verbosity):
+    """Configures logger level based on CLI verbosity."""
+    level = logging.WARNING
+    if verbosity == 1:
+        level = logging.INFO
+    elif verbosity >= 2:
+        level = logging.DEBUG
+    logging.basicConfig(level=level, format=LOG_FORMAT)
+
 
 def print_banner():
     """Prints a cool banner for the tool."""
@@ -84,6 +101,16 @@ def deduplicate_findings(findings_list):
             unique_findings.append(finding)
     return unique_findings
 
+
+
+def validate_parser_output(parser_name, findings):
+    """Validates parser output against the normalized finding schema."""
+    try:
+        return validate_findings(findings)
+    except FindingValidationError as e:
+        print(f"{C.BOLD}{C.YELLOW}[!] {parser_name} parser produced invalid finding schema: {e}{C.END}")
+        return []
+
 def manage_credentials():
     """Provides an interactive wizard for users to add credentials they have found."""
     print(f"\n{C.BOLD}{C.CYAN}[*] Pathfinder Credential Manager{C.END}")
@@ -127,6 +154,106 @@ def manage_credentials():
     except IOError as e:
         print(f"\n{C.BOLD}{C.YELLOW}[!] Error saving credentials: {e}{C.END}")
 
+
+
+def load_base_findings(input_json_path):
+    """Loads and validates pre-existing prioritized findings from disk."""
+    if not input_json_path:
+        return []
+
+    print(f"\n{C.BOLD}{C.CYAN}[*] Loading base findings from file: {input_json_path}{C.END}")
+    with open(input_json_path, 'r', encoding='utf-8') as f:
+        loaded_findings = json.load(f)
+
+    validated = validate_parser_output("input-json", loaded_findings)
+    print(f"    [+] Loaded {len(validated)} valid base findings.")
+    logger.info("Loaded %s base findings from %s", len(validated), input_json_path)
+    return validated
+
+
+def parse_new_data_files(args, target_host):
+    """Runs configured parsers and returns validated raw findings."""
+    parser_inputs = [
+        args.nmap_xml, args.gobuster_txt, args.nikto_json, args.whatweb_json, args.enum4linux_json,
+        args.linpeas_txt, args.winpeas_txt, args.snmp_txt, args.sharphound_dir, args.ldapdomaindump_dir,
+        args.kerbrute_txt, args.getnpusers_hashes, args.sqlmap_log
+    ]
+    if not any(parser_inputs):
+        return []
+
+    print(f"\n{C.BOLD}{C.CYAN}[*] Parsing new data files...{C.END}\n")
+
+    parsers = {
+        "Nmap": (args.nmap_xml, lambda f: parse_nmap_xml(f)),
+        "Gobuster": (args.gobuster_txt, lambda f: parse_gobuster_output(f, target_host, args.gobuster_port, args.gobuster_mode)),
+        "Nikto": (args.nikto_json, lambda f: parse_nikto_json(f)),
+        "WhatWeb": (args.whatweb_json, lambda f: parse_whatweb_json(f)),
+        "Enum4Linux-NG": (args.enum4linux_json, lambda f: parse_enum4linux_json(f, target_host)),
+        "LinPEAS": (args.linpeas_txt, lambda f: parse_linpeas(f, target_host)),
+        "WinPEAS": (args.winpeas_txt, lambda f: parse_winpeas(f, target_host)),
+        "SNMP": (args.snmp_txt, lambda f: parse_snmp_output(f, target_host)),
+        "SharpHound": (args.sharphound_dir, lambda f: parse_sharphound_dir(f)),
+        "LDAPDomainDump": (args.ldapdomaindump_dir, lambda f: parse_ldapdomaindump_dir(f)),
+        "Kerbrute": (args.kerbrute_txt, lambda f: parse_kerbrute_output(f, target_host)),
+        "GetNPUsers": (args.getnpusers_hashes, lambda f: parse_getnpusers_output(f, target_host)),
+        "SQLMap": (args.sqlmap_log, lambda f: parse_sqlmap_log(f)),
+    }
+
+    findings = []
+    stats = {"parsers_run": 0, "records_raw": 0, "records_valid": 0, "records_dropped": 0}
+    host_required_parsers = ["Gobuster", "Enum4Linux-NG", "LinPEAS", "WinPEAS", "SNMP", "Kerbrute", "GetNPUsers"]
+
+    for name, (file_path, parser_func) in parsers.items():
+        if not file_path:
+            continue
+
+        if name in host_required_parsers and not target_host:
+            print(f"{C.BOLD}{C.YELLOW}[!] {name} parser requires --target-host (or domain) to be set.{C.END}")
+            logger.warning("Skipped %s parser because --target-host is not set", name)
+            continue
+
+        if args.verbose > 0:
+            print(f"[*] Parsing {name}: {file_path}")
+
+        findings_from_parser = parser_func(file_path)
+        validated_findings = validate_parser_output(name, findings_from_parser)
+        findings.extend(validated_findings)
+        stats["parsers_run"] += 1
+        stats["records_raw"] += len(findings_from_parser)
+        stats["records_valid"] += len(validated_findings)
+        dropped = len(findings_from_parser) - len(validated_findings)
+        stats["records_dropped"] += dropped if dropped > 0 else 0
+        logger.info("Parser %s produced %s validated findings (dropped=%s)", name, len(validated_findings), max(dropped, 0))
+
+        if args.verbose > 0:
+            print(f"    [+] Found {len(validated_findings)} valid raw findings from {name}.")
+
+    logger.info("Parser telemetry: parsers_run=%s raw=%s valid=%s dropped=%s", stats["parsers_run"], stats["records_raw"], stats["records_valid"], stats["records_dropped"])
+    return findings
+
+
+def map_findings(args, new_raw_findings):
+    """Runs vulnerability mapping/prioritization for new findings."""
+    if not new_raw_findings:
+        return []
+
+    print(f"\n{C.BOLD}{C.CYAN}[*] Running Vulnerability Mapper on new findings...{C.END}\n")
+    use_github = not (args.offline or args.skip_github)
+    use_searchsploit = not (args.offline or args.skip_searchsploit)
+    vuln_mapper = VulnerabilityMapper(
+        use_github=use_github,
+        use_searchsploit=use_searchsploit,
+        github_cache_file=args.github_cache,
+    )
+    newly_prioritized_findings = vuln_mapper.map_and_prioritize(new_raw_findings)
+    logger.info("Mapper prioritized %s findings", len(newly_prioritized_findings))
+
+    if args.verbose > 0:
+        print(f"    [+] Mapper prioritized {len(newly_prioritized_findings)} of the new findings.")
+
+    return newly_prioritized_findings
+
+
 def main():
     print_banner()
     parser = argparse.ArgumentParser(description="Pathfinder", formatter_class=argparse.RawTextHelpFormatter)
@@ -161,8 +288,13 @@ def main():
     gg = parser.add_argument_group('General Arguments')
     gg.add_argument("-v", "--verbose", action="count", default=0, help="Verbosity level (-v, -vv).")
     gg.add_argument("--max-vulns", type=int, default=10, help="Max number of EDB/GitHub exploits to display (default: 10).")
+    gg.add_argument("--offline", action="store_true", help="Disable external enrichment lookups (GitHub + Searchsploit).")
+    gg.add_argument("--skip-github", action="store_true", help="Skip GitHub exploit repository enrichment.")
+    gg.add_argument("--skip-searchsploit", action="store_true", help="Skip Searchsploit enrichment.")
+    gg.add_argument("--github-cache", default=os.path.join(SCRIPT_DIR, "github_cache.json"), help="Path to GitHub lookup cache JSON file.")
     
     args = parser.parse_args()
+    configure_logging(args.verbose)
     synthesizer = AttackPathSynthesizer()
     prioritized_findings = []
 
@@ -175,49 +307,20 @@ def main():
         manage_credentials()
         sys.exit(0)
 
-    base_prioritized_findings = []
-    new_raw_findings = []
-    
-    # If a previous session is provided, load its findings first.
-    if args.input_json:
-        try:
-            print(f"\n{C.BOLD}{C.CYAN}[*] Loading base findings from file: {args.input_json}{C.END}")
-            with open(args.input_json, 'r', encoding='utf-8') as f:
-                base_prioritized_findings = json.load(f)
-            print(f"    [+] Loaded {len(base_prioritized_findings)} base findings.")
-        except (FileNotFoundError, json.JSONDecodeError) as e:
-            print(f"\n{C.BOLD}{C.YELLOW}[!] Error loading {args.input_json}: {e}{C.END}")
-            sys.exit(1)
+    try:
+        base_prioritized_findings = load_base_findings(args.input_json)
+    except (FileNotFoundError, json.JSONDecodeError) as e:
+        print(f"\n{C.BOLD}{C.YELLOW}[!] Error loading {args.input_json}: {e}{C.END}")
+        logger.exception("Failed to load input-json")
+        sys.exit(1)
 
     target_host = args.target_host or args.gobuster_host
-    parser_inputs = [args.nmap_xml, args.gobuster_txt, args.nikto_json, args.whatweb_json, args.enum4linux_json, args.linpeas_txt, args.winpeas_txt, args.snmp_txt, args.sharphound_dir, args.ldapdomaindump_dir, args.kerbrute_txt, args.getnpusers_hashes, args.sqlmap_log]
+    new_raw_findings = parse_new_data_files(args, target_host)
 
-    # If new scan files are provided, parse them.
-    if any(parser_inputs):
-        print(f"\n{C.BOLD}{C.CYAN}[*] Parsing new data files...{C.END}\n")
-        
-        parsers = { "Nmap": (args.nmap_xml, lambda f: parse_nmap_xml(f)), "Gobuster": (args.gobuster_txt, lambda f: parse_gobuster_output(f, target_host, args.gobuster_port, args.gobuster_mode)), "Nikto": (args.nikto_json, lambda f: parse_nikto_json(f)), "WhatWeb": (args.whatweb_json, lambda f: parse_whatweb_json(f)), "Enum4Linux-NG": (args.enum4linux_json, lambda f: parse_enum4linux_json(f, target_host)), "LinPEAS": (args.linpeas_txt, lambda f: parse_linpeas(f, target_host)), "WinPEAS": (args.winpeas_txt, lambda f: parse_winpeas(f, target_host)), "SNMP": (args.snmp_txt, lambda f: parse_snmp_output(f, target_host)), "SharpHound": (args.sharphound_dir, lambda f: parse_sharphound_dir(f)), "LDAPDomainDump": (args.ldapdomaindump_dir, lambda f: parse_ldapdomaindump_dir(f)), "Kerbrute": (args.kerbrute_txt, lambda f: parse_kerbrute_output(f, target_host)), "GetNPUsers": (args.getnpusers_hashes, lambda f: parse_getnpusers_output(f, target_host)), "SQLMap": (args.sqlmap_log, lambda f: parse_sqlmap_log(f)) }
-
-        for name, (file_path, parser_func) in parsers.items():
-            if file_path:
-                if (name in ["Gobuster", "Enum4Linux-NG", "LinPEAS", "WinPEAS", "SNMP", "Kerbrute", "GetNPUsers"] and not target_host):
-                    print(f"{C.BOLD}{C.YELLOW}[!] {name} parser requires --target-host (or domain) to be set.{C.END}")
-                    continue
-                if args.verbose > 0: print(f"[*] Parsing {name}: {file_path}")
-                findings_from_parser = parser_func(file_path)
-                new_raw_findings.extend(findings_from_parser)
-                if args.verbose > 0: print(f"    [+] Found {len(findings_from_parser)} raw findings from {name}.")
-    
     if not base_prioritized_findings and not new_raw_findings:
          parser.error("For analysis, at least one input file (--nmap-xml, etc.) or --input-json must be provided.")
 
-    newly_prioritized_findings = []
-    # Only run the heavy mapping process if new raw data was parsed.
-    if new_raw_findings:
-        print(f"\n{C.BOLD}{C.CYAN}[*] Running Vulnerability Mapper on new findings...{C.END}\n")
-        vuln_mapper = VulnerabilityMapper()
-        newly_prioritized_findings = vuln_mapper.map_and_prioritize(new_raw_findings)
-        if args.verbose > 0: print(f"    [+] Mapper prioritized {len(newly_prioritized_findings)} of the new findings.")
+    newly_prioritized_findings = map_findings(args, new_raw_findings)
 
     # Combine findings from a previous session with newly processed ones.
     combined_findings = base_prioritized_findings + newly_prioritized_findings

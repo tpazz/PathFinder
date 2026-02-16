@@ -54,12 +54,17 @@ def parse_whatweb_json(json_file_path):
             if plugin_name in PLUGINS_TO_IGNORE:
                 continue
 
-            # WhatWeb's version field is often a list, so we just take the first element.
-            version = plugin_data.get("version", [None])[0]
+            # WhatWeb's version field is often a list; preserve all candidates while keeping primary version.
+            version_candidates = plugin_data.get("version", [None])
+            if not isinstance(version_candidates, list):
+                version_candidates = [version_candidates]
+            version = version_candidates[0] if version_candidates else None
 
             # Create a clean attributes dictionary, dumping all other plugin data into it.
             # We remove 'version' since it's already a top-level key in our finding object.
             attributes = {k: v for k, v in plugin_data.items() if k != 'version'}
+            if version_candidates and version_candidates != [None]:
+                attributes['version_candidates'] = version_candidates
 
             finding = {
                 "host": host,

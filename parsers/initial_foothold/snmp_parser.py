@@ -1,5 +1,38 @@
 import re
 
+SECTION_HEADERS = [
+    "System information:",
+    "User accounts:",
+    "Running processes:",
+    "Network interfaces:",
+]
+
+
+def _extract_sections(content):
+    sections = {}
+    current = None
+    lines = []
+
+    for raw_line in content.splitlines():
+        line = raw_line.rstrip()
+        if line in SECTION_HEADERS:
+            if current is not None:
+                sections[current] = "\n".join(lines).strip()
+            current = line
+            lines = []
+            continue
+
+        if current is not None:
+            # Keep blank lines inside section only if meaningful context exists.
+            if line or lines:
+                lines.append(line)
+
+    if current is not None:
+        sections[current] = "\n".join(lines).strip()
+
+    return sections
+
+
 def parse_snmp_output(file_path, target_host):
     """
     Parses the output of snmp-check to find interesting information.
@@ -13,7 +46,6 @@ def parse_snmp_output(file_path, target_host):
     """
     findings = []
     try:
-        # Read the entire file content at once, as we'll use regex on the whole block.
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
     except FileNotFoundError:
@@ -23,55 +55,57 @@ def parse_snmp_output(file_path, target_host):
         print(f"[!] An unexpected error occurred while parsing SNMP: {e}")
         return []
 
-    # Use regex to find the "System information" section and capture its content.
-    # re.DOTALL allows '.' to match newline characters, capturing multi-line blocks.
-    sys_info_match = re.search(r"System information:\s*\n(.*?)\n\n", content, re.DOTALL)
-    if sys_info_match:
+    sections = _extract_sections(content)
+
+    system_info = sections.get("System information:")
+    if system_info:
         findings.append({
             "host": target_host, "port": 161, "source_tool": "snmp",
             "entity_type": "os_details",
             "name": "snmp_system_information",
             "version": None,
-            "attributes": {"description": sys_info_match.group(1).strip()}
+            "attributes": {"description": system_info}
         })
 
-    # Find the "User accounts" section.
-    user_accounts_match = re.search(r"User accounts:\s*\n(.*?)\n\n", content, re.DOTALL)
-    if user_accounts_match:
-        # Split the captured block by newlines and create a 'user' finding for each one.
-        for user_line in user_accounts_match.group(1).strip().split('\n'):
+    user_accounts = sections.get("User accounts:")
+    if user_accounts:
+        for user_line in user_accounts.split('\n'):
+            user = user_line.strip()
+            if not user:
+                continue
             findings.append({
                 "host": target_host, "port": 161, "source_tool": "snmp",
                 "entity_type": "user",
-                "name": user_line.strip(),
+                "name": user,
                 "version": None,
                 "attributes": {"source": "SNMP enumeration"}
             })
 
-    # Find the "Running processes" section.
-    processes_match = re.search(r"Running processes:\s*\n(.*?)\n\n", content, re.DOTALL)
-    if processes_match:
-        for process_line in processes_match.group(1).strip().split('\n'):
-            # A simple heuristic to extract the process name, usually the last word on the line.
-            process_name = process_line.strip().split()[-1]
+    processes = sections.get("Running processes:")
+    if processes:
+        for process_line in processes.split('\n'):
+            line = process_line.strip()
+            if not line:
+                continue
+            # Keep full process text and use executable/binary tail as name when possible.
+            tokens = line.split()
+            process_name = tokens[-1].split('/')[-1] if tokens else "unknown_process"
             findings.append({
                 "host": target_host, "port": 161, "source_tool": "snmp",
                 "entity_type": "software_product",
                 "name": process_name,
                 "version": None,
-                "attributes": {"description": process_line.strip(), "source": "SNMP enumeration"}
+                "attributes": {"description": line, "source": "SNMP enumeration"}
             })
 
-    # Find the "Network interfaces" section.
-    interfaces_match = re.search(r"Network interfaces:\s*\n(.*?)\n\n", content, re.DOTALL)
-    if interfaces_match:
-        # Treat the entire block of interface data as a single information leak finding.
+    interfaces = sections.get("Network interfaces:")
+    if interfaces:
         findings.append({
             "host": target_host, "port": 161, "source_tool": "snmp",
             "entity_type": "information_leak",
             "name": "snmp_network_interfaces_disclosed",
             "version": None,
-            "attributes": {"details": interfaces_match.group(1).strip()}
+            "attributes": {"details": interfaces}
         })
-        
+
     return findings
