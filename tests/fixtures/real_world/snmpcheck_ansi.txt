@@ -1,0 +1,12 @@
+[36m[*] System information:[0m
+Linux target 5.4
+
+[33m[*] User accounts:[0m
+admin
+guest
+
+[32m[*] Running processes:[0m
+1 root /usr/sbin/sshd
+
+[35m[*] Network interfaces:[0m
+eth0 10.10.10.20

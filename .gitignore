@@ -1,0 +1,15 @@
+data/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.env
+.venv/
+venv/
+env/
+.vscode/
+.idea/
+main/credentials.json
+main/github_cache.json

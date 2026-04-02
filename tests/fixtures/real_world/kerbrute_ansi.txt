@@ -1,0 +1,2 @@
+[32m[+][0m [1mVALID USERNAME:[0m alice@LAB.LOCAL
+[32m[+][0m [1mVALID USERNAME:[0m bob@LAB.LOCAL

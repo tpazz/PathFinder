@@ -1,0 +1,65 @@
+{
+    "target": {
+        "host": "10.10.10.40",
+        "workgroup": "WORKGROUP"
+    },
+    "credentials": {
+        "user": "",
+        "password": "",
+        "random_user": "fakeuser123"
+    },
+    "os_info": {
+        "OS": "Windows 10.0 Build 19041",
+        "OS version": "10.0"
+    },
+    "users": {
+        "1000": {
+            "username": "alice",
+            "uid": 1000,
+            "rid": 1000
+        },
+        "1001": {
+            "username": "bob",
+            "uid": 1001,
+            "rid": 1001
+        },
+        "502": {
+            "username": "krbtgt",
+            "uid": 502,
+            "rid": 502
+        }
+    },
+    "groups": {
+        "512": {
+            "groupname": "Domain Admins",
+            "gid": 512,
+            "rid": 512
+        },
+        "513": {
+            "groupname": "Domain Users",
+            "gid": 513,
+            "rid": 513
+        }
+    },
+    "shares": {
+        "IPC$": {
+            "name": "IPC$",
+            "comment": "IPC Service (Samba 4.13.17)",
+            "type": "IPC"
+        },
+        "backups": {
+            "name": "backups",
+            "comment": "Backup share",
+            "type": "DISKTREE"
+        }
+    },
+    "policy": {
+        "domain_password_information": {
+            "pw_history_length": "None",
+            "min_pw_length": "5",
+            "min_pw_age": "0:00:00",
+            "max_pw_age": "49710 days",
+            "pw_complexity": "0"
+        }
+    }
+}

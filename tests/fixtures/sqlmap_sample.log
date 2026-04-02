@@ -1,0 +1,4 @@
+[INFO] testing 'http://10.10.10.10/item.php?id=1'
+[INFO] GET parameter 'id' is vulnerable
+[INFO] back-end DBMS is 'MySQL'
+[INFO] following injection techniques are supported: boolean-based blind

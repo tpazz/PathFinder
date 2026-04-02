@@ -1,0 +1,7 @@
+media                (Status: 301) [Size: 327] [--> http://192.168.231.211/election/media/]
+themes               (Status: 301) [Size: 328] [--> http://192.168.231.211/election/themes/]
+data                 (Status: 301) [Size: 326] [--> http://192.168.231.211/election/data/]
+admin                (Status: 301) [Size: 327] [--> http://192.168.231.211/election/admin/]
+lib                  (Status: 301) [Size: 325] [--> http://192.168.231.211/election/lib/]
+languages            (Status: 301) [Size: 331] [--> http://192.168.231.211/election/languages/]
+js                   (Status: 301) [Size: 324] [--> http://192.168.231.211/election/js/]

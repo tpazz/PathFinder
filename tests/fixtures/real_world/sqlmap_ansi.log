@@ -1,0 +1,5 @@
+[36m[INFO][0m testing 'http://10.10.10.10/item.php?id=1'
+[36m[INFO][0m GET parameter 'id' is vulnerable
+[36m[INFO][0m back-end DBMS is 'MySQL'
+[36m[INFO][0m following injection techniques are supported: boolean-based blind
+sqlmap resumed the following injection point(s) from stored session:

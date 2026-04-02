@@ -1,0 +1,35 @@
+snmp-check v1.9 - SNMP enumerator
+Copyright (c) 2005-2015 by Matteo Cantoni
+
+[+] Try to connect to 10.10.10.20:161 using SNMPv1 and community 'public'
+
+[*] System information:
+
+  Host IP address               : 10.10.10.20
+  Hostname                      : target-linux
+  Description                   : Linux target-linux 5.4.0-42-generic #46-Ubuntu SMP x86_64
+  Contact                       : root@target-linux
+  Location                      : Server Room
+  Uptime snmp                   : 15 days, 03:22:11.00
+  Uptime system                 : 15 days, 03:21:55.43
+
+[*] User accounts:
+
+  administrator
+  www-data
+  svc_backup
+
+[*] Running processes:
+
+  1     running   init              /sbin/init
+  445   running   apache2           /usr/sbin/apache2
+  1022  running   sshd              /usr/sbin/sshd
+  2001  running   mysql             /usr/sbin/mysqld
+
+[*] Network interfaces:
+
+  Interface                     : [ up ] lo
+  IP Address                    : 127.0.0.1
+  Interface                     : [ up ] ens192
+  IP Address                    : 10.10.10.20
+

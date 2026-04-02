@@ -1,0 +1,50 @@
+[
+    {
+        "host": "10.10.10.10",
+        "ip": "10.10.10.10",
+        "port": "80",
+        "banner": "Apache/2.4.49 (Ubuntu)",
+        "vulnerabilities": [
+            {
+                "id": "740001",
+                "osvdb": "0",
+                "method": "GET",
+                "url": "/",
+                "msg": "The anti-clickjacking X-Frame-Options header is not defined. This can be exploited to deliver clickjacking.",
+                "references": ""
+            },
+            {
+                "id": "999992",
+                "osvdb": "0",
+                "method": "GET",
+                "url": "/",
+                "msg": "Allowed HTTP Methods: GET, HEAD, POST, OPTIONS, PUT, DELETE, TRACE",
+                "references": ""
+            },
+            {
+                "id": "000012",
+                "osvdb": "3092",
+                "method": "GET",
+                "url": "/config.php.bak",
+                "msg": "A backup file was found: /config.php.bak",
+                "references": ""
+            },
+            {
+                "id": "000003",
+                "osvdb": "3268",
+                "method": "GET",
+                "url": "/icons/",
+                "msg": "Directory indexing found: /icons/",
+                "references": ""
+            },
+            {
+                "id": "999101",
+                "osvdb": "0",
+                "method": "GET",
+                "url": "/",
+                "msg": "WordPress version 5.8.1 might be interesting",
+                "references": ""
+            }
+        ]
+    }
+]
