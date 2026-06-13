@@ -149,7 +149,7 @@ class TestLinuxPrivEscLab(unittest.TestCase):
                description="Sudo version 1.8.21p2", confidence="medium", signal_source="keyword_match", score=95),
             _f("10.10.10.10", None, "linpeas", "privilege_escalation", "process_capabilities_found",
                description="/usr/bin/python3.8 = cap_setuid+ep", confidence="medium", signal_source="keyword_match", score=95),
-            _f("10.10.10.10", None, "linpeas", "privilege_escalation", "guid_binary_found",
+            _f("10.10.10.10", None, "linpeas", "privilege_escalation", "sgid_binary_found",
                description="/usr/bin/expiry", confidence="low", signal_source="keyword_match", score=95),
             _f("10.10.10.10", None, "linpeas", "privilege_escalation", "peas_highlighted_finding_95_pwnable",
                description="Some critical finding", confidence="high", signal_source="color_signature", score=95),
@@ -167,7 +167,7 @@ class TestLinuxPrivEscLab(unittest.TestCase):
         self.assertIn("NFS no_root_squash - SUID Shell via NFS", names)
         self.assertIn("Outdated Sudo Version - CVE Exploit", names)
         self.assertIn("Linux Capabilities - Escalation via Cap Abuse", names)
-        self.assertIn("GUID Binary Found", names)
+        self.assertIn("SGID Binary Found", names)
         self.assertIn("PEAS Highlighted Critical Finding (95% Exploitable)", names)
 
     def test_highest_priority_is_writable_passwd(self):

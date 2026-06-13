@@ -150,6 +150,8 @@ def parse_nmap_xml(xml_file_path):
                             "banner_extract": banner_extract if banner_extract else None,
                             "service_name_on_port": service_name,
                             "cpe": cpe_values or None,
+                            # Raw banner product for exploit lookups (canonical name is for rules).
+                            "search_name": product,
                         }
                     })
 

@@ -1,0 +1,88 @@
+import json
+from urllib.parse import urlparse
+
+# Severities that warrant a high-signal "vulnerability" finding; everything else
+# (low/info/unknown) is recorded as an information_leak for context.
+VULN_SEVERITIES = {"critical", "high", "medium"}
+
+
+def _host_port(record):
+    """Resolve (host, port) from a nuclei record's host/matched-at URL."""
+    candidate = record.get("matched-at") or record.get("host") or record.get("matched_at") or ""
+    parsed = urlparse(candidate if "://" in candidate else f"http://{candidate}")
+    host = parsed.hostname or candidate or "UNKNOWN_HOST"
+    port = parsed.port
+    if not port:
+        port = 443 if parsed.scheme == "https" else 80
+    return host, port
+
+
+def parse_nuclei_jsonl(file_path):
+    """
+    Parses nuclei JSONL output (nuclei -jsonl) into vulnerability findings.
+
+    Each line is an independent JSON object. CVE id (when present) becomes the
+    finding name so it flows into the VulnerabilityMapper's exploit enrichment;
+    severity and references are preserved for the rules engine.
+    """
+    findings = []
+    try:
+        with open(file_path, "r", encoding="utf-8-sig", errors="ignore") as f:
+            lines = f.read().splitlines()
+    except FileNotFoundError:
+        print(f"[!] Error: nuclei JSONL file not found at {file_path}")
+        return findings
+
+    seen = set()
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            # Tolerate a stray non-JSON line rather than aborting the whole file.
+            continue
+        if not isinstance(record, dict):
+            continue
+
+        info = record.get("info", {}) if isinstance(record.get("info"), dict) else {}
+        severity = (info.get("severity") or "unknown").lower()
+        template_id = record.get("template-id") or record.get("templateID") or "nuclei_finding"
+
+        classification = info.get("classification", {}) if isinstance(info.get("classification"), dict) else {}
+        cve_ids = classification.get("cve-id") or classification.get("cve_id") or []
+        if isinstance(cve_ids, str):
+            cve_ids = [cve_ids]
+        primary_cve = cve_ids[0].upper() if cve_ids else None
+
+        host, port = _host_port(record)
+        entity_type = "vulnerability" if severity in VULN_SEVERITIES else "information_leak"
+        name = primary_cve or template_id
+
+        identifier = (host, port, name, record.get("matched-at"))
+        if identifier in seen:
+            continue
+        seen.add(identifier)
+
+        findings.append({
+            "host": host,
+            "port": port,
+            "source_tool": "nuclei",
+            "entity_type": entity_type,
+            "name": name,
+            "version": None,
+            "attributes": {
+                "template_id": template_id,
+                "template_name": info.get("name"),
+                "severity": severity,
+                "cves": cve_ids or None,
+                "cvss_score": classification.get("cvss-score") or classification.get("cvss_score"),
+                "matched_at": record.get("matched-at"),
+                "tags": info.get("tags"),
+                "references": info.get("reference"),
+                "description": info.get("description") or info.get("name"),
+            },
+        })
+
+    return findings

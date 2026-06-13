@@ -6,26 +6,14 @@ import re
 import logging
 import xml.etree.ElementTree as ET
 
-# Import all custom parser modules and the core logic components.
+# Import the core logic components and the single parser registry.
 from .attack_path_synthesizer import AttackPathSynthesizer
 from .vulnerability_mapper import VulnerabilityMapper
 from .finding_schema import FindingValidationError, validate_findings
-from parsers.active_directory.kerberos_parser import parse_getnpusers_output, parse_kerbrute_output
-from parsers.active_directory.ldapdomaindump_parser import parse_ldapdomaindump_dir
-from parsers.active_directory.sharphound_parser import parse_sharphound_dir
-from parsers.initial_foothold.enum4linux_parser import parse_enum4linux_json
-from parsers.initial_foothold.gobuster_parser import parse_gobuster_output
-from parsers.initial_foothold.nikto_parser import parse_nikto_json
-from parsers.initial_foothold.nmap_parser import parse_nmap_xml
-from parsers.initial_foothold.snmp_parser import parse_snmp_output
-from parsers.initial_foothold.sqlmap_parser import parse_sqlmap_log
-from parsers.initial_foothold.whatweb_parser import parse_whatweb_json
-from parsers.privilege_escalation.linpeas_parser import parse_linpeas
-from parsers.privilege_escalation.winpeas_parser import parse_winpeas
+from .parser_registry import PARSER_SPECS, SPEC_BY_KEY, HOST_REQUIRED_KEYS, ParserContext
 
-# ANSI color codes for formatted output
-class C:
-    RED, GREEN, YELLOW, LIGHT_BLUE, CYAN, BOLD, END = '\033[91m', '\033[92m', '\033[93m', '\033[94m', '\033[96m', '\033[1m', '\033[0m'
+# ANSI color codes for formatted output (TTY-aware; togglable via --no-color)
+from parsers.ansi import C, set_color_enabled, should_enable_color
 
 # Build a full, unambiguous path to the credentials file relative to this script's location.
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -165,51 +153,36 @@ def load_base_findings(input_json_path):
 
 
 def parse_new_data_files(args, target_host):
-    """Runs configured parsers and returns validated raw findings."""
-    parser_inputs = [
-        args.nmap_xml, args.gobuster_txt, args.nikto_json, args.whatweb_json, args.enum4linux_json,
-        args.linpeas_txt, args.winpeas_txt, args.snmp_txt, args.sharphound_dir, args.ldapdomaindump_dir,
-        args.kerbrute_txt, args.getnpusers_hashes, args.sqlmap_log
-    ]
-    if not any(parser_inputs):
+    """Runs configured parsers (driven by PARSER_SPECS) and returns validated raw findings."""
+    if not any(getattr(args, spec.key, None) for spec in PARSER_SPECS):
         return []
 
     print(f"\n{C.BOLD}{C.CYAN}[*] Parsing new data files...{C.END}\n")
 
-    parsers = {
-        "Nmap": (args.nmap_xml, lambda f: parse_nmap_xml(f)),
-        "Gobuster": (args.gobuster_txt, lambda f: parse_gobuster_output(f, target_host, args.gobuster_port, args.gobuster_mode)),
-        "Nikto": (args.nikto_json, lambda f: parse_nikto_json(f)),
-        "WhatWeb": (args.whatweb_json, lambda f: parse_whatweb_json(f)),
-        "Enum4Linux-NG": (args.enum4linux_json, lambda f: parse_enum4linux_json(f, target_host)),
-        "LinPEAS": (args.linpeas_txt, lambda f: parse_linpeas(f, target_host)),
-        "WinPEAS": (args.winpeas_txt, lambda f: parse_winpeas(f, target_host)),
-        "SNMP": (args.snmp_txt, lambda f: parse_snmp_output(f, target_host)),
-        "SharpHound": (args.sharphound_dir, lambda f: parse_sharphound_dir(f)),
-        "LDAPDomainDump": (args.ldapdomaindump_dir, lambda f: parse_ldapdomaindump_dir(f)),
-        "Kerbrute": (args.kerbrute_txt, lambda f: parse_kerbrute_output(f, target_host)),
-        "GetNPUsers": (args.getnpusers_hashes, lambda f: parse_getnpusers_output(f, target_host)),
-        "SQLMap": (args.sqlmap_log, lambda f: parse_sqlmap_log(f)),
-    }
+    ctx = ParserContext(
+        target_host=target_host,
+        gobuster_host=target_host,
+        gobuster_port=args.gobuster_port,
+        gobuster_mode=args.gobuster_mode,
+    )
 
     findings = []
-    host_required_parsers = ["Gobuster", "Enum4Linux-NG", "LinPEAS", "WinPEAS", "SNMP", "Kerbrute", "GetNPUsers"]
-
-    for name, (file_path, parser_func) in parsers.items():
+    for spec in PARSER_SPECS:
+        file_path = getattr(args, spec.key, None)
         if not file_path:
             continue
-        if name in host_required_parsers and not target_host:
-            print(f"{C.BOLD}{C.YELLOW}[!] {name} parser requires --target-host (or domain) to be set.{C.END}")
-            logger.warning("Skipped %s parser because --target-host is not set", name)
+        if spec.host_required and not target_host:
+            print(f"{C.BOLD}{C.YELLOW}[!] {spec.key} parser requires --target-host (or domain) to be set.{C.END}")
+            logger.warning("Skipped %s parser because --target-host is not set", spec.key)
             continue
         if args.verbose > 0:
-            print(f"[*] Parsing {name}: {file_path}")
-        findings_from_parser = parser_func(file_path)
-        validated_findings = validate_parser_output(name, findings_from_parser)
+            print(f"[*] Parsing {spec.key}: {file_path}")
+        findings_from_parser = spec.run(file_path, ctx)
+        validated_findings = validate_parser_output(spec.key, findings_from_parser)
         findings.extend(validated_findings)
-        logger.info("Parser %s produced %s validated findings", name, len(validated_findings))
+        logger.info("Parser %s produced %s validated findings", spec.key, len(validated_findings))
         if args.verbose > 0:
-            print(f"    [+] Found {len(validated_findings)} valid raw findings from {name}.")
+            print(f"    [+] Found {len(validated_findings)} valid raw findings from {spec.key}.")
 
     return findings
 
@@ -262,8 +235,21 @@ def _sniff_file_type_details(path):
     # JSON formats. Be careful not to misclassify plain-text logs that start
     # with bracketed tokens like [INFO], [*], or [+].
     if stripped.startswith('{') or re.match(r'^\[\s*[{"]', stripped):
+        # nuclei JSONL: one JSON object per line, before the broad checks below.
+        if '"template-id"' in sanitized_head or '"matched-at"' in sanitized_head:
+            return 'nuclei_jsonl', 'matched nuclei JSONL signature'
         if '"vulnerabilities"' in sanitized_head and '"msg"' in sanitized_head:
             return 'nikto_json', 'matched Nikto JSON signature'
+        # certipy 'find' output.
+        if '"Certificate Templates"' in sanitized_head or '"Certificate Authorities"' in sanitized_head:
+            return 'certipy_json', 'matched certipy find JSON signature'
+        # wpscan: check before whatweb because both carry a "plugins" key.
+        if '"target_url"' in sanitized_head and (
+                '"interesting_findings"' in sanitized_head or '"effective_url"' in sanitized_head or '"plugins"' in sanitized_head):
+            return 'wpscan_json', 'matched wpscan JSON signature'
+        # ffuf: results[] plus its commandline/config envelope.
+        if '"results"' in sanitized_head and ('"commandline"' in sanitized_head or '"config"' in sanitized_head):
+            return 'ffuf_json', 'matched ffuf JSON signature'
         if '"plugins"' in sanitized_head or '"WhatWeb-version"' in sanitized_head:
             return 'whatweb_json', 'matched WhatWeb JSON signature'
         if '"users"' in sanitized_head and ('"groups"' in sanitized_head or '"shares"' in sanitized_head or '"policy"' in sanitized_head):
@@ -274,8 +260,20 @@ def _sniff_file_type_details(path):
     # Plain-text formats (order matters; more specific patterns first)
     if re.search(r'VALID\s+USERNAME', sanitized_head, re.IGNORECASE):
         return 'kerbrute_txt', 'matched Kerbrute valid username signature'
+    if '$krb5tgs$' in sanitized_head:
+        return 'getuserspns_hashes', 'matched GetUserSPNs TGS-REP hash signature'
     if '$krb5asrep$' in sanitized_head:
         return 'getnpusers_hashes', 'matched GetNPUsers AS-REP hash signature'
+    # secretsdump pwdump lines (user:rid:lm:nt:::) or its banner.
+    if re.search(r'(?m)^[^\s:]+:\d+:[a-fA-F0-9]{32}:[a-fA-F0-9]{32}:::', sanitized_head) \
+            or 'dumping domain credentials' in sanitized_head.lower():
+        return 'secretsdump_txt', 'matched secretsdump hash dump signature'
+    # smbmap host/share header.
+    if re.search(r'\[\+\]\s*IP:\s*[0-9a-fA-F:.]+', sanitized_head):
+        return 'smbmap_txt', 'matched smbmap IP/share header signature'
+    # NetExec/CrackMapExec: PROTO host port name [..] result lines.
+    if re.search(r'(?m)^.*?\b(?:SMB|LDAP|LDAPS|WINRM|RDP|MSSQL)\b\s+[0-9a-fA-F:.]+\s+\d+\s+\S+\s+[\[\(]', sanitized_head):
+        return 'netexec_log', 'matched NetExec/CrackMapExec result line signature'
     if re.search(r'\[\*\]\s*System information', sanitized_head, re.IGNORECASE) or 'snmp-check' in sanitized_head[:200].lower():
         return 'snmp_txt', 'matched snmp-check section header signature'
     if re.search(r'\[INFO\].*(?:parameter|injection|vulnerable)', sanitized_head, re.IGNORECASE) and 'sqlmap' in sanitized_head[:800].lower():
@@ -519,39 +517,25 @@ def run_scan_mode(args):
         if _p: gb_port_val = _p
         if _m: gb_mode_val = _m
 
-    # Map parser keys to (callable, host_required)
-    HOST_REQUIRED = {
-        'gobuster_txt', 'enum4linux_json', 'linpeas_txt',
-        'winpeas_txt', 'snmp_txt', 'kerbrute_txt', 'getnpusers_hashes',
-    }
-
-    def _make_parser(key):
-        if key == 'nmap_xml':        return lambda p: parse_nmap_xml(p)
-        if key == 'gobuster_txt':    return lambda p: parse_gobuster_output(p, gb_host_val, gb_port_val, gb_mode_val)
-        if key == 'nikto_json':      return lambda p: parse_nikto_json(p)
-        if key == 'whatweb_json':    return lambda p: parse_whatweb_json(p)
-        if key == 'enum4linux_json': return lambda p: parse_enum4linux_json(p, target_host)
-        if key == 'linpeas_txt':     return lambda p: parse_linpeas(p, target_host)
-        if key == 'winpeas_txt':     return lambda p: parse_winpeas(p, target_host)
-        if key == 'snmp_txt':        return lambda p: parse_snmp_output(p, target_host)
-        if key == 'sharphound_dir':  return lambda p: parse_sharphound_dir(p)
-        if key == 'ldapdomaindump_dir': return lambda p: parse_ldapdomaindump_dir(p)
-        if key == 'kerbrute_txt':    return lambda p: parse_kerbrute_output(p, target_host)
-        if key == 'getnpusers_hashes': return lambda p: parse_getnpusers_output(p, target_host)
-        if key == 'sqlmap_log':      return lambda p: parse_sqlmap_log(p)
-        return None
+    # The same registry drives scan-mode dispatch and host-required checks.
+    ctx = ParserContext(
+        target_host=target_host,
+        gobuster_host=gb_host_val,
+        gobuster_port=gb_port_val,
+        gobuster_mode=gb_mode_val,
+    )
 
     print(f"\n{C.BOLD}{C.CYAN}[*] Parsing detected files...{C.END}\n")
     all_raw_findings = []
 
     for key, path in detected.items():
-        parser_fn = _make_parser(key)
-        if parser_fn is None:
+        spec = SPEC_BY_KEY.get(key)
+        if spec is None:
             continue
-        if key in HOST_REQUIRED and not target_host:
+        if spec.host_required and not target_host:
             print(f"    {C.YELLOW}[!]{C.END} Skipping {key}: --target-host is required.")
             continue
-        raw = parser_fn(path)
+        raw = spec.run(path, ctx)
         validated = validate_parser_output(key, raw)
         all_raw_findings.extend(validated)
         label = os.path.relpath(path, loot_dir)
@@ -581,8 +565,6 @@ def run_scan_mode(args):
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 def main():
-    print_banner()
-
     main_parser = argparse.ArgumentParser(
         description="PathFinder — Intelligent Reconnaissance Analysis for Pentesters",
         formatter_class=argparse.RawTextHelpFormatter,
@@ -611,22 +593,13 @@ def main():
     scan_p.add_argument('--skip-github', action='store_true', help='Skip GitHub exploit enrichment.')
     scan_p.add_argument('--skip-searchsploit', action='store_true', help='Skip Searchsploit enrichment.')
     scan_p.add_argument('--github-cache', default=os.path.join(SCRIPT_DIR, 'github_cache.json'), help='Path to GitHub lookup cache JSON file.')
+    scan_p.add_argument('--no-color', action='store_true', help='Disable ANSI colour output.')
 
     # ── manual mode args (no subcommand) ──────────────────────────────────────
+    # The per-parser input flags are generated from the single PARSER_SPECS list.
     ag = main_parser.add_argument_group('Analysis Input Arguments')
-    ag.add_argument("--nmap-xml", help="Path to Nmap XML output file.")
-    ag.add_argument("--gobuster-txt", help="Path to Gobuster text output file.")
-    ag.add_argument("--nikto-json", help="Path to Nikto JSON output file.")
-    ag.add_argument("--whatweb-json", help="Path to WhatWeb JSON output file.")
-    ag.add_argument("--enum4linux-json", help="Path to enum4linux-ng JSON output file.")
-    ag.add_argument("--linpeas-txt", help="Path to LinPEAS output text file.")
-    ag.add_argument("--winpeas-txt", help="Path to WinPEAS output text file.")
-    ag.add_argument("--snmp-txt", help="Path to snmp-check output text file.")
-    ag.add_argument("--sharphound-dir", help="Path to directory with unzipped SharpHound JSON files.")
-    ag.add_argument("--ldapdomaindump-dir", help="Path to directory with ldapdomaindump TSV files.")
-    ag.add_argument("--kerbrute-txt", help="Path to kerbrute valid user list.")
-    ag.add_argument("--getnpusers-hashes", help="Path to impacket-GetNPUsers hash file.")
-    ag.add_argument("--sqlmap-log", help="Path to sqlmap log file from its output directory.")
+    for spec in PARSER_SPECS:
+        ag.add_argument(spec.flag, dest=spec.key, help=spec.help)
     ag.add_argument("--target-host", help="Target host IP or domain. Required for many parsers.")
     ag.add_argument("--gobuster-host", help="Target host for Gobuster. Deprecated, use --target-host.")
     ag.add_argument("--gobuster-port", type=int, help="Target port for Gobuster output.")
@@ -647,9 +620,12 @@ def main():
     gg.add_argument("--skip-github", action="store_true", help="Skip GitHub exploit repository enrichment.")
     gg.add_argument("--skip-searchsploit", action="store_true", help="Skip Searchsploit enrichment.")
     gg.add_argument("--github-cache", default=os.path.join(SCRIPT_DIR, "github_cache.json"), help="Path to GitHub lookup cache JSON file.")
+    gg.add_argument("--no-color", action="store_true", help="Disable ANSI colour output.")
 
     args = main_parser.parse_args()
     configure_logging(args.verbose)
+    set_color_enabled(should_enable_color(getattr(args, 'no_color', False)))
+    print_banner()
 
     # Dispatch to scan mode if subcommand given
     if args.command == 'scan':

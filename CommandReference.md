@@ -42,9 +42,17 @@ python3 -m main.pathfinder scan loot/ --target-host TARGET_IP -o findings.json
 | XML with `<nmaprun` | Nmap |
 | JSON with `"vulnerabilities"` + `"msg"` | Nikto |
 | JSON with `"plugins"` | WhatWeb |
+| JSON with `"results"` + `"commandline"` | ffuf |
+| JSONL with `"template-id"` / `"matched-at"` | nuclei |
+| JSON with `"target_url"` + `"plugins"` | wpscan |
 | JSON with `"users"` + `"groups"` | enum4linux-ng |
+| JSON with `"Certificate Templates"` | certipy |
 | Text with `VALID USERNAME:` | Kerbrute |
 | Text with `$krb5asrep$` | impacket-GetNPUsers |
+| Text with `$krb5tgs$` | impacket-GetUserSPNs |
+| Text with `user:rid:lm:nt:::` | impacket-secretsdump |
+| Text with `[+] IP:` + share table | smbmap |
+| Text with `SMB <ip> <port> <name> [..]` | NetExec / CrackMapExec |
 | Text with `[*] System information` | snmp-check |
 | Text with `/path (Status: NNN)` | Gobuster (dir mode) |
 | Text with `Found: subdomain` | Gobuster (vhost mode) |
@@ -54,7 +62,7 @@ python3 -m main.pathfinder scan loot/ --target-host TARGET_IP -o findings.json
 | Directory with `users.json` + `domains.json` | SharpHound |
 | Directory with `domain_users.tsv` | ldapdomaindump |
 
-> **Note:** For host-dependent parsers (LinPEAS, WinPEAS, Gobuster, SNMP, Kerbrute, GetNPUsers, enum4linux), the target host is inferred from the nmap XML or Gobuster header. Pass `--target-host` explicitly if those are absent.
+> **Note:** For host-dependent parsers (LinPEAS, WinPEAS, Gobuster, SNMP, Kerbrute, enum4linux), the target host is inferred from the nmap XML or Gobuster header. Pass `--target-host` explicitly if those are absent. Single-target by design: scan mode infers **one** target host and applies it to every host-dependent parser, which matches the typical OSCP/CTF single-box workflow — for multiple hosts, run PathFinder once per host's loot directory.
 
 ---
 
@@ -122,6 +130,42 @@ whatweb --log-json=whatweb.json http://TARGET_HOST:PORT
 python3 -m main.pathfinder --whatweb-json whatweb.json
 ```
 
+#### 4b. ffuf
+
+Use `-of json` for machine-readable output. Findings are treated like Gobuster web content.
+
+```bash
+ffuf -u http://TARGET_HOST:PORT/FUZZ -w WORDLIST -of json -o ffuf.json
+```
+
+```bash
+python3 -m main.pathfinder --ffuf-json ffuf.json
+```
+
+#### 4c. nuclei
+
+Use `-jsonl` for line-delimited JSON. CVE IDs feed the exploit mapper; severity drives prioritisation.
+
+```bash
+nuclei -u http://TARGET_HOST:PORT -jsonl -o nuclei.jsonl
+```
+
+```bash
+python3 -m main.pathfinder --nuclei-jsonl nuclei.jsonl
+```
+
+#### 4d. wpscan
+
+Use `--format json`. Core/plugins/themes become software products (exploit-mapped by version); reported issues become vulnerabilities; enumerated users feed spraying rules.
+
+```bash
+wpscan --url http://TARGET_HOST:PORT --format json -o wpscan.json
+```
+
+```bash
+python3 -m main.pathfinder --wpscan-json wpscan.json
+```
+
 #### 5. enum4linux-ng
 
 Use `-oJ` for JSON output. This is the only supported format.
@@ -133,6 +177,31 @@ enum4linux-ng -A -oJ enum4linux TARGET_IP
 
 ```bash
 python3 -m main.pathfinder --enum4linux-json enum4linux.json --target-host TARGET_IP
+```
+
+#### 5b. smbmap
+
+Redirect stdout to a file. Writable shares become high-value misconfiguration findings.
+
+```bash
+smbmap -H TARGET_IP -u guest -p '' > smbmap.txt
+```
+
+```bash
+python3 -m main.pathfinder --smbmap-txt smbmap.txt
+```
+
+#### 5c. NetExec / CrackMapExec
+
+Use `--log` to save (or redirect the console output). Validated creds, `Pwn3d!` admin access, SMB signing status, null sessions, and shares are all parsed.
+
+```bash
+nxc smb TARGET_IP -u USER -p PASS --shares --users --log nxc.log
+# CrackMapExec output is also accepted (near-identical format)
+```
+
+```bash
+python3 -m main.pathfinder --netexec-log nxc.log
 ```
 
 #### 6. SNMP (`snmp-check`)
@@ -254,6 +323,43 @@ python3 -m main.pathfinder \
   --target-host DOMAIN.COM
 ```
 
+#### 13. impacket-GetUserSPNs (Kerberoasting)
+
+Requires valid domain credentials. Each captured TGS-REP hash becomes a Kerberoastable-user finding **and** a reusable credential.
+
+```bash
+impacket-GetUserSPNs DOMAIN.COM/USER:PASS -dc-ip TARGET_IP -request -outputfile kerberoast.txt
+```
+
+```bash
+python3 -m main.pathfinder --getuserspns-hashes kerberoast.txt
+```
+
+#### 14. impacket-secretsdump
+
+Recovered NT hashes (and any cleartext) become credentials that spray/PtH against every discovered service.
+
+```bash
+impacket-secretsdump DOMAIN.COM/USER:PASS@TARGET_IP | tee secretsdump.txt
+```
+
+```bash
+python3 -m main.pathfinder --secretsdump-txt secretsdump.txt
+```
+
+#### 15. certipy (AD CS)
+
+Use `-json`. Each ESC* finding on a vulnerable template becomes a privilege-escalation path.
+
+```bash
+certipy find -u USER@DOMAIN.COM -p PASS -dc-ip TARGET_IP -json -output certipy
+# Produces certipy_Certipy.json
+```
+
+```bash
+python3 -m main.pathfinder --certipy-json certipy_Certipy.json
+```
+
 ---
 
 ## Data Persistence — Saving and Loading Findings
@@ -308,4 +414,7 @@ python3 -m main.pathfinder --learn
 
 # Increase the number of public exploits shown (default: 10 per source)
 python3 -m main.pathfinder scan loot/ --max-vulns 25
+
+# Disable ANSI colour (also auto-disabled when output is piped/redirected)
+python3 -m main.pathfinder scan loot/ --no-color
 ```

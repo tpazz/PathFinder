@@ -114,3 +114,66 @@ def parse_getnpusers_output(file_path, domain):
     except FileNotFoundError:
         print(f"[!] Error: GetNPUsers output file not found at {file_path}")
     return findings
+
+
+def parse_getuserspns_output(file_path, domain):
+    """
+    Parses the hash output of impacket-GetUserSPNs (Kerberoasting).
+
+    Handles the TGS-REP hash format:
+      $krb5tgs$23$*user$REALM$.../user*$<hash>
+
+    For each captured hash it emits both a 'credential' finding (so the hash can
+    be sprayed/cracked and reused) and a 'kerberoastable_user' privilege
+    escalation finding (matching the existing Kerberoast attack rule).
+
+    Args:
+        file_path (str): Path to the GetUserSPNs hash file.
+        domain (str): The target domain name.
+
+    Returns:
+        list: A list of finding dictionaries.
+    """
+    findings = []
+    seen_users = set()
+    # $krb5tgs$<etype>$*<user>$<realm>$... ; user/realm are between the first '*' and '$'.
+    tgs_pattern = re.compile(r'\$krb5tgs\$(\d+)\$\*([^$*]+)\$([^$*]+)\$')
+
+    try:
+        with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+            for line in f:
+                raw = ANSI_ESCAPE_PATTERN.sub('', line).strip()
+                if '$krb5tgs$' not in raw:
+                    continue
+
+                match = tgs_pattern.search(raw)
+                if not match:
+                    continue
+                etype, username, realm = match.groups()
+                if username.lower() in seen_users:
+                    continue
+                seen_users.add(username.lower())
+
+                host = domain or realm or "UNKNOWN_DOMAIN"
+                findings.append({
+                    "host": host, "port": 88, "source_tool": "impacket-GetUserSPNs",
+                    "entity_type": "privilege_escalation", "name": "kerberoastable_user", "version": None,
+                    "attributes": {
+                        "user": f"{username}@{realm}" if realm else username,
+                        "description": f"User {username} has an SPN and is Kerberoastable; TGS-REP hash captured.",
+                    },
+                })
+                findings.append({
+                    "host": host, "port": 88, "source_tool": "impacket-GetUserSPNs",
+                    "entity_type": "credential", "name": username, "version": None,
+                    "attributes": {
+                        "domain": realm or None,
+                        "hash": raw,
+                        "hash_type": "Kerberos (TGS-REP, 13100)",
+                        "etype": etype,
+                        "source_of_credential": "GetUserSPNs Kerberoast",
+                    },
+                })
+    except FileNotFoundError:
+        print(f"[!] Error: GetUserSPNs output file not found at {file_path}")
+    return findings

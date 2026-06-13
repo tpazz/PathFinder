@@ -12,7 +12,7 @@ PE_COLOR_SIGNATURE = re.compile(
 
 LINUX_PE_KEYWORDS = {
     "suid": "suid_binary_found",
-    "guid": "guid_binary_found",
+    "sgid": "sgid_binary_found",
     "capabilities": "process_capabilities_found",
     "sudo version": "outdated_sudo_version",
     "sudo -l": "sudo_nopasswd_privileges",

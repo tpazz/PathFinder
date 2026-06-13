@@ -29,14 +29,15 @@ PathFinder aims to:
 
 ## Key Features
 
-- **Auto-Detect Scan Mode:** Drop all tool outputs into a folder and run `pathfinder scan ./loot/`. PathFinder identifies file types by content and runs the right parser automatically - no need to remember 13 flag names under exam pressure.
-- **Multi-Input Parsing:** Ingests and normalises data from Nmap, Gobuster, Nikto, WhatWeb, enum4linux-ng, SNMP, SQLMap, LinPEAS, WinPEAS, SharpHound, ldapdomaindump, Kerbrute, and impacket-GetNPUsers.
+- **Auto-Detect Scan Mode:** Drop all tool outputs into a folder and run `pathfinder scan ./loot/`. PathFinder identifies file types by content and runs the right parser automatically - no need to remember the flag names under exam pressure.
+- **Multi-Input Parsing:** Ingests and normalises data from Nmap, Gobuster, ffuf, Nikto, WhatWeb, nuclei, wpscan, enum4linux-ng, smbmap, NetExec/CrackMapExec, SNMP, SQLMap, LinPEAS, WinPEAS, SharpHound, ldapdomaindump, Kerbrute, impacket-GetNPUsers, impacket-GetUserSPNs, impacket-secretsdump, and certipy.
 - **Vulnerability & Exploit Mapping:** Correlates identified services and versions with known CVEs and public exploits via Exploit-DB (`searchsploit`) and GitHub.
-- **Attack Path Synthesis:** A 52-rule engine covering initial foothold, credential reuse, web attacks, Linux/Windows privilege escalation, and Active Directory attack paths (Kerberoasting, AS-REP roasting, DCSync, ACL abuse, delegation attacks, and more).
+- **Attack Path Synthesis:** A 58-rule engine covering initial foothold, credential reuse and pass-the-hash, web attacks, Linux/Windows privilege escalation, and Active Directory attack paths (Kerberoasting, AS-REP roasting, DCSync, ACL abuse, delegation attacks, AD CS/ESC, and more).
 - **Iterative Workflow:** Save findings to JSON after initial recon, reload and append later stages (post-exploitation, AD enumeration) without re-running parsers.
 - **Interactive Credential Management:** Add found credentials with `--add-cred`. They are automatically weaponised against all discovered login services by the synthesiser.
 - **User-Trainable Intelligence:** Teach PathFinder new attack patterns with `--learn`.
-- **Tool Output Compatibility:** Handles multiple output format variants, ANSI colour codes, timestamped entries, and version differences across all supported tools.
+- **Tool Output Compatibility:** Handles multiple output format variants, ANSI colour codes, timestamped entries, and version differences across all supported tools. Colour output is TTY-aware (auto-disabled when piped) and can be forced off with `--no-color`.
+- **Single-Target Focus:** Scan mode infers one target host per loot directory - matching the typical OSCP/CTF single-box workflow. For multi-host engagements, run PathFinder once per host's loot directory.
 
 ---
 

