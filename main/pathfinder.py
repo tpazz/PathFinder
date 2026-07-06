@@ -157,7 +157,7 @@ def parse_new_data_files(args, target_host):
     if not any(getattr(args, spec.key, None) for spec in PARSER_SPECS):
         return []
 
-    print(f"\n{C.BOLD}{C.CYAN}[*] Parsing new data files...{C.END}\n")
+    print(f"\n{C.BOLD}{C.CYAN}[*] Parsing new data files...{C.END}")
 
     ctx = ParserContext(
         target_host=target_host,
@@ -191,7 +191,7 @@ def map_findings(args, new_raw_findings):
     """Runs vulnerability mapping/prioritization for new findings."""
     if not new_raw_findings:
         return []
-    print(f"\n{C.BOLD}{C.CYAN}[*] Running Vulnerability Mapper on new findings...{C.END}\n")
+    print(f"\n{C.BOLD}{C.CYAN}[*] Running Vulnerability Mapper on new findings...{C.END}")
     use_github = not (args.offline or args.skip_github)
     use_searchsploit = not (args.offline or args.skip_searchsploit)
     vuln_mapper = VulnerabilityMapper(
@@ -345,61 +345,102 @@ def _nmap_extract_target(path):
     return None
 
 
-def auto_detect_loot(directory, verbose=0):
-    """
-    Walks a loot directory and auto-detects tool output files.
-
-    Returns a dict mapping parser keys to file/directory paths, e.g.:
-        {'nmap_xml': '/loot/nmap.xml', 'gobuster_txt': '/loot/gobuster.txt', ...}
-    """
-    detected = {}
-
+def _detect_dir_based_parsers(scan_root, host, detections, dir_parser_paths, verbose):
+    """Detect SharpHound / ldapdomaindump directories in scan_root or its immediate subdirs."""
     try:
-        entries = list(os.scandir(directory))
-    except (NotADirectoryError, PermissionError, FileNotFoundError) as e:
-        print(f"{C.BOLD}{C.RED}[!] Cannot scan directory '{directory}': {e}{C.END}")
-        return detected
-
-    # Check the loot dir itself and immediate subdirectories for directory-based parsers.
-    candidates = [directory] + [e.path for e in entries if e.is_dir()]
-    for candidate in candidates:
+        subdirs = [e.path for e in os.scandir(scan_root) if e.is_dir()]
+    except (PermissionError, FileNotFoundError, NotADirectoryError):
+        return
+    for candidate in [scan_root] + subdirs:
+        if candidate in dir_parser_paths:
+            continue
         try:
             contents_lower = {f.lower() for f in os.listdir(candidate)}
-        except PermissionError:
+        except (PermissionError, FileNotFoundError):
             continue
         # SharpHound: needs at least users.json + domains.json
         if 'users.json' in contents_lower and 'domains.json' in contents_lower:
-            if 'sharphound_dir' not in detected:
-                detected['sharphound_dir'] = candidate
-                if verbose > 0:
-                    print(f"    [auto-detect] {os.path.basename(candidate)}/ -> sharphound_dir")
+            detections.append({"host": host, "key": "sharphound_dir", "path": candidate,
+                               "reason": "directory with users.json + domains.json"})
+            dir_parser_paths.add(candidate)
+            if verbose > 0:
+                print(f"    [auto-detect] {os.path.basename(candidate)}/ -> sharphound_dir"
+                      + (f" (host {host})" if host else ""))
         # ldapdomaindump: needs domain_users.tsv
         if 'domain_users.tsv' in contents_lower:
-            if 'ldapdomaindump_dir' not in detected:
-                detected['ldapdomaindump_dir'] = candidate
-                if verbose > 0:
-                    print(f"    [auto-detect] {os.path.basename(candidate)}/ -> ldapdomaindump_dir")
-
-    # Sniff individual files in the top-level loot directory.
-    for entry in entries:
-        if not entry.is_file():
-            continue
-        file_type, reason = _sniff_file_type_details(entry.path)
-        if file_type and file_type not in detected:
-            detected[file_type] = entry.path
+            detections.append({"host": host, "key": "ldapdomaindump_dir", "path": candidate,
+                               "reason": "directory with domain_users.tsv"})
+            dir_parser_paths.add(candidate)
             if verbose > 0:
-                print(f"    [auto-detect] {entry.name} -> {file_type}")
-            if verbose > 1:
-                print(f"        reason: {reason}")
-        elif file_type and verbose > 1:
-            original = os.path.basename(detected[file_type])
-            print(f"    [auto-detect] {entry.name} skipped (duplicate {file_type}; first match: {original})")
-            print(f"        reason: {reason}")
-        elif verbose > 1:
-            print(f"    [auto-detect] {entry.name} skipped")
-            print(f"        reason: {reason}")
+                print(f"    [auto-detect] {os.path.basename(candidate)}/ -> ldapdomaindump_dir"
+                      + (f" (host {host})" if host else ""))
 
-    return detected
+
+def _sniff_and_record(path, label, host, detections, verbose):
+    """Content-sniff a single file and append a detection record if recognised."""
+    file_type, reason = _sniff_file_type_details(path)
+    if file_type:
+        detections.append({"host": host, "key": file_type, "path": path, "reason": reason})
+        if verbose > 0:
+            print(f"    [auto-detect] {label} -> {file_type}" + (f" (host {host})" if host else ""))
+        if verbose > 1:
+            print(f"        reason: {reason}")
+    elif verbose > 1:
+        print(f"    [auto-detect] {label} skipped")
+        print(f"        reason: {reason}")
+
+
+def auto_detect_loot(directory, verbose=0):
+    """
+    Walks a loot directory and auto-detects every tool output file.
+
+    Supports two layouts (and mixtures of them):
+      - Flat: files sit directly in `directory`. Their host is unknown here and is
+        resolved later from nmap/gobuster/--target-host (single-host workflow).
+      - Per-host: one subdirectory per host, named after the host (e.g.
+        `loot/10.10.10.10/`). Every file inside is attributed to that host, which
+        is exactly the context the host-dependent parsers (linpeas, snmp,
+        enum4linux, ...) need.
+
+    Returns a list of detection records:
+        [{"host": <str|None>, "key": <parser_key>, "path": <path>, "reason": <str>}]
+    Every recognised file is returned (no first-per-type dropping), so repeated
+    scans and multiple web ports/hosts are all ingested.
+    """
+    detections = []
+    dir_parser_paths = set()
+
+    try:
+        top_entries = list(os.scandir(directory))
+    except (NotADirectoryError, PermissionError, FileNotFoundError) as e:
+        print(f"{C.BOLD}{C.RED}[!] Cannot scan directory '{directory}': {e}{C.END}")
+        return detections
+
+    # Pass 1: directory-based parsers at the top level (host unknown).
+    _detect_dir_based_parsers(directory, None, detections, dir_parser_paths, verbose)
+
+    # Pass 2: loose files directly in the loot dir (flat / single-host).
+    for entry in top_entries:
+        if entry.is_file():
+            _sniff_and_record(entry.path, entry.name, None, detections, verbose)
+
+    # Pass 3: per-host subdirectories. The directory name is the host context.
+    for entry in top_entries:
+        if not entry.is_dir() or entry.path in dir_parser_paths:
+            continue
+        # Skip helper/hidden dirs (e.g. one-shot-enum's _logs stdout captures).
+        if entry.name.startswith('_') or entry.name.startswith('.'):
+            continue
+        host = entry.name
+        _detect_dir_based_parsers(entry.path, host, detections, dir_parser_paths, verbose)
+        try:
+            host_files = [e for e in os.scandir(entry.path) if e.is_file()]
+        except (PermissionError, FileNotFoundError):
+            continue
+        for f in host_files:
+            _sniff_and_record(f.path, f"{host}/{f.name}", host, detections, verbose)
+
+    return detections
 
 
 # ── Shared output pipeline ─────────────────────────────────────────────────────
@@ -409,7 +450,7 @@ def _save_findings(args, findings):
     if not getattr(args, 'output_json', None):
         return
     try:
-        print(f"\n{C.BOLD}{C.CYAN}[*] Saving prioritized findings to: {args.output_json}{C.END}\n")
+        print(f"\n{C.BOLD}{C.CYAN}[*] Saving prioritized findings to: {args.output_json}{C.END}")
         with open(args.output_json, 'w') as f:
             json.dump(findings, f, indent=4)
         print(f"    {C.GREEN}[+]{C.END} Successfully saved {len(findings)} findings.")
@@ -419,7 +460,7 @@ def _save_findings(args, findings):
 
 def _display_results(args, synthesizer, prioritized_findings):
     """Runs the synthesizer and prints attack paths + findings list."""
-    print(f"\n{C.BOLD}{C.CYAN}[*] Running Attack Path Synthesizer...{C.END}\n")
+    print(f"\n{C.BOLD}{C.CYAN}[*] Running Attack Path Synthesizer...{C.END}")
     suggested_paths = synthesizer.generate_attack_paths(prioritized_findings)
 
     if suggested_paths:
@@ -475,78 +516,102 @@ def run_scan_mode(args):
     synthesizer = AttackPathSynthesizer()
     loot_dir = os.path.abspath(args.loot_dir)
 
-    print(f"\n{C.BOLD}{C.CYAN}[*] Scanning loot directory: {loot_dir}{C.END}\n")
+    print(f"\n{C.BOLD}{C.CYAN}[*] Scanning loot directory: {loot_dir}{C.END}")
 
     if args.verbose > 0:
-        print(f"{C.BOLD}{C.CYAN}[*] Running file detection...{C.END}")
+        print(f"\n{C.BOLD}{C.CYAN}[*] Running file detection...{C.END}")
 
-    detected = auto_detect_loot(loot_dir, verbose=args.verbose)
+    detections = auto_detect_loot(loot_dir, verbose=args.verbose)
 
-    if not detected:
+    if not detections:
         print(f"{C.BOLD}{C.YELLOW}[!] No recognizable tool output files found in '{loot_dir}'.{C.END}")
         print(f"    Tip: Use manual flags (--nmap-xml, --gobuster-txt, etc.) if auto-detection fails.")
         sys.exit(1)
 
-    print(f"{C.BOLD}{C.CYAN}[*] Detected {len(detected)} parseable source(s):{C.END}\n")
-    for key, path in detected.items():
-        rel = os.path.relpath(path, loot_dir)
-        print(f"    {C.GREEN}[+]{C.END} {key:<25} -> {rel}")
+    # Summarise detections grouped by host (None = flat/loose files).
+    hosts_seen = sorted({d['host'] for d in detections if d['host']})
+    host_label = f" across {len(hosts_seen)} host(s)" if hosts_seen else ""
+    print(f"\n{C.BOLD}{C.CYAN}[*] Detected {len(detections)} parseable source(s){host_label}:{C.END}")
+    if hosts_seen:
+        # Multi-host layout: group sources under each host (plus any loose files).
+        for group in hosts_seen + [None]:
+            group_records = [d for d in detections if d['host'] == group]
+            if not group_records:
+                continue
+            header = f"host {group}" if group else "loose files (host inferred)"
+            print(f"    {C.BOLD}{header}{C.END}")
+            for d in group_records:
+                rel = os.path.relpath(d['path'], loot_dir)
+                print(f"      {C.GREEN}[+]{C.END} {d['key']:<25} -> {rel}")
+    else:
+        # Flat single-host loot: list sources directly.
+        for d in detections:
+            rel = os.path.relpath(d['path'], loot_dir)
+            print(f"    {C.GREEN}[+]{C.END} {d['key']:<25} -> {rel}")
 
-    # Infer target host
-    target_host = getattr(args, 'target_host', None)
-    if not target_host and 'nmap_xml' in detected:
-        inferred = _nmap_extract_target(detected['nmap_xml'])
-        if inferred:
-            target_host = inferred
-            print(f"\n{C.BOLD}{C.CYAN}[*] Target host inferred from Nmap XML: {C.END}{C.BOLD}{target_host}{C.END}")
-    if not target_host and 'gobuster_txt' in detected:
-        gb_host, _, _ = _gobuster_extract_target(detected['gobuster_txt'])
-        if gb_host:
-            target_host = gb_host
-            print(f"\n{C.BOLD}{C.CYAN}[*] Target host inferred from Gobuster output: {C.END}{C.BOLD}{target_host}{C.END}")
-    if not target_host:
-        print(f"\n{C.BOLD}{C.YELLOW}[!] Could not infer target host. Pass --target-host to avoid skipping host-dependent parsers.{C.END}")
+    # A global target host is only needed for flat (host-less) host-dependent files;
+    # per-host records already carry their host via the directory name.
+    global_target = getattr(args, 'target_host', None)
+    if not global_target:
+        flat_nmap = next((d for d in detections if d['key'] == 'nmap_xml' and d['host'] is None), None)
+        if flat_nmap:
+            global_target = _nmap_extract_target(flat_nmap['path'])
+            if global_target:
+                print(f"\n{C.BOLD}{C.CYAN}[*] Target host inferred from Nmap XML: {C.END}{C.BOLD}{global_target}{C.END}")
+    if not global_target:
+        flat_gob = next((d for d in detections if d['key'] == 'gobuster_txt' and d['host'] is None), None)
+        if flat_gob:
+            gb_host, _, _ = _gobuster_extract_target(flat_gob['path'])
+            if gb_host:
+                global_target = gb_host
+                print(f"\n{C.BOLD}{C.CYAN}[*] Target host inferred from Gobuster output: {C.END}{C.BOLD}{global_target}{C.END}")
 
-    # Determine gobuster connection details
-    gb_host_val = target_host
-    gb_port_val = 80
-    gb_mode_val = 'dir'
-    if 'gobuster_txt' in detected:
-        _h, _p, _m = _gobuster_extract_target(detected['gobuster_txt'])
-        if _h: gb_host_val = _h
-        if _p: gb_port_val = _p
-        if _m: gb_mode_val = _m
-
-    # The same registry drives scan-mode dispatch and host-required checks.
-    ctx = ParserContext(
-        target_host=target_host,
-        gobuster_host=gb_host_val,
-        gobuster_port=gb_port_val,
-        gobuster_mode=gb_mode_val,
-    )
-
-    print(f"\n{C.BOLD}{C.CYAN}[*] Parsing detected files...{C.END}\n")
+    print(f"\n{C.BOLD}{C.CYAN}[*] Parsing detected files...{C.END}")
     all_raw_findings = []
+    skipped_hostless = False
 
-    for key, path in detected.items():
+    for d in detections:
+        key, path = d['key'], d['path']
         spec = SPEC_BY_KEY.get(key)
         if spec is None:
             continue
-        if spec.host_required and not target_host:
-            print(f"    {C.YELLOW}[!]{C.END} Skipping {key}: --target-host is required.")
+
+        host = d['host'] or global_target
+        if spec.host_required and not host:
+            rel = os.path.relpath(path, loot_dir)
+            print(f"    {C.YELLOW}[!]{C.END} Skipping {key} ({rel}): no host context (pass --target-host or use per-host loot dirs).")
+            skipped_hostless = True
             continue
+
+        # Gobuster carries its own host/port/mode in the file header; fall back to the dir host.
+        gb_host, gb_port, gb_mode = host, 80, 'dir'
+        if key == 'gobuster_txt':
+            _h, _p, _m = _gobuster_extract_target(path)
+            gb_host = _h or host
+            gb_port = _p or 80
+            gb_mode = _m or 'dir'
+
+        ctx = ParserContext(target_host=host, gobuster_host=gb_host,
+                            gobuster_port=gb_port, gobuster_mode=gb_mode)
         raw = spec.run(path, ctx)
         validated = validate_parser_output(key, raw)
+        # Record provenance: which file each finding came from.
+        rel = os.path.relpath(path, loot_dir)
+        for finding in validated:
+            finding.setdefault('attributes', {})['source_file'] = rel
         all_raw_findings.extend(validated)
-        label = os.path.relpath(path, loot_dir)
-        print(f"    {C.GREEN}[+]{C.END} {key:<25} -> {len(validated)} findings  ({label})")
-        logger.info("Scan parser %s produced %s validated findings", key, len(validated))
+        host_tag = f" [{host}]" if host else ""
+        print(f"    {C.GREEN}[+]{C.END} {key:<25} -> {len(validated)} findings  ({rel}){host_tag}")
+        logger.info("Scan parser %s (%s) produced %s validated findings", key, rel, len(validated))
+
+    if skipped_hostless and not global_target:
+        print(f"\n{C.BOLD}{C.YELLOW}[!] Some host-dependent files were skipped for lack of host context.{C.END}")
 
     if not all_raw_findings:
         print(f"\n{C.BOLD}{C.YELLOW}[!] No findings produced from any parser. Exiting.{C.END}")
         sys.exit(0)
 
-    print(f"\n{C.BOLD}{C.CYAN}[*] Running Vulnerability Mapper...{C.END}\n")
+    print(f"\n{C.BOLD}{C.CYAN}[*] Running Vulnerability Mapper...{C.END}")
     use_github = not (getattr(args, 'offline', False) or getattr(args, 'skip_github', False))
     use_searchsploit = not (getattr(args, 'offline', False) or getattr(args, 'skip_searchsploit', False))
     vuln_mapper = VulnerabilityMapper(

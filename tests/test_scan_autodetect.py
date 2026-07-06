@@ -65,7 +65,8 @@ class ScanAutodetectTests(unittest.TestCase):
             (loot / "gobuster-first.txt").write_text(content, encoding="utf-8")
 
             detected = auto_detect_loot(str(loot))
-            self.assertEqual(detected.get("gobuster_txt"), str(loot / "gobuster-first.txt"))
+            gobuster_paths = [d["path"] for d in detected if d["key"] == "gobuster_txt"]
+            self.assertIn(str(loot / "gobuster-first.txt"), gobuster_paths)
 
     def test_auto_detect_loot_finds_gobuster_file_without_leading_slash(self):
         content = (
@@ -77,7 +78,8 @@ class ScanAutodetectTests(unittest.TestCase):
             (loot / "gobuster.txt").write_text(content, encoding="utf-8")
 
             detected = auto_detect_loot(str(loot))
-            self.assertEqual(detected.get("gobuster_txt"), str(loot / "gobuster.txt"))
+            gobuster_paths = [d["path"] for d in detected if d["key"] == "gobuster_txt"]
+            self.assertIn(str(loot / "gobuster.txt"), gobuster_paths)
 
     def test_gobuster_target_extraction_accepts_uppercase_url(self):
         content = (

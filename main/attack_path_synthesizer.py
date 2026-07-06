@@ -251,13 +251,15 @@ class AttackPathSynthesizer:
             if not candidate_lists:
                 continue
 
-            rule_path_count = 0
+            # Cap paths PER destination host so one noisy host on a multi-host
+            # engagement can't crowd out attack paths on the others.
+            host_path_counts = {}
             combinations_examined = 0
-            capped = False
+            capped_hosts = set()
 
             for combination in itertools.product(*candidate_lists):
-                if rule_path_count >= MAX_PATHS_PER_RULE or combinations_examined >= MAX_COMBINATIONS_PER_RULE:
-                    capped = True
+                if combinations_examined >= MAX_COMBINATIONS_PER_RULE:
+                    capped_hosts.add("*")
                     break
                 combinations_examined += 1
 
@@ -266,12 +268,16 @@ class AttackPathSynthesizer:
                 if 'suggestion' not in rule:
                     continue
 
+                host = self._target_host_for_combination(combination)
+                if host_path_counts.get(host, 0) >= MAX_PATHS_PER_RULE:
+                    capped_hosts.add(host)
+                    continue
+
                 matched_findings_by_id = {
                     trigger.get("id", idx + 1): finding
                     for idx, (trigger, finding) in enumerate(zip(triggers, combination))
                 }
                 suggestion = self._format_suggestion(rule['suggestion'], matched_findings_by_id)
-                host = self._target_host_for_combination(combination)
 
                 # Dedup near-identical paths (same rule + host + resolved commands),
                 # which itertools.product can otherwise emit many times.
@@ -288,11 +294,11 @@ class AttackPathSynthesizer:
                     "suggestion": suggestion,
                     "evidence": [f"Trigger {trigger.get('id', i+1)}: {f.get('name')} ({f.get('entity_type')})" for i, (trigger, f) in enumerate(zip(triggers, combination))]
                 })
-                rule_path_count += 1
+                host_path_counts[host] = host_path_counts.get(host, 0) + 1
 
-            if capped:
+            if capped_hosts:
                 # Never silently truncate: tell the user a rule was bounded.
-                print(f"{C.YELLOW}[!] Rule '{rule['name']}' had many matches; capped at {MAX_PATHS_PER_RULE} paths.{C.END}")
+                print(f"{C.YELLOW}[!] Rule '{rule['name']}' had many matches; capped at {MAX_PATHS_PER_RULE} paths per host.{C.END}")
 
         # Sort final paths by priority, so the most critical ones appear first.
         suggested_paths.sort(key=lambda x: x.get('priority', 0), reverse=True)

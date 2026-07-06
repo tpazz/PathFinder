@@ -37,7 +37,7 @@ PathFinder aims to:
 - **Interactive Credential Management:** Add found credentials with `--add-cred`. They are automatically weaponised against all discovered login services by the synthesiser.
 - **User-Trainable Intelligence:** Teach PathFinder new attack patterns with `--learn`.
 - **Tool Output Compatibility:** Handles multiple output format variants, ANSI colour codes, timestamped entries, and version differences across all supported tools. Colour output is TTY-aware (auto-disabled when piped) and can be forced off with `--no-color`.
-- **Single-Target Focus:** Scan mode infers one target host per loot directory - matching the typical OSCP/CTF single-box workflow. For multi-host engagements, run PathFinder once per host's loot directory.
+- **Multi-Host Engagements:** Scan mode ingests an entire engagement at once. Put each host's output in a `loot/<host>/` subdirectory and PathFinder attributes every finding to the right host and correlates across them - so a credential captured on one box is automatically sprayed against services on every other host. A flat single-host loot directory still works unchanged.
 
 ---
 
@@ -80,14 +80,12 @@ __________         __  .__    ___________.__            .___
 [*] Target host inferred from Nmap XML: 192.168.56.10
 
 [*] Parsing detected files...
-
-    [+] nmap_xml                  -> 6 findings  (nmap.xml)
-    [+] gobuster_txt              -> 9 findings  (gobuster.txt)
-    [+] nikto_json                -> 4 findings  (nikto.json)
-    [+] linpeas_txt               -> 7 findings  (linpeas.txt)
+    [+] nmap_xml                  -> 6 findings  (nmap.xml) [192.168.56.10]
+    [+] gobuster_txt              -> 9 findings  (gobuster.txt) [192.168.56.10]
+    [+] nikto_json                -> 4 findings  (nikto.json) [192.168.56.10]
+    [+] linpeas_txt               -> 7 findings  (linpeas.txt) [192.168.56.10]
 
 [*] Running Vulnerability Mapper...
-
     [+] Mapper prioritized 34 findings.
 
 [*] Saving prioritized findings to: findings.json

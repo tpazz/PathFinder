@@ -60,20 +60,77 @@ class ScanSmokeTests(unittest.TestCase):
                         "smbmap_txt", "secretsdump_txt", "getuserspns_hashes", "certipy_json"]:
                 self.assertIn(key, result.stdout)
 
-    def test_scan_cli_vv_reports_detection_reasons_and_duplicates(self):
+    def test_scan_cli_vv_ingests_every_file_and_reports_reasons(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             loot = Path(tmp_dir)
             shutil.copy(FIXTURES / "nmap_sample.xml", loot / "nmap.xml")
             shutil.copy(REAL_WORLD / "gobuster_kali_no_slash.txt", loot / "gobuster.txt")
-            shutil.copy(REAL_WORLD / "gobuster_kali_no_slash.txt", loot / "gobuster-duplicate.txt")
+            shutil.copy(REAL_WORLD / "gobuster_kali_no_slash.txt", loot / "gobuster-second.txt")
             (loot / "notes.txt").write_text("just some notes about the target\n", encoding="utf-8")
 
             result = self._run_scan(loot, "-vv")
 
             self.assertEqual(result.returncode, 0, result.stdout + "\n" + result.stderr)
-            self.assertIn("duplicate gobuster_txt", result.stdout)
+            # Both gobuster files are now ingested (no first-per-type dropping).
+            self.assertIn("gobuster.txt", result.stdout)
+            self.assertIn("gobuster-second.txt", result.stdout)
             self.assertIn("notes.txt skipped", result.stdout)
             self.assertIn("reason:", result.stdout)
+
+    @staticmethod
+    def _mini_nmap_xml(ip):
+        return (
+            '<?xml version="1.0"?><nmaprun scanner="nmap">'
+            f'<host><address addr="{ip}" addrtype="ipv4"/><ports>'
+            '<port protocol="tcp" portid="22"><state state="open"/>'
+            '<service name="ssh" product="OpenSSH" version="8.2p1"/></port>'
+            '<port protocol="tcp" portid="445"><state state="open"/>'
+            '<service name="microsoft-ds"/></port>'
+            '</ports></host></nmaprun>'
+        )
+
+    def test_scan_cli_cross_host_credential_reuse(self):
+        """The flagship multi-host behaviour: a credential captured on one host is
+        suggested against services on a *different* host (which has no creds of its own)."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            loot = Path(tmp_dir)
+            for host in ("10.10.10.10", "10.10.10.20"):
+                (loot / host).mkdir()
+                (loot / host / "nmap.xml").write_text(self._mini_nmap_xml(host), encoding="utf-8")
+            # Credential + admin access captured ONLY on .10.
+            (loot / "10.10.10.10" / "nxc.log").write_text(
+                "SMB   10.10.10.10   445   DC01   [*] Windows (domain:corp.local) (signing:False)\n"
+                "SMB   10.10.10.10   445   DC01   [+] corp.local\\admin:Spring2024 (Pwn3d!)\n",
+                encoding="utf-8",
+            )
+
+            result = self._run_scan(loot)
+
+            self.assertEqual(result.returncode, 0, result.stdout + "\n" + result.stderr)
+            self.assertIn("across 2 host(s)", result.stdout)
+            self.assertIn("Credential Reuse on Login Service", result.stdout)
+            # .20 has no credential of its own, so any path targeting it is cross-host.
+            self.assertIn("10.10.10.20", result.stdout)
+
+    def test_scan_cli_multihost_per_host_directories(self):
+        """Per-host subdirectories: every file is ingested and stamped with the
+        correct host from its directory name, with no --target-host needed."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            loot = Path(tmp_dir)
+            for host in ("10.10.10.10", "10.10.10.20"):
+                (loot / host).mkdir()
+                (loot / host / "linpeas.txt").write_text(
+                    "linpeas.sh - Linux Privilege Escalation Awesome Script\n"
+                    "sudo -l is available to this user without a password\n",
+                    encoding="utf-8")
+
+            result = self._run_scan(loot)
+
+            self.assertEqual(result.returncode, 0, result.stdout + "\n" + result.stderr)
+            self.assertIn("across 2 host(s)", result.stdout)
+            # Host-dependent linpeas findings must carry the host from their directory.
+            self.assertIn("Host: 10.10.10.10", result.stdout)
+            self.assertIn("Host: 10.10.10.20", result.stdout)
 
 
 if __name__ == "__main__":

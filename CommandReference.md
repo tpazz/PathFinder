@@ -62,7 +62,33 @@ python3 -m main.pathfinder scan loot/ --target-host TARGET_IP -o findings.json
 | Directory with `users.json` + `domains.json` | SharpHound |
 | Directory with `domain_users.tsv` | ldapdomaindump |
 
-> **Note:** For host-dependent parsers (LinPEAS, WinPEAS, Gobuster, SNMP, Kerbrute, enum4linux), the target host is inferred from the nmap XML or Gobuster header. Pass `--target-host` explicitly if those are absent. Single-target by design: scan mode infers **one** target host and applies it to every host-dependent parser, which matches the typical OSCP/CTF single-box workflow — for multiple hosts, run PathFinder once per host's loot directory.
+> **Note:** For host-dependent parsers (LinPEAS, WinPEAS, Gobuster, SNMP, Kerbrute, enum4linux) in a *flat* loot dir, the target host is inferred from the nmap XML or Gobuster header — pass `--target-host` if those are absent. In a **per-host** loot layout (below) the host comes from the directory name, so no `--target-host` is needed.
+
+### Multi-host engagements
+
+Scan mode ingests an entire engagement in one pass. Give each host its own
+subdirectory named after the host; every file inside is attributed to that host,
+and findings are correlated across hosts (so a credential from one box is
+sprayed against services on the others). Every file is ingested — multiple web
+ports, repeated scans, and multiple hosts no longer overwrite each other.
+
+```
+loot/
+├── 10.10.10.10/
+│   ├── nmap.xml
+│   ├── gobuster_80.txt
+│   └── nxc.log
+└── 10.10.10.20/
+    ├── nmap.xml
+    └── linpeas.txt
+```
+
+```bash
+python3 -m main.pathfinder scan loot/     # no --target-host needed; hosts come from the dirs
+```
+
+`one-shot-enum --suggest`/`--run` produces exactly this layout automatically
+(including each host's `nmap.xml`), so the two tools line up end to end.
 
 ---
 
