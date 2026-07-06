@@ -443,4 +443,10 @@ python3 -m main.pathfinder scan loot/ --max-vulns 25
 
 # Disable ANSI colour (also auto-disabled when output is piped/redirected)
 python3 -m main.pathfinder scan loot/ --no-color
+
+# OSCP exam profile: strip prohibited-tool commands (sqlmap, nuclei) from
+# suggestions, flag Metasploit's one-target limit, and warn if a prohibited
+# tool's output was ingested. Leads are still shown; only the restricted
+# commands are removed. (searchsploit/GitHub enrichment stay on - both allowed.)
+python3 -m main.pathfinder scan loot/ --oscp
 ```

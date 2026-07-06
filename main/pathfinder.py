@@ -19,6 +19,37 @@ from parsers.ansi import C, set_color_enabled, should_enable_color
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CREDENTIALS_FILE = os.path.join(SCRIPT_DIR, "credentials.json")
 
+# OSCP exam profile: tools restricted on the exam. Prohibited tools (sqlmap,
+# nuclei) are stripped from suggested commands and flagged on ingestion; the lead
+# itself is kept. Metasploit is allowed but only against one target, so it is
+# flagged with a reminder rather than removed.
+OSCP_PROHIBITED_TOKENS = ("sqlmap", "nuclei")
+OSCP_METASPLOIT_TOKENS = ("metasploit", "meterpreter", "msfconsole", "msfvenom", "exploit/")
+# Auto-detected parser keys whose source tool is prohibited (for ingestion warnings).
+OSCP_PROHIBITED_PARSER_KEYS = {"sqlmap_log": "sqlmap", "nuclei_jsonl": "nuclei"}
+
+
+def _oscp_process_commands(commands):
+    """Under the OSCP profile, replace prohibited-tool commands with a manual-exploitation
+    note (keeping the lead) and report whether any Metasploit usage is present.
+
+    Returns (processed_commands, uses_metasploit).
+    """
+    processed = []
+    uses_msf = False
+    for cmd in commands:
+        low = cmd.lower()
+        prohibited = next((t for t in OSCP_PROHIBITED_TOKENS if t in low), None)
+        if prohibited:
+            note = f"[OSCP] {prohibited} is restricted on the exam - perform this step manually."
+            if note not in processed:  # collapse repeated notes for the same tool
+                processed.append(note)
+            continue
+        if any(t in low for t in OSCP_METASPLOIT_TOKENS):
+            uses_msf = True
+        processed.append(cmd)
+    return processed, uses_msf
+
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s - %(message)s"
 logger = logging.getLogger("pathfinder")
 
@@ -476,8 +507,14 @@ def _display_results(args, synthesizer, prioritized_findings):
                 print(f"\n  [{C.BOLD}+{C.END}] Rationale:\n      {path['suggestion']['rationale']}")
             if path['suggestion'].get('commands'):
                 print(f"\n  [{C.BOLD}+{C.END}] Suggested Commands:")
-                for cmd in path['suggestion']['commands']:
+                cmds = path['suggestion']['commands']
+                uses_msf = False
+                if getattr(args, 'oscp', False):
+                    cmds, uses_msf = _oscp_process_commands(cmds)
+                for cmd in cmds:
                     print(f"      - {cmd}")
+                if uses_msf:
+                    print(f"      {C.YELLOW}[OSCP] Metasploit/Meterpreter is limited to ONE target on the exam.{C.END}")
             if path['suggestion'].get('references'):
                 print(f"\n  [{C.BOLD}+{C.END}] References:")
                 for ref in path['suggestion']['references']:
@@ -505,6 +542,8 @@ def _display_results(args, synthesizer, prioritized_findings):
         attributes = p_finding.get("attributes", {})
         if attributes.get("metasploit_module"):
             print(f"    {C.BOLD}Metasploit Module:{C.END} {attributes['metasploit_module']}")
+            if getattr(args, 'oscp', False):
+                print(f"    {C.YELLOW}[OSCP] Metasploit is limited to one target on the exam.{C.END}")
         if attributes.get("url"):
             print(f"    {C.BOLD}URL:{C.END} {attributes['url']}")
 
@@ -548,6 +587,13 @@ def run_scan_mode(args):
         for d in detections:
             rel = os.path.relpath(d['path'], loot_dir)
             print(f"    {C.GREEN}[+]{C.END} {d['key']:<25} -> {rel}")
+
+    if getattr(args, 'oscp', False):
+        flagged = sorted({OSCP_PROHIBITED_PARSER_KEYS[d['key']]
+                          for d in detections if d['key'] in OSCP_PROHIBITED_PARSER_KEYS})
+        if flagged:
+            print(f"\n{C.BOLD}{C.YELLOW}[!] OSCP profile: ingested output from restricted tool(s): "
+                  f"{', '.join(flagged)}. Findings are shown, but running these tools is restricted on the exam.{C.END}")
 
     # A global target host is only needed for flat (host-less) host-dependent files;
     # per-host records already carry their host via the directory name.
@@ -659,6 +705,7 @@ def main():
     scan_p.add_argument('--skip-searchsploit', action='store_true', help='Skip Searchsploit enrichment.')
     scan_p.add_argument('--github-cache', default=os.path.join(SCRIPT_DIR, 'github_cache.json'), help='Path to GitHub lookup cache JSON file.')
     scan_p.add_argument('--no-color', action='store_true', help='Disable ANSI colour output.')
+    scan_p.add_argument('--oscp', action='store_true', help='OSCP exam profile: strip prohibited-tool commands (sqlmap, nuclei) from suggestions and flag the Metasploit one-target limit.')
 
     # ── manual mode args (no subcommand) ──────────────────────────────────────
     # The per-parser input flags are generated from the single PARSER_SPECS list.
@@ -686,6 +733,7 @@ def main():
     gg.add_argument("--skip-searchsploit", action="store_true", help="Skip Searchsploit enrichment.")
     gg.add_argument("--github-cache", default=os.path.join(SCRIPT_DIR, "github_cache.json"), help="Path to GitHub lookup cache JSON file.")
     gg.add_argument("--no-color", action="store_true", help="Disable ANSI colour output.")
+    gg.add_argument("--oscp", action="store_true", help="OSCP exam profile: strip prohibited-tool commands (sqlmap, nuclei) from suggestions and flag the Metasploit one-target limit.")
 
     args = main_parser.parse_args()
     configure_logging(args.verbose)

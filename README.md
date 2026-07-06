@@ -37,6 +37,7 @@ PathFinder aims to:
 - **Interactive Credential Management:** Add found credentials with `--add-cred`. They are automatically weaponised against all discovered login services by the synthesiser.
 - **User-Trainable Intelligence:** Teach PathFinder new attack patterns with `--learn`.
 - **Tool Output Compatibility:** Handles multiple output format variants, ANSI colour codes, timestamped entries, and version differences across all supported tools. Colour output is TTY-aware (auto-disabled when piped) and can be forced off with `--no-color`.
+- **OSCP Exam Profile:** `--oscp` strips prohibited-tool commands (sqlmap, nuclei) from suggested attack paths - keeping the lead but replacing the command with a manual-exploitation note - flags Metasploit's one-target limit, and warns if a prohibited tool's output was ingested. `one-shot-enum --run --oscp` propagates the profile through the whole pipeline. (Always verify against the current PEN-200 exam guide; exam rules change.)
 - **Multi-Host Engagements:** Scan mode ingests an entire engagement at once. Put each host's output in a `loot/<host>/` subdirectory and PathFinder attributes every finding to the right host and correlates across them - so a credential captured on one box is automatically sprayed against services on every other host. A flat single-host loot directory still works unchanged.
 
 ---
