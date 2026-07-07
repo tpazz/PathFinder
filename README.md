@@ -32,7 +32,8 @@ PathFinder aims to:
 - **Auto-Detect Scan Mode:** Drop all tool outputs into a folder and run `pathfinder scan ./loot/`. PathFinder identifies file types by content and runs the right parser automatically - no need to remember the flag names under exam pressure.
 - **Multi-Input Parsing:** Ingests and normalises data from Nmap, Gobuster, ffuf, Nikto, WhatWeb, nuclei, wpscan, enum4linux-ng, smbmap, NetExec/CrackMapExec, SNMP, SQLMap, LinPEAS, WinPEAS, SharpHound, ldapdomaindump, Kerbrute, impacket-GetNPUsers, impacket-GetUserSPNs, impacket-secretsdump, and certipy.
 - **Vulnerability & Exploit Mapping:** Correlates identified services and versions with known CVEs and public exploits via Exploit-DB (`searchsploit`) and GitHub.
-- **Attack Path Synthesis:** A 58-rule engine covering initial foothold, credential reuse and pass-the-hash, web attacks, Linux/Windows privilege escalation, and Active Directory attack paths (Kerberoasting, AS-REP roasting, DCSync, ACL abuse, delegation attacks, AD CS/ESC, and more).
+- **Attack Path Synthesis:** A 73-rule engine covering initial foothold, credential reuse and pass-the-hash, web attacks, Linux/Windows privilege escalation, Active Directory attack paths (Kerberoasting, AS-REP roasting, DCSync, ACL abuse, delegation, AD CS/ESC), and **AI/LLM attack surfaces** (prompt injection, agent/MCP tool abuse, RAG poisoning, exposed inference APIs, MLflow/Jupyter RCE, LangServe, model-serving, workflow-builder, and cross-surface RAG/tool chains) mapped to the OWASP LLM Top 10.
+- **AI/LLM Target Analysis:** Ingests one-shot-enum's AI-surface enumeration (OpenAI-compatible APIs, Ollama, vLLM/TGI, LangServe, agent/MCP, RAG stores, MLflow, model servers, notebooks, workflow builders, image generation, and more) as `ai_service` findings and synthesises attack paths for them - useful for AI-focused engagements and AI pentest study.
 - **Iterative Workflow:** Save findings to JSON after initial recon, reload and append later stages (post-exploitation, AD enumeration) without re-running parsers.
 - **Interactive Credential Management:** Add found credentials with `--add-cred`. They are automatically weaponised against all discovered login services by the synthesiser.
 - **User-Trainable Intelligence:** Teach PathFinder new attack patterns with `--learn`.
@@ -320,5 +321,4 @@ pip install -r requirements.txt
 ## Ethical Disclaimer
 
 This tool is intended for educational purposes and authorised security testing only. Using this tool to attempt unauthorised access to any system is illegal and unethical. Always obtain explicit written permission before using this tool on any system you do not own. The developers assume no liability and are not responsible for any misuse or damage caused by this program.
-
 

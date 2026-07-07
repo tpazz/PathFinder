@@ -14,6 +14,7 @@ from parsers.active_directory.secretsdump_parser import parse_secretsdump
 from parsers.initial_foothold.enum4linux_parser import parse_enum4linux_json
 from parsers.initial_foothold.ffuf_parser import parse_ffuf_json
 from parsers.initial_foothold.gobuster_parser import parse_gobuster_output
+from parsers.initial_foothold.llm_enum_parser import parse_llm_enum_json
 from parsers.initial_foothold.netexec_parser import parse_netexec_output
 from parsers.initial_foothold.nikto_parser import parse_nikto_json
 from parsers.initial_foothold.nmap_parser import parse_nmap_xml
@@ -60,6 +61,8 @@ PARSER_SPECS = [
                False, lambda p, ctx: parse_nuclei_jsonl(p)),
     ParserSpec("wpscan_json", "--wpscan-json", "Path to wpscan JSON output file (--format json).",
                False, lambda p, ctx: parse_wpscan_json(p)),
+    ParserSpec("llm_enum_json", "--llm-enum-json", "Path to one-shot-enum LLM/AI enumeration JSON.",
+               False, lambda p, ctx: parse_llm_enum_json(p)),
     ParserSpec("enum4linux_json", "--enum4linux-json", "Path to enum4linux-ng JSON output file.",
                True, lambda p, ctx: parse_enum4linux_json(p, ctx.target_host)),
     ParserSpec("smbmap_txt", "--smbmap-txt", "Path to smbmap text output file.",

@@ -266,6 +266,9 @@ def _sniff_file_type_details(path):
     # JSON formats. Be careful not to misclassify plain-text logs that start
     # with bracketed tokens like [INFO], [*], or [+].
     if stripped.startswith('{') or re.match(r'^\[\s*[{"]', stripped):
+        # one-shot-enum LLM/AI enumeration output (self-identifying).
+        if '"ai_surfaces"' in sanitized_head or '"type": "llm_enum"' in sanitized_head or '"type":"llm_enum"' in sanitized_head:
+            return 'llm_enum_json', 'matched one-shot-enum LLM enum signature'
         # nuclei JSONL: one JSON object per line, before the broad checks below.
         if '"template-id"' in sanitized_head or '"matched-at"' in sanitized_head:
             return 'nuclei_jsonl', 'matched nuclei JSONL signature'

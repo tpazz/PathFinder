@@ -45,6 +45,7 @@ python3 -m main.pathfinder scan loot/ --target-host TARGET_IP -o findings.json
 | JSON with `"results"` + `"commandline"` | ffuf |
 | JSONL with `"template-id"` / `"matched-at"` | nuclei |
 | JSON with `"target_url"` + `"plugins"` | wpscan |
+| JSON with `"ai_surfaces"` / `"type":"llm_enum"` | one-shot-enum AI/LLM enumeration |
 | JSON with `"users"` + `"groups"` | enum4linux-ng |
 | JSON with `"Certificate Templates"` | certipy |
 | Text with `VALID USERNAME:` | Kerbrute |
@@ -190,6 +191,23 @@ wpscan --url http://TARGET_HOST:PORT --format json -o wpscan.json
 
 ```bash
 python3 -m main.pathfinder --wpscan-json wpscan.json
+```
+
+#### 4e. one-shot-enum AI/LLM enumeration
+
+[one-shot-enum](../one-shot-enum) performs the live AI-surface fingerprinting
+(OpenAI-compatible APIs, Ollama, vLLM/TGI, LangServe, agent/MCP, RAG stores,
+MLflow, Jupyter, Gradio, workflow builders, image-generation APIs, ...) and
+writes a `llm_enum_<port>.json` per host. PathFinder turns each detected surface
+into an `ai_service` finding, preserving endpoint/probe evidence, and maps it to
+OWASP-LLM/course-note attack paths (prompt injection, tool/agency abuse, RAG
+poisoning, artifact-consumer compromise, unauthenticated inference, schema
+recovery, and cross-surface RAG/tool chains).
+
+```bash
+# produced automatically by:  one-shot-enum <target> --ai-paths --run
+python3 -m main.pathfinder --llm-enum-json loot/10.10.10.10/llm_enum_11434.json
+# (or just drop the loot dir in front of `scan` - it is auto-detected)
 ```
 
 #### 5. enum4linux-ng
