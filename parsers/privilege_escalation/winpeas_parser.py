@@ -1,6 +1,6 @@
 import re
 
-from parsers.ansi import ANSI_ESCAPE_PATTERN
+from parsers.ansi import ANSI_ESCAPE_PATTERN, warn
 PE_COLOR_SIGNATURE = re.compile(
     r'\x1b\[[0-9;]*(?:31|91)[0-9;]*m.*\x1b\[[0-9;]*(?:43|103)[0-9;]*m'
     r'|'
@@ -81,8 +81,8 @@ def parse_winpeas(file_path, target_host):
                         found_lines.add(clean_line)
                         break
     except FileNotFoundError:
-        print(f"[!] Error: WinPEAS output file not found at {file_path}")
+        warn(f"[!] Error: WinPEAS output file not found at {file_path}")
     except Exception as e:
-        print(f"[!] An unexpected error occurred while parsing WinPEAS: {e}")
+        warn(f"[!] An unexpected error occurred while parsing WinPEAS: {e}")
 
     return findings

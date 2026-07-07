@@ -1,6 +1,6 @@
 import re
 
-from parsers.ansi import ANSI_ESCAPE_PATTERN
+from parsers.ansi import ANSI_ESCAPE_PATTERN, warn
 
 # pwdump line: user:rid:lmhash:nthash:::   (SAM dump or NTDS dump)
 _PWDUMP = re.compile(
@@ -23,7 +23,7 @@ def parse_secretsdump(file_path, target_host=None):
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
     except FileNotFoundError:
-        print(f"[!] Error: secretsdump output file not found at {file_path}")
+        warn(f"[!] Error: secretsdump output file not found at {file_path}")
         return findings
 
     host = target_host or "SECRETSDUMP"

@@ -1,4 +1,5 @@
 import json
+from parsers.ansi import warn
 import re
 
 
@@ -93,7 +94,7 @@ def _load_nikto_records(json_file_path):
             if isinstance(data, dict):
                 records.append(data)
         except json.JSONDecodeError:
-            print(f"[!] Warning: Skipping malformed JSON line in '{json_file_path}': {line[:100]}")
+            warn(f"[!] Warning: Skipping malformed JSON line in '{json_file_path}': {line[:100]}")
     return records
 
 
@@ -140,8 +141,8 @@ def parse_nikto_json(json_file_path):
                 findings.append(finding)
 
     except FileNotFoundError:
-        print(f"[!] Error: Nikto JSON file not found at {json_file_path}")
+        warn(f"[!] Error: Nikto JSON file not found at {json_file_path}")
     except Exception as e:
-        print(f"[!] An unexpected error occurred while parsing Nikto JSON: {e}")
+        warn(f"[!] An unexpected error occurred while parsing Nikto JSON: {e}")
 
     return findings

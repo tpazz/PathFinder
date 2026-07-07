@@ -1,4 +1,5 @@
 import json
+from parsers.ansi import warn
 import os
 
 # Well-known Security Identifiers (SIDs) for high-value default groups.
@@ -29,7 +30,7 @@ def _load_sharphound_json(directory, filename):
                 return payload
             return []
     except (FileNotFoundError, json.JSONDecodeError, AttributeError):
-        print(f"[!] Warning: Could not load or parse '{filename}' from SharpHound directory.")
+        warn(f"[!] Warning: Could not load or parse '{filename}' from SharpHound directory.")
         return []
 
 

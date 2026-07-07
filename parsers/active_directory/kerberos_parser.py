@@ -1,6 +1,6 @@
 import re
 
-from parsers.ansi import ANSI_ESCAPE_PATTERN
+from parsers.ansi import ANSI_ESCAPE_PATTERN, warn
 
 
 def parse_kerbrute_output(file_path, domain):
@@ -53,7 +53,7 @@ def parse_kerbrute_output(file_path, domain):
                         "attributes": {"source": "Kerberos user enumeration", "raw_line": raw}
                     })
     except FileNotFoundError:
-        print(f"[!] Error: Kerbrute output file not found at {file_path}")
+        warn(f"[!] Error: Kerbrute output file not found at {file_path}")
     return findings
 
 
@@ -112,7 +112,7 @@ def parse_getnpusers_output(file_path, domain):
                     }
                 })
     except FileNotFoundError:
-        print(f"[!] Error: GetNPUsers output file not found at {file_path}")
+        warn(f"[!] Error: GetNPUsers output file not found at {file_path}")
     return findings
 
 
@@ -175,5 +175,5 @@ def parse_getuserspns_output(file_path, domain):
                     },
                 })
     except FileNotFoundError:
-        print(f"[!] Error: GetUserSPNs output file not found at {file_path}")
+        warn(f"[!] Error: GetUserSPNs output file not found at {file_path}")
     return findings

@@ -64,3 +64,12 @@ def should_enable_color(no_color_flag=False):
     if no_color_flag:
         return False
     return sys.stdout.isatty()
+
+
+def warn(message):
+    """Print a '[!]'-style warning/error line in bold yellow.
+
+    Shared by the parsers so every '[!]' line is styled consistently with the
+    rest of PathFinder (colour collapses to plain text when disabled).
+    """
+    print(f"{C.BOLD}{C.YELLOW}{message}{C.END}")

@@ -1,4 +1,5 @@
 import json
+from parsers.ansi import warn
 import re
 
 # ESC technique identifiers certipy reports under a template's vulnerabilities.
@@ -37,10 +38,10 @@ def parse_certipy_json(file_path, target_host=None):
         with open(file_path, "r", encoding="utf-8-sig") as f:
             data = json.load(f)
     except FileNotFoundError:
-        print(f"[!] Error: certipy JSON file not found at {file_path}")
+        warn(f"[!] Error: certipy JSON file not found at {file_path}")
         return findings
     except json.JSONDecodeError:
-        print(f"[!] Error: Could not decode JSON from '{file_path}'.")
+        warn(f"[!] Error: Could not decode JSON from '{file_path}'.")
         return findings
 
     if not isinstance(data, dict):

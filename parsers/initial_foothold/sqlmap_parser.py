@@ -1,7 +1,7 @@
 import re
 from urllib.parse import urlparse
 
-from parsers.ansi import ANSI_ESCAPE_PATTERN
+from parsers.ansi import ANSI_ESCAPE_PATTERN, warn
 
 
 def _split_target_blocks(content):
@@ -46,10 +46,10 @@ def parse_sqlmap_log(file_path):
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
     except FileNotFoundError:
-        print(f"[!] Error: sqlmap log file not found at {file_path}")
+        warn(f"[!] Error: sqlmap log file not found at {file_path}")
         return findings
     except Exception as e:
-        print(f"[!] An unexpected error occurred while parsing sqlmap log: {e}")
+        warn(f"[!] An unexpected error occurred while parsing sqlmap log: {e}")
         return []
 
     sanitized_content = ANSI_ESCAPE_PATTERN.sub('', content)

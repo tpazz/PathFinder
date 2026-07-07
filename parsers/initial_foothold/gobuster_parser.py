@@ -1,6 +1,6 @@
 import re
 
-from parsers.ansi import ANSI_ESCAPE_PATTERN
+from parsers.ansi import ANSI_ESCAPE_PATTERN, warn
 
 
 def parse_gobuster_output(gobuster_output_file, target_host, target_port=None, mode='dir'):
@@ -144,8 +144,8 @@ def parse_gobuster_output(gobuster_output_file, target_host, target_port=None, m
                             })
     
     except FileNotFoundError:
-        print(f"[!] Error: Gobuster output file not found at {gobuster_output_file}")
+        warn(f"[!] Error: Gobuster output file not found at {gobuster_output_file}")
     except Exception as e:
-        print(f"[!] An error occurred while parsing Gobuster output: {e}")
+        warn(f"[!] An error occurred while parsing Gobuster output: {e}")
         
     return findings

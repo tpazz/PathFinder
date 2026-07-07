@@ -1,6 +1,6 @@
 import re
 
-from parsers.ansi import ANSI_ESCAPE_PATTERN
+from parsers.ansi import ANSI_ESCAPE_PATTERN, warn
 
 # A NetExec/CrackMapExec result line:
 #   SMB   10.10.10.10   445   DC01   [+] corp.local\admin:Password123 (Pwn3d!)
@@ -33,7 +33,7 @@ def parse_netexec_output(file_path, target_host=None):
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
     except FileNotFoundError:
-        print(f"[!] Error: NetExec output file not found at {file_path}")
+        warn(f"[!] Error: NetExec output file not found at {file_path}")
         return findings
 
     seen_creds = set()

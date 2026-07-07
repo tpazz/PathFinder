@@ -161,7 +161,7 @@ def manage_credentials():
             creds.append({"username": username, "password": password, "hash": hash_val, "hash_type": hash_type, "source": source})
             print(f"    {C.BOLD}{C.GREEN}[+] Credential for '{username}' added.{C.END}")
     except KeyboardInterrupt:
-        print("\n[!] User interrupted credential entry.")
+        print(f"\n{C.BOLD}{C.YELLOW}[!] User interrupted credential entry.{C.END}")
 
     try:
         with open(CREDENTIALS_FILE, 'w') as f: json.dump(creds, f, indent=4)
@@ -447,7 +447,7 @@ def auto_detect_loot(directory, verbose=0):
     try:
         top_entries = list(os.scandir(directory))
     except (NotADirectoryError, PermissionError, FileNotFoundError) as e:
-        print(f"{C.BOLD}{C.RED}[!] Cannot scan directory '{directory}': {e}{C.END}")
+        print(f"{C.BOLD}{C.YELLOW}[!] Cannot scan directory '{directory}': {e}{C.END}")
         return detections
 
     # Pass 1: directory-based parsers at the top level (host unknown).
@@ -498,7 +498,7 @@ def _display_results(args, synthesizer, prioritized_findings):
     suggested_paths = synthesizer.generate_attack_paths(prioritized_findings)
 
     if suggested_paths:
-        print(f"{C.BOLD}{C.YELLOW}--- Pathfinder has identified {len(suggested_paths)} potential attack path(s)! ---{C.END}")
+        print(f"\n{C.BOLD}{C.YELLOW}--- PathFinder has identified {len(suggested_paths)} potential attack path(s)! ---{C.END}")
         for i, path in enumerate(suggested_paths):
             print("\n" + "="*80)
             print(f"{C.BOLD}ATTACK PATH #{i+1}{C.END}")

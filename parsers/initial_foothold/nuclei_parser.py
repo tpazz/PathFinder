@@ -1,4 +1,5 @@
 import json
+from parsers.ansi import warn
 from urllib.parse import urlparse
 
 # Severities that warrant a high-signal "vulnerability" finding; everything else
@@ -30,7 +31,7 @@ def parse_nuclei_jsonl(file_path):
         with open(file_path, "r", encoding="utf-8-sig", errors="ignore") as f:
             lines = f.read().splitlines()
     except FileNotFoundError:
-        print(f"[!] Error: nuclei JSONL file not found at {file_path}")
+        warn(f"[!] Error: nuclei JSONL file not found at {file_path}")
         return findings
 
     seen = set()

@@ -1,6 +1,6 @@
 import re
 
-from parsers.ansi import ANSI_ESCAPE_PATTERN
+from parsers.ansi import ANSI_ESCAPE_PATTERN, warn
 
 # Canonical section headers and their aliases (for variant snmp-check versions).
 SECTION_HEADER_MAP = {
@@ -63,10 +63,10 @@ def parse_snmp_output(file_path, target_host):
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
             content = f.read()
     except FileNotFoundError:
-        print(f"[!] Error: SNMP output file not found at {file_path}")
+        warn(f"[!] Error: SNMP output file not found at {file_path}")
         return findings
     except Exception as e:
-        print(f"[!] An unexpected error occurred while parsing SNMP: {e}")
+        warn(f"[!] An unexpected error occurred while parsing SNMP: {e}")
         return []
 
     sanitized_content = ANSI_ESCAPE_PATTERN.sub('', content)

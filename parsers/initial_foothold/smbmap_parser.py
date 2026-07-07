@@ -1,6 +1,6 @@
 import re
 
-from parsers.ansi import ANSI_ESCAPE_PATTERN
+from parsers.ansi import ANSI_ESCAPE_PATTERN, warn
 
 # smbmap host header, e.g.  "[+] IP: 10.10.10.10:445	Name: dc01.corp.local"
 _IP_LINE = re.compile(r"\[\+\]\s*IP:\s*([0-9a-fA-F:.]+?)(?::(\d+))?\s*(?:Name:|$)", re.IGNORECASE)
@@ -35,7 +35,7 @@ def parse_smbmap_output(file_path, target_host=None):
         with open(file_path, "r", encoding="utf-8", errors="ignore") as f:
             content = f.read()
     except FileNotFoundError:
-        print(f"[!] Error: smbmap output file not found at {file_path}")
+        warn(f"[!] Error: smbmap output file not found at {file_path}")
         return findings
 
     host = target_host

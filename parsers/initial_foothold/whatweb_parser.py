@@ -1,4 +1,5 @@
 import json
+from parsers.ansi import warn
 from urllib.parse import urlparse
 
 # A list of WhatWeb plugins that are purely informational (like HTTP headers)
@@ -24,10 +25,10 @@ def parse_whatweb_json(json_file_path):
         with open(json_file_path, 'r', encoding='utf-8-sig') as f:
             data = json.load(f)
     except FileNotFoundError:
-        print(f"[!] Error: WhatWeb JSON file not found at {json_file_path}")
+        warn(f"[!] Error: WhatWeb JSON file not found at {json_file_path}")
         return findings
     except json.JSONDecodeError:
-        print(f"[!] Error: Could not decode JSON from '{json_file_path}'.")
+        warn(f"[!] Error: Could not decode JSON from '{json_file_path}'.")
         return findings
 
     if isinstance(data, dict):

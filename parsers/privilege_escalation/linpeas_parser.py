@@ -1,6 +1,6 @@
 import re
 
-from parsers.ansi import ANSI_ESCAPE_PATTERN
+from parsers.ansi import ANSI_ESCAPE_PATTERN, warn
 
 # Regex to find the "red text on yellow background" signature that LinPEAS
 # uses for "95% pwnable" vectors. Matches both standard (31/43) and bright (91/103) variants.
@@ -86,8 +86,8 @@ def parse_linpeas(file_path, target_host):
                         found_lines.add(clean_line)
                         break
     except FileNotFoundError:
-        print(f"[!] Error: LinPEAS output file not found at {file_path}")
+        warn(f"[!] Error: LinPEAS output file not found at {file_path}")
     except Exception as e:
-        print(f"[!] An unexpected error occurred while parsing LinPEAS: {e}")
+        warn(f"[!] An unexpected error occurred while parsing LinPEAS: {e}")
 
     return findings

@@ -1,4 +1,5 @@
 import json
+from parsers.ansi import warn
 
 
 def _iter_collection(data, key):
@@ -40,10 +41,10 @@ def parse_enum4linux_json(json_file_path, target_host):
         with open(json_file_path, 'r', encoding='utf-8-sig') as f:
             data = json.load(f)
     except FileNotFoundError:
-        print(f"[!] Error: enum4linux-ng JSON file not found at {json_file_path}")
+        warn(f"[!] Error: enum4linux-ng JSON file not found at {json_file_path}")
         return findings
     except json.JSONDecodeError:
-        print(f"[!] Error: Could not decode JSON from '{json_file_path}'.")
+        warn(f"[!] Error: Could not decode JSON from '{json_file_path}'.")
         return findings
 
     # Extract user accounts discovered via RPC.
