@@ -19,6 +19,80 @@ VALID_TRIGGER_HOST_SCOPES = {"same_host", "any_host"}
 MAX_PATHS_PER_RULE = 25
 MAX_COMBINATIONS_PER_RULE = 5000
 
+# Ranking penalties: a path's rank should reflect both the rule's priority (value
+# of the move) and how trustworthy the triggering evidence is. We dock a rule's
+# static priority by the weakest link's confidence/severity so a confirmed lead
+# outranks a low-confidence guess of equal priority. Penalty-only and bounded, so
+# evidence quality only nudges within a band - it never overrides the author's
+# priority. Findings carrying neither key (confirmed/structural results such as
+# sqlmap, SharpHound, secretsdump) get 0 and keep the full priority.
+CONFIDENCE_PENALTY = {"high": 0, "medium": -6, "low": -12}
+SEVERITY_PENALTY = {"critical": 0, "high": 0, "medium": -6, "low": -12, "info": -12}
+MAX_PRIORITY_PENALTY = -15
+
+
+def _finding_confidence_penalty(finding):
+    """Priority penalty for one finding's evidence quality (severity preferred)."""
+    attrs = finding.get("attributes") or {}
+    severity = str(attrs.get("severity", "")).strip().lower()
+    confidence = str(attrs.get("confidence", "")).strip().lower()
+    if severity in SEVERITY_PENALTY:
+        return SEVERITY_PENALTY[severity]
+    if confidence in CONFIDENCE_PENALTY:
+        return CONFIDENCE_PENALTY[confidence]
+    return 0
+
+# MITRE ATLAS technique tags for the AI/LLM attack rules, keyed by rule name.
+# ATLAS is the adversarial-ML counterpart to ATT&CK; tagging AI paths with it makes
+# findings map to a shared taxonomy for AI-focused reporting (see the AI-Red-Team
+# notes' ATLAS mapping). A rule with no entry here simply carries no ATLAS tag.
+ATLAS_TAGS = {
+    "Exposed LLM API - Prompt Injection & Guardrail Testing": [
+        "AML.T0051 LLM Prompt Injection", "AML.T0054 LLM Jailbreak", "AML.T0040 ML Model Inference API Access"],
+    "Exposed Ollama API - Unauthenticated Model Access": [
+        "AML.T0040 ML Model Inference API Access", "AML.T0044 Full ML Model Access"],
+    "Agent/MCP Surface - Excessive Agency & Tool Abuse": [
+        "AML.T0053 LLM Plugin Compromise", "AML.T0051 LLM Prompt Injection"],
+    "RAG / Vector Store - Indirect Injection & Data Extraction": [
+        "AML.T0070 RAG Poisoning", "AML.T0051 LLM Prompt Injection", "AML.T0025 Exfiltration via Cyber Means"],
+    "MLflow Exposed - Artifact Write to Code Execution": [
+        "AML.T0010 ML Supply Chain Compromise", "AML.T0044 Full ML Model Access"],
+    "Exposed Jupyter - Unauthenticated Kernel = RCE": [
+        "AML.T0044 Full ML Model Access", "AML.T0010 ML Supply Chain Compromise"],
+    "Gradio App - File Upload / SSRF / Prompt Injection": [
+        "AML.T0051 LLM Prompt Injection", "AML.T0040 ML Model Inference API Access"],
+    "LangServe API - Schema Recovery to Chain Abuse": [
+        "AML.T0051 LLM Prompt Injection", "AML.T0040 ML Model Inference API Access"],
+    "vLLM/TGI/Model Server - Model Metadata, Tokenizer, and Adapter Recon": [
+        "AML.T0040 ML Model Inference API Access", "AML.T0044 Full ML Model Access"],
+    "AI Workflow Builder - Flow, Credential, and Tool Graph Enumeration": [
+        "AML.T0053 LLM Plugin Compromise", "AML.T0025 Exfiltration via Cyber Means"],
+    "Image Generation API - Model, Plugin, and File Path Abuse": [
+        "AML.T0040 ML Model Inference API Access", "AML.T0010 ML Supply Chain Compromise"],
+    "Tool-Enabled RAG Chain - Retrieved Context to Agent/MCP Action": [
+        "AML.T0070 RAG Poisoning", "AML.T0053 LLM Plugin Compromise", "AML.T0051 LLM Prompt Injection"],
+    "LLM + RAG Surface - Retrieval Context Extraction and Poisoning Candidate": [
+        "AML.T0070 RAG Poisoning", "AML.T0057 LLM Data Leakage"],
+    "MLflow + Model Server - Artifact Consumer Path": [
+        "AML.T0010 ML Supply Chain Compromise", "AML.T0044 Full ML Model Access"],
+    "Notebook + ML Platform - Credential and Artifact Pivot": [
+        "AML.T0010 ML Supply Chain Compromise", "AML.T0025 Exfiltration via Cyber Means"],
+    "AI Agent - Capability & Tool Abuse": [
+        "AML.T0051 LLM Prompt Injection", "AML.T0053 LLM Plugin Compromise"],
+    "A2A / Multi-Agent System - Rogue Registration & Workflow Abuse": [
+        "AML.T0051 LLM Prompt Injection", "AML.T0053 LLM Plugin Compromise", "AML.T0025 Exfiltration via Cyber Means"],
+    "LLM-to-SQL Agent - Generated Query to Database Command Execution": [
+        "AML.T0051 LLM Prompt Injection", "AML.T0040 ML Model Inference API Access"],
+    "Unauthenticated Vector Store - Knowledge Base Extraction": [
+        "AML.T0025 Exfiltration via Cyber Means", "AML.T0070 RAG Poisoning"],
+    "Confirmed MCP Tool Inventory - Targeted Capability Abuse": [
+        "AML.T0053 LLM Plugin Compromise", "AML.T0051 LLM Prompt Injection"],
+    "Exposed Object Store (MinIO/S3) - Artifact & Credential Loot": [
+        "AML.T0010 ML Supply Chain Compromise", "AML.T0025 Exfiltration via Cyber Means", "AML.T0044 Full ML Model Access"],
+    "MLflow + Object Store - Writable Artifact to Code Execution": [
+        "AML.T0010 ML Supply Chain Compromise", "AML.T0044 Full ML Model Access"],
+}
+
 
 class AttackPathSynthesizer:
     def __init__(self, rules_file_path=DEFAULT_RULES_FILE):
@@ -61,6 +135,23 @@ class AttackPathSynthesizer:
             trigger_scope = trigger.get("host_scope", "same_host")
             if trigger_scope not in VALID_TRIGGER_HOST_SCOPES:
                 return False, f"Trigger {trigger_id} has invalid host_scope '{trigger_scope}'"
+
+            # Reject an unknown match type at load. Matching only special-cases
+            # exact/contains/regex and otherwise falls through to "match everything
+            # of this entity_type", so a typo like "contain" would silently broad-
+            # match instead of erroring.
+            name_match = trigger.get("name_match") or {}
+            match_type = name_match.get("type", "exact")
+            if match_type not in ("exact", "contains", "regex"):
+                return False, f"Trigger {trigger_id} has invalid name_match type '{match_type}' (use exact, contains, or regex)"
+            # Compile-check regex triggers at load so a malformed pattern (from the
+            # rules file or --learn) skips just this rule instead of raising an
+            # uncaught re.error mid-synthesis and aborting the whole run.
+            if match_type == "regex" and name_match.get("value"):
+                try:
+                    re.compile(name_match["value"])
+                except re.error as exc:
+                    return False, f"Trigger {trigger_id} has invalid regex '{name_match['value']}': {exc}"
 
         rule_scope = rule.get("host_scope", "same_host")
         if rule_scope not in VALID_HOST_SCOPES:
@@ -279,6 +370,20 @@ class AttackPathSynthesizer:
                 }
                 suggestion = self._format_suggestion(rule['suggestion'], matched_findings_by_id)
 
+                # Weakest-link evidence quality: a path is only as trustworthy as
+                # its shakiest premise, so take the largest penalty across triggers
+                # (bounded) and dock the rule's priority by it. evidence_score is the
+                # summed finding scores, used as the tiebreak so corroborated leads
+                # rise within a priority band.
+                penalty = max(
+                    min((_finding_confidence_penalty(f) for f in combination), default=0),
+                    MAX_PRIORITY_PENALTY,
+                )
+                effective_priority = rule['priority'] + penalty
+                evidence_score = sum(
+                    int((f.get("attributes") or {}).get("score", 0) or 0) for f in combination
+                )
+
                 # Dedup near-identical paths (same rule + host + resolved commands),
                 # which itertools.product can otherwise emit many times.
                 dedup_key = (rule['name'], host, suggestion.get('description'),
@@ -290,8 +395,11 @@ class AttackPathSynthesizer:
                 suggested_paths.append({
                     "name": rule['name'],
                     "priority": rule['priority'],
+                    "effective_priority": effective_priority,
+                    "evidence_score": evidence_score,
                     "host": host,
                     "suggestion": suggestion,
+                    "atlas": ATLAS_TAGS.get(rule['name'], []),
                     "evidence": [f"Trigger {trigger.get('id', i+1)}: {f.get('name')} ({f.get('entity_type')})" for i, (trigger, f) in enumerate(zip(triggers, combination))]
                 })
                 host_path_counts[host] = host_path_counts.get(host, 0) + 1
@@ -300,6 +408,13 @@ class AttackPathSynthesizer:
                 # Never silently truncate: tell the user a rule was bounded.
                 print(f"{C.YELLOW}[!] Rule '{rule['name']}' had many matches; capped at {MAX_PATHS_PER_RULE} paths per host.{C.END}")
 
-        # Sort final paths by priority, so the most critical ones appear first.
-        suggested_paths.sort(key=lambda x: x.get('priority', 0), reverse=True)
+        # Rank by confidence-adjusted priority first (value of the move, docked for
+        # shaky evidence), then by summed evidence score, then host/name for a
+        # deterministic, run-to-run stable order.
+        suggested_paths.sort(key=lambda p: (
+            -p.get('effective_priority', p.get('priority', 0)),
+            -p.get('evidence_score', 0),
+            p.get('host') or "",
+            p.get('name') or "",
+        ))
         return suggested_paths

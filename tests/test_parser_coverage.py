@@ -6,8 +6,10 @@ from pathlib import Path
 from main.finding_schema import validate_findings
 from parsers.active_directory.kerberos_parser import parse_getnpusers_output, parse_kerbrute_output
 from parsers.active_directory.ldapdomaindump_parser import parse_ldapdomaindump_dir
+from parsers.active_directory.potfile_parser import parse_potfile
 from parsers.active_directory.sharphound_parser import parse_sharphound_dir
 from parsers.initial_foothold.enum4linux_parser import parse_enum4linux_json
+from parsers.initial_foothold.nfs_parser import parse_nfs_output
 from parsers.initial_foothold.nikto_parser import parse_nikto_json
 from parsers.initial_foothold.snmp_parser import parse_snmp_output
 from parsers.initial_foothold.sqlmap_parser import parse_sqlmap_log
@@ -78,6 +80,39 @@ class ParserCoverageTests(unittest.TestCase):
         self.assertGreaterEqual(len(findings), 4)
         validate_findings(findings)
 
+    def test_snmp_extracts_credentials_from_process_args(self):
+        text = (
+            "Running processes:\n"
+            "1 2 3 4 /usr/sbin/sshd\n"
+            "5 6 7 8 mysql -uroot -pSup3rS3cret shopdb\n"
+            "9 10 11 12 /usr/bin/curl --password=hunter2 http://x\n"
+            "13 14 15 16 smbclient //srv/share -U admin%P@ssw0rd\n"
+            "17 18 19 20 nmap -p80 scanme.local\n\n"
+        )
+        path = self._write_temp(text)
+        findings = parse_snmp_output(path, "10.10.10.10")
+        validate_findings(findings)
+        creds = {(f["attributes"].get("username"), f["attributes"]["password"])
+                 for f in findings if f["entity_type"] == "credential"}
+        self.assertIn(("root", "Sup3rS3cret"), creds)
+        self.assertIn((None, "hunter2"), creds)
+        self.assertIn(("admin", "P@ssw0rd"), creds)
+        # nmap -p80 must NOT be mistaken for a password (only DB clients trust -p).
+        self.assertFalse(any(pw == "80" for _, pw in creds))
+
+    def test_snmp_extracts_credentials_from_extend_output(self):
+        text = (
+            'NET-SNMP-EXTEND-MIB::nsExtendOutputFull."backup" = STRING: '
+            'DB_PASSWORD=leaked_from_extend\n'
+        )
+        path = self._write_temp(text)
+        findings = parse_snmp_output(path, "10.10.10.10")
+        validate_findings(findings)
+        self.assertTrue(any(f["name"] == "snmp_extend_output_disclosed" for f in findings))
+        self.assertTrue(any(f["entity_type"] == "credential"
+                            and f["attributes"]["password"] == "leaked_from_extend"
+                            for f in findings))
+
     def test_enum4linux_parser(self):
         payload = {
             "users": [{"name": "alice", "rid": "1001"}],
@@ -133,6 +168,45 @@ class ParserCoverageTests(unittest.TestCase):
         self.assertEqual(hash_findings[0]["attributes"]["user"], "svc_sql")
         validate_findings(user_findings)
         validate_findings(hash_findings)
+
+    def test_potfile_parser_extracts_cracked_kerberos_password(self):
+        content = "$krb5asrep$23$svc_sql@LAB.LOCAL:abcdef0123456789:Summer2026!\n"
+        path = self._write_temp(content, suffix=".pot")
+        findings = parse_potfile(path, "LAB.LOCAL")
+
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["entity_type"], "credential")
+        self.assertEqual(findings[0]["name"], "svc_sql")
+        self.assertEqual(findings[0]["attributes"]["domain"], "LAB.LOCAL")
+        self.assertEqual(findings[0]["attributes"]["password"], "Summer2026!")
+        validate_findings(findings)
+
+    def test_potfile_parser_keeps_identity_less_ntlm_secret(self):
+        content = "8846f7eaee8fb117ad06bdd830b7586c:password\n"
+        path = self._write_temp(content, suffix=".pot")
+        findings = parse_potfile(path)
+
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["name"], "cracked_disclosed_credential")
+        self.assertEqual(findings[0]["attributes"]["hash_type"], "NTLM")
+        self.assertEqual(findings[0]["attributes"]["password"], "password")
+        validate_findings(findings)
+
+    def test_nfs_parser_emits_export_and_no_root_squash_finding(self):
+        content = (
+            "Export list for 10.10.10.10:\n"
+            "/srv/share *(rw,sync,no_root_squash)\n"
+            "/backups 10.10.10.0/24(ro,sync)\n"
+        )
+        path = self._write_temp(content)
+        findings = parse_nfs_output(path, "10.10.10.10")
+
+        shares = [f for f in findings if f["entity_type"] == "share"]
+        privesc = [f for f in findings if f["name"] == "nfs_no_root_squash"]
+        self.assertEqual({f["name"] for f in shares}, {"/srv/share", "/backups"})
+        self.assertEqual(len(privesc), 1)
+        self.assertEqual(privesc[0]["attributes"]["export"], "/srv/share")
+        validate_findings(findings)
 
     def test_ldapdomaindump_parser(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

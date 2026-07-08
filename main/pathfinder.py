@@ -9,7 +9,7 @@ import xml.etree.ElementTree as ET
 # Import the core logic components and the single parser registry.
 from .attack_path_synthesizer import AttackPathSynthesizer
 from .vulnerability_mapper import VulnerabilityMapper
-from .finding_schema import FindingValidationError, validate_findings
+from .finding_schema import FindingValidationError, validate_and_normalize_finding, validate_findings
 from .parser_registry import PARSER_SPECS, SPEC_BY_KEY, HOST_REQUIRED_KEYS, ParserContext
 
 # ANSI color codes for formatted output (TTY-aware; togglable via --no-color)
@@ -106,25 +106,122 @@ def filter_prioritized_findings(findings, max_vulns):
     return other + edb[:max_vulns] + github[:max_vulns]
 
 
+# Credential secret material. When the same identity appears twice (e.g. once with
+# a cleartext password, once with an NTLM hash), we merge these fields instead of
+# dropping the later finding, so a pass-the-hash *and* a password-spray path survive.
+_CREDENTIAL_SECRET_FIELDS = (
+    "password", "hash", "nt_hash", "lm_hash", "ntlm_hash", "aes256_key",
+    "aes128_key", "kerberos_key", "private_key", "secret", "hash_type",
+)
+
+# Credential "names" that are placeholders for an unknown principal - a secret was
+# disclosed but no username was recovered (e.g. an SNMP-leaked password). These must
+# not collapse by name: two distinct disclosed secrets on one host are two leads.
+_ANONYMOUS_CREDENTIAL_NAMES = {"snmp_disclosed_credential", "cracked_disclosed_credential"}
+
+
+def _dedup_key(finding):
+    """Identity used to collapse duplicates. Credentials key on host+user+domain
+    (not port/secret) so the same identity from different tools merges; everything
+    else keeps the classic host+port+name+type key.
+
+    Identity-less credentials (a secret disclosed with no known principal, e.g. an
+    SNMP-leaked password) are the exception: they key on the secret itself, so two
+    distinct leaked secrets on one host stay two leads instead of collapsing into
+    one (which would silently drop all but the first)."""
+    entity_type = finding.get("entity_type")
+    if entity_type == "credential":
+        attrs = finding.get("attributes") or {}
+        name = (finding.get("name") or "").lower()
+        domain = (attrs.get("domain") or "").lower()
+        if name in _ANONYMOUS_CREDENTIAL_NAMES or not name:
+            secret = next((str(attrs[f]) for f in _CREDENTIAL_SECRET_FIELDS if attrs.get(f)), name)
+            return ("credential", finding.get("host"), name, domain, secret)
+        return ("credential", finding.get("host"), name, domain)
+    return (finding.get("host"), finding.get("port"), finding.get("name"), entity_type)
+
+
+def _merge_provenance(kept, duplicate):
+    """Record that another tool/file corroborated the same finding (no data lost)."""
+    kept_attrs = kept.setdefault("attributes", {})
+    dup_attrs = duplicate.get("attributes") or {}
+
+    sources = kept_attrs.get("corroborating_sources")
+    if not isinstance(sources, list):
+        sources = [kept.get("source_tool")] if kept.get("source_tool") else []
+    dup_tool = duplicate.get("source_tool")
+    if dup_tool and dup_tool not in sources:
+        sources.append(dup_tool)
+    if len(sources) > 1:
+        kept_attrs["corroborating_sources"] = sources
+
+    files = kept_attrs.get("source_files")
+    if not isinstance(files, list):
+        files = [kept_attrs["source_file"]] if kept_attrs.get("source_file") else []
+    dup_file = dup_attrs.get("source_file")
+    if dup_file and dup_file not in files:
+        files.append(dup_file)
+    if len(files) > 1:
+        kept_attrs["source_files"] = files
+
+
+def _merge_credential(kept, duplicate):
+    """Merge a duplicate credential into the kept one: fill in any missing secret
+    material and attributes (never overwrite an existing value), keep the max score,
+    and record provenance."""
+    kept_attrs = kept.setdefault("attributes", {})
+    dup_attrs = duplicate.get("attributes") or {}
+    for field, value in dup_attrs.items():
+        if field in ("score", "source_file", "corroborating_sources", "source_files"):
+            continue
+        if value in (None, "") or kept_attrs.get(field) not in (None, ""):
+            continue
+        kept_attrs[field] = value
+    dup_score = dup_attrs.get("score")
+    if isinstance(dup_score, (int, float)):
+        kept_attrs["score"] = max(kept_attrs.get("score") or 0, dup_score)
+    _merge_provenance(kept, duplicate)
+
+
 def deduplicate_findings(findings_list):
-    """Removes duplicate findings from a list based on host, port, name, and type."""
-    seen = set()
+    """Collapse duplicate findings, merging rather than dropping: credentials merge
+    their secret material (password + hash for one identity), and all findings merge
+    corroborating tool/file provenance."""
+    seen = {}
     unique_findings = []
     for finding in findings_list:
-        identifier = (finding.get('host'), finding.get('port'), finding.get('name'), finding.get('entity_type'))
-        if identifier not in seen:
-            seen.add(identifier)
+        key = _dedup_key(finding)
+        kept = seen.get(key)
+        if kept is None:
+            seen[key] = finding
             unique_findings.append(finding)
+        elif finding.get("entity_type") == "credential":
+            _merge_credential(kept, finding)
+        else:
+            _merge_provenance(kept, finding)
     return unique_findings
 
 
 def validate_parser_output(parser_name, findings):
-    """Validates parser output against the normalized finding schema."""
-    try:
-        return validate_findings(findings)
-    except FindingValidationError as e:
-        print(f"{C.BOLD}{C.YELLOW}[!] {parser_name} parser produced invalid finding schema: {e}{C.END}")
+    """Validate parser output per finding: keep the valid records, warn with counts,
+    and skip only the malformed ones. Tool output drifts; one bad record must not
+    discard an entire parser's results."""
+    if not isinstance(findings, list):
+        print(f"{C.BOLD}{C.YELLOW}[!] {parser_name} parser did not return a list; skipping.{C.END}")
         return []
+    valid = []
+    dropped = 0
+    for finding in findings:
+        try:
+            valid.append(validate_and_normalize_finding(finding))
+        except FindingValidationError as e:
+            dropped += 1
+            if dropped <= 3:  # show a few examples, then just count
+                print(f"{C.BOLD}{C.YELLOW}[!] {parser_name}: skipping malformed finding: {e}{C.END}")
+    if dropped:
+        print(f"{C.BOLD}{C.YELLOW}[!] {parser_name}: kept {len(valid)} valid finding(s), "
+              f"dropped {dropped} malformed.{C.END}")
+    return valid
 
 
 def manage_credentials():
@@ -292,6 +389,9 @@ def _sniff_file_type_details(path):
         return None, 'JSON-like content but no supported top-level JSON parser signature'
 
     # Plain-text formats (order matters; more specific patterns first)
+    basename = os.path.basename(path).lower()
+    if basename.endswith(".pot") and re.search(r'(?m)^.+:.+$', sanitized_head):
+        return 'potfile_txt', 'matched john/hashcat potfile extension and hash:plaintext shape'
     if re.search(r'VALID\s+USERNAME', sanitized_head, re.IGNORECASE):
         return 'kerbrute_txt', 'matched Kerbrute valid username signature'
     if '$krb5tgs$' in sanitized_head:
@@ -310,6 +410,10 @@ def _sniff_file_type_details(path):
         return 'netexec_log', 'matched NetExec/CrackMapExec result line signature'
     if re.search(r'\[\*\]\s*System information', sanitized_head, re.IGNORECASE) or 'snmp-check' in sanitized_head[:200].lower():
         return 'snmp_txt', 'matched snmp-check section header signature'
+    if re.search(r'(?mi)^\s*Export list for\s+\S+:', sanitized_head):
+        return 'nfs_txt', 'matched showmount export-list header'
+    if re.search(r'(?m)^\s*(?:\|_?\s*)?/\S+\s+(?:\*|[0-9a-fA-F:.]+(?:/\d+)?|[A-Za-z0-9_.-]+)(?:\(|\s|$)', sanitized_head):
+        return 'nfs_txt', 'matched NFS export line signature'
     if re.search(r'\[INFO\].*(?:parameter|injection|vulnerable)', sanitized_head, re.IGNORECASE) and 'sqlmap' in sanitized_head[:800].lower():
         return 'sqlmap_log', 'matched sqlmap [INFO] signature'
     if re.search(r'WinPEAS|SeImpersonatePrivilege|AlwaysInstallElevated|winpeas', sanitized_head, re.IGNORECASE):
@@ -343,6 +447,7 @@ def _gobuster_extract_target(path):
     Returns (None, 80, 'dir') if the header cannot be parsed.
     """
     host, port, mode = None, 80, 'dir'
+    url_found = False
     try:
         with open(path, 'r', encoding='utf-8', errors='ignore') as f:
             for line in f:
@@ -351,6 +456,7 @@ def _gobuster_extract_target(path):
                     mode = 'vhost'
                 url_match = re.search(r'\[\+\]\s+(?:Url|URL):\s+(https?)://([^:/\s]+)(?::(\d+))?', line, re.IGNORECASE)
                 if url_match:
+                    url_found = True
                     scheme = url_match.group(1).lower()
                     host = url_match.group(2)
                     if url_match.group(3):
@@ -363,6 +469,15 @@ def _gobuster_extract_target(path):
                     break
     except (IOError, OSError):
         pass
+    # gobuster's -o file has no '[+] Url:' banner (that goes to stdout), so without
+    # this every non-:80 scan would silently default to port 80. one-shot-enum names
+    # its output 'gobuster_<port>.txt' - recover the port from the filename.
+    if not url_found:
+        fname_match = re.search(r'gobuster_(\d{1,5})\.', os.path.basename(path))
+        if fname_match:
+            candidate = int(fname_match.group(1))
+            if 0 < candidate <= 65535:
+                port = candidate
     return host, port, mode
 
 def _nmap_extract_target(path):
@@ -502,7 +617,11 @@ def _display_results(args, synthesizer, prioritized_findings):
         for i, path in enumerate(suggested_paths):
             print("\n" + "="*80)
             print(f"{C.BOLD}ATTACK PATH #{i+1}{C.END}")
-            print(f"Name:       {C.BOLD}{path['name']}{C.END} {C.YELLOW}{C.BOLD}[Priority: {path['priority']}]{C.END}")
+            eff = path.get('effective_priority', path['priority'])
+            base = path['priority']
+            prio_label = (f"[Priority: {eff}]" if eff == base
+                          else f"[Priority: {eff}  (base {base}, adjusted for evidence quality)]")
+            print(f"Name:       {C.BOLD}{path['name']}{C.END} {C.YELLOW}{C.BOLD}{prio_label}{C.END}")
             print(f"Target:     {path['host']}")
             print("="*80)
             print(f"\n  [{C.BOLD}+{C.END}] Description:\n      {path['suggestion']['description']}")
@@ -518,6 +637,14 @@ def _display_results(args, synthesizer, prioritized_findings):
                     print(f"      - {cmd}")
                 if uses_msf:
                     print(f"      {C.YELLOW}[OSCP] Metasploit/Meterpreter is limited to ONE target on the exam.{C.END}")
+            if path['suggestion'].get('injection_examples'):
+                print(f"\n  [{C.BOLD}+{C.END}] {C.BOLD}Prompt-injection examples:{C.END}")
+                for ex in path['suggestion']['injection_examples']:
+                    print(f"      - {ex}")
+            if path.get('atlas'):
+                print(f"\n  [{C.BOLD}+{C.END}] MITRE ATLAS:")
+                for tag in path['atlas']:
+                    print(f"      - {tag}")
             if path['suggestion'].get('references'):
                 print(f"\n  [{C.BOLD}+{C.END}] References:")
                 for ref in path['suggestion']['references']:
@@ -549,6 +676,149 @@ def _display_results(args, synthesizer, prioritized_findings):
                 print(f"    {C.YELLOW}[OSCP] Metasploit is limited to one target on the exam.{C.END}")
         if attributes.get("url"):
             print(f"    {C.BOLD}URL:{C.END} {attributes['url']}")
+
+    return suggested_paths
+
+
+# ── AI attack-intelligence brief ────────────────────────────────────────────────
+
+# Maps an ai_service finding name to (crown-jewel asset, why it matters). Used to
+# build the brief's crown-jewel table from whatever AI surfaces were actually found.
+_AI_CROWN_JEWELS = {
+    "vector-store-open": ("Knowledge-base corpus", "Readable source chunks - commonly leak credentials, hostnames, runbooks, and topology"),
+    "rag-vector": ("Vector store / RAG corpus", "Retrieval context the model trusts; extraction and poisoning target"),
+    "mcp-tools-confirmed": ("MCP tool capabilities", "Confirmed tools with real backend permissions (fs / exec / db / secrets)"),
+    "agent-mcp": ("Agent/MCP tool surface", "Tool invocation authority - excessive agency and confused-deputy risk"),
+    "mlflow": ("Model registry / artifacts", "Proprietary models and artifact write-to-RCE path"),
+    "notebook": ("Notebook kernel", "Unauthenticated kernel = direct code execution"),
+    "ai-agent-a2a": ("Multi-agent orchestration", "Agent registration/routing trust; rogue-agent and workflow abuse"),
+    "ai-agent-sql": ("NL-to-SQL database bridge", "Generated SQL can reach dangerous DB functions (xp_cmdshell)"),
+}
+
+
+def _ai_trust_boundaries(names):
+    """Derive the relevant trust boundaries (per the AI threat-modelling notes)
+    from the set of AI finding names/attributes actually present."""
+    boundaries = []
+    if any(n in names for n in ("openai-compatible", "ollama", "vllm", "tgi", "gradio", "langserve", "ai-agent", "ai-agent-sql")):
+        boundaries.append("**Input trust** (user prompt/query -> model): prompt injection, jailbreak, guardrail bypass.")
+    if any(n in names for n in ("agent-mcp", "mcp-tools-confirmed", "ai-agent", "ai-workflow")):
+        boundaries.append("**Tool-invocation trust** (agent -> tool server): parameter injection, overbroad tool scope, confused deputy.")
+    if any(n in names for n in ("rag-vector", "vector-store-open")):
+        boundaries.append("**Data-integrity trust** (retrieved context -> model): RAG/vector poisoning, indirect injection, chunk extraction.")
+    if "ai-agent-a2a" in names:
+        boundaries.append("**Delegation trust** (orchestrator -> sub-agents): rogue registration, agent-card spoofing, workflow-gate bypass.")
+    if any("secrets/identity" in (str(c)) for c in names):
+        boundaries.append("**Credential trust** (tool server -> secret store): secret rotation abuse, identity collapse, overprivileged role.")
+    return boundaries
+
+
+def generate_ai_brief(prioritized_findings, attack_paths):
+    """Build a markdown AI attack-intelligence brief from AI findings + attack paths,
+    mirroring the AI-Red-Team notes' brief (surfaces, crown jewels, trust boundaries,
+    prioritized paths with MITRE ATLAS). Returns markdown text, or '' if no AI findings."""
+    ai_findings = [f for f in prioritized_findings if f.get("entity_type") == "ai_service"]
+    if not ai_findings:
+        return ""
+
+    lines = ["# AI Attack Intelligence Brief", "",
+             "_Generated by PathFinder from one-shot-enum AI-surface enumeration. "
+             "Read-only findings - validate and exploit only within your Rules of Engagement._", ""]
+
+    # --- AI surfaces grouped by host ---
+    lines.append("## AI Surfaces by Host")
+    hosts = sorted({f.get("host") for f in ai_findings}, key=lambda h: (h is None, h))
+    for host in hosts:
+        lines.append("")
+        lines.append(f"### {host}")
+        for f in sorted([x for x in ai_findings if x.get("host") == host],
+                        key=lambda x: x.get("attributes", {}).get("score", 0), reverse=True):
+            a = f.get("attributes", {})
+            role = a.get("agent_role") or a.get("label") or f.get("name")
+            arch = a.get("agent_architecture")
+            fw = a.get("agent_framework")
+            descriptor = ", ".join(x for x in (arch, fw) if x and x != "unknown")
+            suffix = f" ({descriptor})" if descriptor else ""
+            loc = a.get("base_url") or a.get("vector_store_url") or a.get("mcp_url") or ""
+            score = a.get("score", "?")
+            lines.append(f"- **{role}**{suffix} - `{f.get('name')}` @ {loc} [score {score}]")
+            if a.get("agent_capabilities"):
+                lines.append(f"  - Capabilities: {', '.join(a['agent_capabilities'])}")
+            if a.get("confirmed_mcp_tools"):
+                cats = a.get("confirmed_mcp_categories") or []
+                cat_str = f" [{', '.join(cats)}]" if cats else ""
+                lines.append(f"  - Confirmed MCP tools{cat_str}: {', '.join(a['confirmed_mcp_tools'])}")
+            if a.get("vector_store_collections"):
+                lines.append(f"  - Unauthenticated {a.get('vector_store_engine', 'vector store')} collections: "
+                             f"{', '.join(a['vector_store_collections'])}")
+
+    # --- Crown jewels ---
+    jewels = []
+    seen_jewels = set()
+    for f in ai_findings:
+        entry = _AI_CROWN_JEWELS.get(f.get("name"))
+        if entry and entry[0] not in seen_jewels:
+            seen_jewels.add(entry[0])
+            jewels.append((entry[0], f.get("host"), entry[1]))
+    if jewels:
+        lines += ["", "## Crown Jewels (highest-value AI assets reachable)", "",
+                  "| Asset | Host | Why it matters |", "| --- | --- | --- |"]
+        for asset, host, why in jewels:
+            lines.append(f"| {asset} | {host} | {why} |")
+
+    # --- Trust boundaries ---
+    names = {f.get("name") for f in ai_findings}
+    # also expose confirmed tool categories to the boundary heuristic
+    for f in ai_findings:
+        names.update(f.get("attributes", {}).get("confirmed_mcp_categories") or [])
+    boundaries = _ai_trust_boundaries(names)
+    if boundaries:
+        lines += ["", "## Trust Boundaries to Test", ""]
+        lines += [f"- {b}" for b in boundaries]
+
+    # --- Prioritized AI attack paths (every AI rule carries MITRE ATLAS tags) ---
+    ai_paths = [p for p in attack_paths if p.get("atlas")]
+    if ai_paths:
+        lines += ["", "## Prioritized AI Attack Paths", ""]
+        for p in ai_paths:
+            lines.append(f"### [P{p.get('effective_priority', p.get('priority'))}] {p.get('name')} - {p.get('host')}")
+            lines.append("")
+            lines.append(p["suggestion"].get("description", ""))
+            if p.get("atlas"):
+                lines.append("")
+                lines.append(f"- **MITRE ATLAS:** {', '.join(p['atlas'])}")
+            cmds = p["suggestion"].get("commands") or []
+            if cmds:
+                lines.append("- **Next steps:**")
+                lines += [f"  - {c}" for c in cmds]
+            examples = p["suggestion"].get("injection_examples") or []
+            if examples:
+                lines.append("- **Prompt-injection examples:**")
+                lines += [f"  - {e}" for e in examples]
+            lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def maybe_write_ai_brief(args, paths, prioritized_findings):
+    """Write the AI intel brief to args.ai_brief if that flag was set.
+
+    Reuses the paths already synthesized by _display_results so synthesis runs
+    once per invocation.
+    """
+    brief_path = getattr(args, "ai_brief", None)
+    if not brief_path:
+        return
+    markdown = generate_ai_brief(prioritized_findings, paths)
+    if not markdown:
+        print(f"\n{C.BOLD}{C.YELLOW}[!] --ai-brief: no AI (ai_service) findings to report; brief not written.{C.END}")
+        return
+    try:
+        with open(brief_path, "w", encoding="utf-8") as fh:
+            fh.write(markdown)
+        print(f"\n{C.BOLD}{C.GREEN}[+]{C.END} AI attack-intelligence brief written to {brief_path}")
+    except IOError as e:
+        print(f"\n{C.BOLD}{C.YELLOW}[!] Error writing AI brief: {e}{C.END}")
 
 
 # ── Scan mode ─────────────────────────────────────────────────────────────────
@@ -673,7 +943,8 @@ def run_scan_mode(args):
     print(f"    {C.GREEN}[+]{C.END} Mapper prioritized {len(prioritized)} findings.")
 
     _save_findings(args, prioritized)
-    _display_results(args, synthesizer, prioritized)
+    suggested_paths = _display_results(args, synthesizer, prioritized)
+    maybe_write_ai_brief(args, suggested_paths, prioritized)
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
@@ -709,6 +980,7 @@ def main():
     scan_p.add_argument('--github-cache', default=os.path.join(SCRIPT_DIR, 'github_cache.json'), help='Path to GitHub lookup cache JSON file.')
     scan_p.add_argument('--no-color', action='store_true', help='Disable ANSI colour output.')
     scan_p.add_argument('--oscp', action='store_true', help='OSCP exam profile: strip prohibited-tool commands (sqlmap, nuclei) from suggestions and flag the Metasploit one-target limit.')
+    scan_p.add_argument('--ai-brief', metavar='FILE', help='Write a markdown AI attack-intelligence brief (surfaces, crown jewels, trust boundaries, MITRE ATLAS-tagged paths) to FILE.')
 
     # ── manual mode args (no subcommand) ──────────────────────────────────────
     # The per-parser input flags are generated from the single PARSER_SPECS list.
@@ -737,6 +1009,7 @@ def main():
     gg.add_argument("--github-cache", default=os.path.join(SCRIPT_DIR, "github_cache.json"), help="Path to GitHub lookup cache JSON file.")
     gg.add_argument("--no-color", action="store_true", help="Disable ANSI colour output.")
     gg.add_argument("--oscp", action="store_true", help="OSCP exam profile: strip prohibited-tool commands (sqlmap, nuclei) from suggestions and flag the Metasploit one-target limit.")
+    gg.add_argument("--ai-brief", metavar="FILE", help="Write a markdown AI attack-intelligence brief (surfaces, crown jewels, trust boundaries, MITRE ATLAS-tagged paths) to FILE.")
 
     args = main_parser.parse_args()
     configure_logging(args.verbose)
@@ -784,11 +1057,10 @@ def main():
         sys.exit(0)
 
     _save_findings(args, prioritized_findings)
-    _display_results(args, synthesizer, prioritized_findings)
+    suggested_paths = _display_results(args, synthesizer, prioritized_findings)
+    maybe_write_ai_brief(args, suggested_paths, prioritized_findings)
 
 
 if __name__ == "__main__":
     main()
-
-
 

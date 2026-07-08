@@ -122,6 +122,49 @@ class AttackPathSynthesizerTests(unittest.TestCase):
         cred_paths = [p for p in paths if "Credential Reuse on Login Service" in p["name"]]
         self.assertGreaterEqual(len(cred_paths), 1)
 
+    def test_snmp_extend_output_rule_fires(self):
+        """information_leak snmp_extend_output_disclosed should now produce a path."""
+        synth = AttackPathSynthesizer(rules_file_path=str(PRODUCTION_RULES))
+        findings = [
+            {
+                "host": "10.10.10.50", "port": 161, "source_tool": "snmp",
+                "entity_type": "information_leak", "name": "snmp_extend_output_disclosed", "version": None,
+                "attributes": {"details": "root:x:0:0:root:/root:/bin/bash", "source": "NET-SNMP-EXTEND-MIB", "score": 40},
+            },
+        ]
+        paths = synth.generate_attack_paths(findings)
+        self.assertTrue(any("EXTEND Output" in p["name"] for p in paths))
+
+    def test_object_store_rule_fires(self):
+        """ai_service object-store should fire the MinIO/S3 loot rule."""
+        synth = AttackPathSynthesizer(rules_file_path=str(PRODUCTION_RULES))
+        findings = [
+            {
+                "host": "10.10.10.40", "port": 9000, "source_tool": "one-shot-enum-llm",
+                "entity_type": "ai_service", "name": "object-store", "version": None,
+                "attributes": {"base_url": "http://10.10.10.40:9000", "confidence": "high", "score": 80},
+            },
+        ]
+        paths = synth.generate_attack_paths(findings)
+        self.assertTrue(any("Object Store" in p["name"] for p in paths))
+
+    def test_mlflow_object_store_correlation_fires(self):
+        """MLflow + object store on the same host should fire the write-to-RCE chain,
+        and the correlation path must carry ATLAS tags (so it lands in the AI brief)."""
+        synth = AttackPathSynthesizer(rules_file_path=str(PRODUCTION_RULES))
+        findings = [
+            {"host": "H", "port": 5000, "source_tool": "one-shot-enum-llm", "entity_type": "ai_service",
+             "name": "mlflow", "version": None,
+             "attributes": {"base_url": "http://H:5000", "confidence": "high", "score": 85}},
+            {"host": "H", "port": 9000, "source_tool": "one-shot-enum-llm", "entity_type": "ai_service",
+             "name": "object-store", "version": None,
+             "attributes": {"base_url": "http://H:9000", "confidence": "high", "score": 80}},
+        ]
+        paths = synth.generate_attack_paths(findings)
+        corr = [p for p in paths if "MLflow + Object Store" in p["name"]]
+        self.assertEqual(len(corr), 1)
+        self.assertTrue(corr[0]["atlas"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -8,6 +8,7 @@ from collections import namedtuple
 
 from parsers.active_directory.kerberos_parser import parse_getnpusers_output, parse_getuserspns_output, parse_kerbrute_output
 from parsers.active_directory.ldapdomaindump_parser import parse_ldapdomaindump_dir
+from parsers.active_directory.potfile_parser import parse_potfile
 from parsers.active_directory.sharphound_parser import parse_sharphound_dir
 from parsers.active_directory.certipy_parser import parse_certipy_json
 from parsers.active_directory.secretsdump_parser import parse_secretsdump
@@ -16,6 +17,7 @@ from parsers.initial_foothold.ffuf_parser import parse_ffuf_json
 from parsers.initial_foothold.gobuster_parser import parse_gobuster_output
 from parsers.initial_foothold.llm_enum_parser import parse_llm_enum_json
 from parsers.initial_foothold.netexec_parser import parse_netexec_output
+from parsers.initial_foothold.nfs_parser import parse_nfs_output
 from parsers.initial_foothold.nikto_parser import parse_nikto_json
 from parsers.initial_foothold.nmap_parser import parse_nmap_xml
 from parsers.initial_foothold.nuclei_parser import parse_nuclei_jsonl
@@ -75,6 +77,8 @@ PARSER_SPECS = [
                True, lambda p, ctx: parse_winpeas(p, ctx.target_host)),
     ParserSpec("snmp_txt", "--snmp-txt", "Path to snmp-check output text file.",
                True, lambda p, ctx: parse_snmp_output(p, ctx.target_host)),
+    ParserSpec("nfs_txt", "--nfs-txt", "Path to NFS export enumeration output (showmount/nmap).",
+               True, lambda p, ctx: parse_nfs_output(p, ctx.target_host)),
     ParserSpec("sharphound_dir", "--sharphound-dir", "Path to directory with unzipped SharpHound JSON files.",
                False, lambda p, ctx: parse_sharphound_dir(p)),
     ParserSpec("ldapdomaindump_dir", "--ldapdomaindump-dir", "Path to directory with ldapdomaindump TSV files.",
@@ -87,6 +91,8 @@ PARSER_SPECS = [
                False, lambda p, ctx: parse_getuserspns_output(p, ctx.target_host)),
     ParserSpec("secretsdump_txt", "--secretsdump-txt", "Path to impacket-secretsdump output.",
                False, lambda p, ctx: parse_secretsdump(p, ctx.target_host)),
+    ParserSpec("potfile_txt", "--potfile", "Path to john/hashcat .pot cracked-password file.",
+               False, lambda p, ctx: parse_potfile(p, ctx.target_host)),
     ParserSpec("certipy_json", "--certipy-json", "Path to certipy find JSON output.",
                False, lambda p, ctx: parse_certipy_json(p, ctx.target_host)),
     ParserSpec("sqlmap_log", "--sqlmap-log", "Path to sqlmap log file from its output directory.",

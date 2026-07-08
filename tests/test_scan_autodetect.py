@@ -38,6 +38,24 @@ class ScanAutodetectTests(unittest.TestCase):
         self.addCleanup(lambda: Path(tmp_path).unlink(missing_ok=True))
         self.assertEqual(_sniff_file_type(tmp_path), "snmp_txt")
 
+    def test_sniff_detects_showmount_nfs_output(self):
+        content = "Export list for 10.10.10.10:\n/srv/share *(rw,sync,no_root_squash)\n"
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as tmp:
+            tmp.write(content)
+            tmp_path = tmp.name
+
+        self.addCleanup(lambda: Path(tmp_path).unlink(missing_ok=True))
+        self.assertEqual(_sniff_file_type(tmp_path), "nfs_txt")
+
+    def test_sniff_detects_potfile_by_extension(self):
+        content = "$krb5asrep$23$svc_sql@LAB.LOCAL:abcdef0123456789:Summer2026!\n"
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".pot", delete=False, encoding="utf-8") as tmp:
+            tmp.write(content)
+            tmp_path = tmp.name
+
+        self.addCleanup(lambda: Path(tmp_path).unlink(missing_ok=True))
+        self.assertEqual(_sniff_file_type(tmp_path), "potfile_txt")
+
     def test_sniff_detects_gobuster_header_with_uppercase_url_and_ansi(self):
         content = (
             "\ufeff\x1b[32m===============================================================\x1b[0m\n"

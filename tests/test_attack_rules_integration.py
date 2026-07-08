@@ -68,8 +68,10 @@ class TestLinuxWebServerLab(unittest.TestCase):
             _f("10.10.10.10", 80, "nikto", "misconfiguration", "http_methods_revealed", dangerous_methods_found=True),
             # whatweb
             _f("10.10.10.10", 80, "whatweb", "software_product", "WordPress", "6.5", score=40),
-            # searchsploit found an exploit for Apache 2.4.49
-            _f("10.10.10.10", 80, "searchsploit_mapper", "vulnerability", "EDB-ID:50383 - Apache 2.4.49 Path Traversal", score=80),
+            # searchsploit found an exploit for Apache 2.4.49 (mapper stamps the
+            # exact software the exploit belongs to onto the finding's attributes).
+            _f("10.10.10.10", 80, "searchsploit_mapper", "vulnerability", "EDB-ID:50383 - Apache 2.4.49 Path Traversal",
+               score=80, related_software_product="Apache HTTP Server", related_software_version="2.4.49"),
             # manual credential from backup.zip
             _f("MANUALLY_ADDED", None, "manual_input", "credential", "admin", password="Backup2024!", hash=None, score=100),
         ]
@@ -114,6 +116,17 @@ class TestLinuxWebServerLab(unittest.TestCase):
         paths = self.synth.generate_attack_paths(self.findings)
         exploit = [p for p in paths if "Known Vulnerable Software" in p["name"] and "Public" in p["name"]]
         self.assertGreaterEqual(len(exploit), 1)
+        # Single-trigger rule pulls the software from the exploit finding itself.
+        self.assertIn("Apache HTTP Server", exploit[0]["suggestion"]["description"])
+
+    def test_exploit_does_not_cross_pair_with_unrelated_software(self):
+        """The host has 3 software_products (OpenSSH, Apache, WordPress) but only one
+        EDB exploit finding. The single-trigger rule must yield exactly one public-
+        exploit path (tied to the exploit's own software), not one per product."""
+        paths = self.synth.generate_attack_paths(self.findings)
+        public = [p for p in paths if "Known Vulnerable Software with Public Exploit" == p["name"]]
+        self.assertEqual(len(public), 1)
+        self.assertNotIn("OpenSSH", public[0]["suggestion"]["description"])
 
     def test_ftp_webshell_does_not_fire(self):
         """FTP+web combo should NOT fire because there's no FTP service."""
@@ -174,6 +187,21 @@ class TestLinuxPrivEscLab(unittest.TestCase):
         paths = self.synth.generate_attack_paths(self.findings)
         top = paths[0]
         self.assertEqual(top["name"], "Writable /etc/passwd or /etc/shadow")
+
+
+class TestNfsParserRuleIntegration(unittest.TestCase):
+    def test_nfs_no_root_squash_from_network_enum_fires_existing_rule(self):
+        synth = _synth()
+        findings = [
+            _f("10.10.10.10", 2049, "nfs", "share", "/srv/share",
+               protocol="NFS", clients=["*"], options=["rw", "no_root_squash"]),
+            _f("10.10.10.10", 2049, "nfs", "privilege_escalation", "nfs_no_root_squash",
+               export="/srv/share", clients=["*"], options=["rw", "no_root_squash"],
+               description="NFS export /srv/share includes no_root_squash and rw"),
+        ]
+
+        paths = synth.generate_attack_paths(findings)
+        self.assertIn("NFS no_root_squash - SUID Shell via NFS", _path_names(paths))
 
 
 class TestWindowsPrivEscLab(unittest.TestCase):
