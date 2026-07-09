@@ -204,6 +204,27 @@ class TestNfsParserRuleIntegration(unittest.TestCase):
         self.assertIn("NFS no_root_squash - SUID Shell via NFS", _path_names(paths))
 
 
+class TestServiceEnumRuleIntegration(unittest.TestCase):
+    def test_redis_rsync_and_smtp_enum_rules_fire(self):
+        synth = _synth()
+        findings = [
+            _f("10.10.10.10", 6379, "redis-cli", "misconfiguration", "redis_unauthenticated_info",
+               description="Redis INFO responded without authentication", total_keys=12, confidence="high"),
+            _f("10.10.10.20", 873, "rsync", "misconfiguration", "rsync_anonymous_module_listing",
+               description="Anonymous rsync module listing exposed 2 module(s)", modules=["backup", "web"],
+               confidence="high"),
+            _f("10.10.10.30", 25, "smtp-user-enum", "information_leak", "smtp_valid_users_enumerated",
+               description="SMTP user enumeration identified 2 valid user(s)", users=["root", "www-data"],
+               confidence="high"),
+        ]
+
+        paths = synth.generate_attack_paths(findings)
+        names = _path_names(paths)
+        self.assertIn("Unauthenticated Redis - Data Exposure and File-Write Checks", names)
+        self.assertIn("Anonymous Rsync Module Listing - Backup and Config Loot", names)
+        self.assertIn("SMTP User Enumeration - Password Spray Candidate", names)
+
+
 class TestWindowsPrivEscLab(unittest.TestCase):
     """
     Scenario: Got a shell on a Windows box, ran WinPEAS.

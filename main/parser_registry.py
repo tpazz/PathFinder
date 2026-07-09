@@ -21,7 +21,10 @@ from parsers.initial_foothold.nfs_parser import parse_nfs_output
 from parsers.initial_foothold.nikto_parser import parse_nikto_json
 from parsers.initial_foothold.nmap_parser import parse_nmap_xml
 from parsers.initial_foothold.nuclei_parser import parse_nuclei_jsonl
+from parsers.initial_foothold.redis_parser import parse_redis_output
+from parsers.initial_foothold.rsync_parser import parse_rsync_output
 from parsers.initial_foothold.smbmap_parser import parse_smbmap_output
+from parsers.initial_foothold.smtp_user_enum_parser import parse_smtp_user_enum_output
 from parsers.initial_foothold.snmp_parser import parse_snmp_output
 from parsers.initial_foothold.sqlmap_parser import parse_sqlmap_log
 from parsers.initial_foothold.whatweb_parser import parse_whatweb_json
@@ -79,6 +82,12 @@ PARSER_SPECS = [
                True, lambda p, ctx: parse_snmp_output(p, ctx.target_host)),
     ParserSpec("nfs_txt", "--nfs-txt", "Path to NFS export enumeration output (showmount/nmap).",
                True, lambda p, ctx: parse_nfs_output(p, ctx.target_host)),
+    ParserSpec("redis_txt", "--redis-txt", "Path to Redis enumeration output (redis-cli INFO/nmap).",
+               True, lambda p, ctx: parse_redis_output(p, ctx.target_host)),
+    ParserSpec("rsync_txt", "--rsync-txt", "Path to rsync module/file listing output.",
+               True, lambda p, ctx: parse_rsync_output(p, ctx.target_host)),
+    ParserSpec("smtp_user_enum_txt", "--smtp-user-enum-txt", "Path to SMTP user enumeration output.",
+               True, lambda p, ctx: parse_smtp_user_enum_output(p, ctx.target_host)),
     ParserSpec("sharphound_dir", "--sharphound-dir", "Path to directory with unzipped SharpHound JSON files.",
                False, lambda p, ctx: parse_sharphound_dir(p)),
     ParserSpec("ldapdomaindump_dir", "--ldapdomaindump-dir", "Path to directory with ldapdomaindump TSV files.",

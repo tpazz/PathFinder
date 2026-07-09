@@ -30,6 +30,10 @@ CONFIDENCE_PENALTY = {"high": 0, "medium": -6, "low": -12}
 SEVERITY_PENALTY = {"critical": 0, "high": 0, "medium": -6, "low": -12, "info": -12}
 MAX_PRIORITY_PENALTY = -15
 
+# Credential "names" that mean a secret was recovered without a usable account
+# identity. They are valuable loot, but should not be sprayed as usernames.
+ANONYMOUS_CREDENTIAL_NAMES = {"snmp_disclosed_credential", "cracked_disclosed_credential"}
+
 
 def _finding_confidence_penalty(finding):
     """Priority penalty for one finding's evidence quality (severity preferred)."""
@@ -41,6 +45,26 @@ def _finding_confidence_penalty(finding):
     if confidence in CONFIDENCE_PENALTY:
         return CONFIDENCE_PENALTY[confidence]
     return 0
+
+
+def _credential_has_actionable_identity(finding):
+    if finding.get("entity_type") != "credential":
+        return True
+
+    attrs = finding.get("attributes") or {}
+    candidates = [
+        attrs.get("username"),
+        attrs.get("user"),
+        attrs.get("principal"),
+        finding.get("name"),
+    ]
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        value = str(candidate).strip()
+        if value and value.lower() not in ANONYMOUS_CREDENTIAL_NAMES:
+            return True
+    return False
 
 # MITRE ATLAS technique tags for the AI/LLM attack rules, keyed by rule name.
 # ATLAS is the adversarial-ML counterpart to ATT&CK; tagging AI paths with it makes
@@ -250,6 +274,10 @@ class AttackPathSynthesizer:
 
     def _check_finding_against_trigger(self, finding, trigger):
         if finding.get('entity_type') != trigger.get('entity_type'): return False
+        if trigger.get('entity_type') == "credential" \
+                and not trigger.get("allow_anonymous_credential", False) \
+                and not _credential_has_actionable_identity(finding):
+            return False
         name_match_rule = trigger.get('name_match', {})
         match_type = name_match_rule.get('type', 'exact')
         match_value = name_match_rule.get('value')

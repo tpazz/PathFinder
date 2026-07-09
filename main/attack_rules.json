@@ -52,6 +52,63 @@
             ]
         }
     },
+    {
+        "name": "Unauthenticated Redis - Data Exposure and File-Write Checks",
+        "priority": 84,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "misconfiguration", "name_match": { "type": "exact", "value": "redis_unauthenticated_info" } }
+        ],
+        "suggestion": {
+            "description": "Redis on {trigger.1.host}:{trigger.1.port} responded to INFO without authentication.",
+            "rationale": "Unauthenticated Redis can expose application data, sessions, credentials, and sometimes enables file-write or module-load attack paths depending on server configuration and privileges.",
+            "commands": [
+                "redis-cli -h {trigger.1.host} -p {trigger.1.port} INFO",
+                "redis-cli -h {trigger.1.host} -p {trigger.1.port} DBSIZE",
+                "redis-cli -h {trigger.1.host} -p {trigger.1.port} --scan | head -50",
+                "redis-cli -h {trigger.1.host} -p {trigger.1.port} CONFIG GET dir",
+                "Check exposed keys for credentials/session material before considering any write-based test."
+            ],
+            "references": ["https://book.hacktricks.wiki/en/network-services-pentesting/6379-pentesting-redis.html"]
+        }
+    },
+    {
+        "name": "Anonymous Rsync Module Listing - Backup and Config Loot",
+        "priority": 82,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "misconfiguration", "name_match": { "type": "exact", "value": "rsync_anonymous_module_listing" } }
+        ],
+        "suggestion": {
+            "description": "Rsync on {trigger.1.host}:{trigger.1.port} exposes anonymous module listing: {trigger.1.attributes.modules}.",
+            "rationale": "Anonymous rsync modules often expose backups, source trees, web roots, or configuration files. Writable modules can also enable file planting.",
+            "commands": [
+                "rsync --list-only rsync://{trigger.1.host}/",
+                "rsync --list-only rsync://{trigger.1.host}/<module>/",
+                "rsync -av --dry-run rsync://{trigger.1.host}/<module>/ ./rsync_<module>/",
+                "Search downloaded listings/content for credentials, keys, backups, and web roots."
+            ],
+            "references": ["https://book.hacktricks.wiki/en/network-services-pentesting/873-pentesting-rsync.html"]
+        }
+    },
+    {
+        "name": "SMTP User Enumeration - Password Spray Candidate",
+        "priority": 78,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "information_leak", "name_match": { "type": "exact", "value": "smtp_valid_users_enumerated" } }
+        ],
+        "suggestion": {
+            "description": "SMTP on {trigger.1.host}:{trigger.1.port} disclosed valid users: {trigger.1.attributes.users}.",
+            "rationale": "Valid usernames are useful for credential reuse, password spraying, and correlating names against SMB, SSH, WinRM, web logins, and AD findings. Treat spraying as a manual, lockout-aware step.",
+            "commands": [
+                "Review users: {trigger.1.attributes.users}",
+                "Correlate with discovered credentials before any spray attempt.",
+                "If explicitly in scope and lockout-safe: hydra -L users.txt -P passwords.txt -s {trigger.1.port} {trigger.1.host} smtp"
+            ],
+            "references": ["https://book.hacktricks.wiki/en/network-services-pentesting/pentesting-smtp/index.html"]
+        }
+    },
 
     {
         "_comment": "=== SQL INJECTION ===",
@@ -612,6 +669,25 @@
                 "On target: ./rootbash -p (or /tmp/rootbash -p)"
             ],
             "references": ["https://book.hacktricks.wiki/en/linux-hardening/privilege-escalation/nfs-no_root_squash-misconfiguration-pe.html"]
+        }
+    },
+    {
+        "name": "NFS Export Accessible - Mount and Loot",
+        "priority": 79,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "nfs_export", "name_match": { "type": "regex", "value": ".*" } }
+        ],
+        "suggestion": {
+            "description": "NFS export '{trigger.1.name}' on {trigger.1.host} (clients: {trigger.1.attributes.clients}, options: {trigger.1.attributes.options}). Mount it and loot for sensitive files.",
+            "rationale": "Accessible NFS exports frequently expose home directories, SSH keys, config files, backups, and credentials. Mount read-only first; if the export is world-accessible or read-write it is a direct data-exposure (and, with no_root_squash, a privesc) path.",
+            "commands": [
+                "showmount -e {trigger.1.host}",
+                "mkdir -p /mnt/nfs && mount -t nfs {trigger.1.host}:{trigger.1.name} /mnt/nfs -o ro,nolock",
+                "ls -laR /mnt/nfs | less   # hunt for .ssh/id_rsa, .bash_history, *.conf, *.bak, credentials",
+                "If read-write and UID-matched, plant an SSH key into a home dir's .ssh/authorized_keys; if no_root_squash, escalate via a SUID binary (see the no_root_squash path)."
+            ],
+            "references": ["https://book.hacktricks.wiki/en/network-services-pentesting/nfs-service-pentesting.html"]
         }
     },
     {

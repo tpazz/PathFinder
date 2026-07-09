@@ -122,6 +122,25 @@ class AttackPathSynthesizerTests(unittest.TestCase):
         cred_paths = [p for p in paths if "Credential Reuse on Login Service" in p["name"]]
         self.assertGreaterEqual(len(cred_paths), 1)
 
+    def test_identityless_credential_does_not_fire_reuse_rules(self):
+        """A recovered secret without a principal should not be sprayed as a fake username."""
+        synth = AttackPathSynthesizer(rules_file_path=str(PRODUCTION_RULES))
+        findings = [
+            {
+                "host": "10.10.10.50", "port": None, "source_tool": "john",
+                "entity_type": "credential", "name": "cracked_disclosed_credential",
+                "version": None,
+                "attributes": {"username": None, "password": "Summer2026!", "score": 90},
+            },
+            {
+                "host": "10.10.10.10", "port": 22, "source_tool": "nmap",
+                "entity_type": "service", "name": "ssh", "version": None,
+                "attributes": {"score": 10},
+            },
+        ]
+        paths = synth.generate_attack_paths(findings)
+        self.assertFalse(any("Credential Reuse" in p["name"] for p in paths))
+
     def test_snmp_extend_output_rule_fires(self):
         """information_leak snmp_extend_output_disclosed should now produce a path."""
         synth = AttackPathSynthesizer(rules_file_path=str(PRODUCTION_RULES))

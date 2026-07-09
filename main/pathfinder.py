@@ -336,6 +336,28 @@ def map_findings(args, new_raw_findings):
 
 # ── Auto-detect helpers ────────────────────────────────────────────────────────
 
+_SMTP_USER_ENUM_LINE = re.compile(
+    r"(?mi)^\s*(?:[0-9a-fA-F:.]+|[A-Za-z0-9_.-]+\.[A-Za-z0-9_.-]+):\s+"
+    r"(?:exists:\s*[A-Za-z0-9._%+-]+|[A-Za-z0-9._%+-]+\s+exists|"
+    r"VALID\s+USER(?:NAME)?:\s*[A-Za-z0-9._%+-]+|25[0-2]\b[^\n]*<[A-Za-z0-9._%+-]+@)"
+)
+
+
+def _looks_like_smtp_user_enum(sanitized_head, basename):
+    lower_head = sanitized_head.lower()
+    if "smtp-user-enum" in lower_head:
+        return True
+    if _SMTP_USER_ENUM_LINE.search(sanitized_head):
+        return True
+    if basename.startswith("smtp_user_enum_"):
+        return bool(re.search(
+            r"(?mi)(?:exists:\s*[A-Za-z0-9._%+-]+|[A-Za-z0-9._%+-]+\s+exists|"
+            r"VALID\s+USER(?:NAME)?:\s*[A-Za-z0-9._%+-]+|25[0-2]\b[^\n]*<[A-Za-z0-9._%+-]+@)",
+            sanitized_head,
+        ))
+    return False
+
+
 def _sniff_file_type_details(path):
     """
     Reads the first ~3KB of a file and returns (parser_key, reason).
@@ -414,6 +436,12 @@ def _sniff_file_type_details(path):
         return 'nfs_txt', 'matched showmount export-list header'
     if re.search(r'(?m)^\s*(?:\|_?\s*)?/\S+\s+(?:\*|[0-9a-fA-F:.]+(?:/\d+)?|[A-Za-z0-9_.-]+)(?:\(|\s|$)', sanitized_head):
         return 'nfs_txt', 'matched NFS export line signature'
+    if re.search(r'(?mi)^redis_version:', sanitized_head) or re.search(r'(?mi)redis-info:', sanitized_head):
+        return 'redis_txt', 'matched Redis INFO signature'
+    if basename.startswith("rsync_") and re.search(r'(?m)^[A-Za-z0-9_.@-]+(?:\s+\S.*)?$', sanitized_head):
+        return 'rsync_txt', 'matched rsync output filename and module-list shape'
+    if _looks_like_smtp_user_enum(sanitized_head, basename):
+        return 'smtp_user_enum_txt', 'matched SMTP user-enum valid-user signature'
     if re.search(r'\[INFO\].*(?:parameter|injection|vulnerable)', sanitized_head, re.IGNORECASE) and 'sqlmap' in sanitized_head[:800].lower():
         return 'sqlmap_log', 'matched sqlmap [INFO] signature'
     if re.search(r'WinPEAS|SeImpersonatePrivilege|AlwaysInstallElevated|winpeas', sanitized_head, re.IGNORECASE):
@@ -1063,4 +1091,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

@@ -11,6 +11,9 @@ from parsers.active_directory.sharphound_parser import parse_sharphound_dir
 from parsers.initial_foothold.enum4linux_parser import parse_enum4linux_json
 from parsers.initial_foothold.nfs_parser import parse_nfs_output
 from parsers.initial_foothold.nikto_parser import parse_nikto_json
+from parsers.initial_foothold.redis_parser import parse_redis_output
+from parsers.initial_foothold.rsync_parser import parse_rsync_output
+from parsers.initial_foothold.smtp_user_enum_parser import parse_smtp_user_enum_output
 from parsers.initial_foothold.snmp_parser import parse_snmp_output
 from parsers.initial_foothold.sqlmap_parser import parse_sqlmap_log
 from parsers.initial_foothold.whatweb_parser import parse_whatweb_json
@@ -201,11 +204,81 @@ class ParserCoverageTests(unittest.TestCase):
         path = self._write_temp(content)
         findings = parse_nfs_output(path, "10.10.10.10")
 
-        shares = [f for f in findings if f["entity_type"] == "share"]
+        shares = [f for f in findings if f["entity_type"] == "nfs_export"]
         privesc = [f for f in findings if f["name"] == "nfs_no_root_squash"]
         self.assertEqual({f["name"] for f in shares}, {"/srv/share", "/backups"})
         self.assertEqual(len(privesc), 1)
         self.assertEqual(privesc[0]["attributes"]["export"], "/srv/share")
+        validate_findings(findings)
+
+    def test_redis_parser_emits_unauthenticated_info_and_version(self):
+        content = (
+            "# Server\n"
+            "redis_version:6.0.16\n"
+            "# Keyspace\n"
+            "db0:keys=12,expires=0,avg_ttl=0\n"
+        )
+        path = self._write_temp(content)
+        findings = parse_redis_output(path, "10.10.10.10")
+
+        self.assertTrue(any(f["entity_type"] == "software_product" and f["name"] == "Redis"
+                            for f in findings))
+        redis_info = [f for f in findings if f["name"] == "redis_unauthenticated_info"]
+        self.assertEqual(len(redis_info), 1)
+        self.assertEqual(redis_info[0]["attributes"]["total_keys"], 12)
+        validate_findings(findings)
+
+    def test_rsync_parser_emits_modules_and_anonymous_listing(self):
+        content = "backup          Backup files\nweb             Web root\n"
+        path = self._write_temp(content)
+        findings = parse_rsync_output(path, "10.10.10.10")
+
+        modules = [f for f in findings if f["entity_type"] == "rsync_module"]
+        self.assertEqual({f["name"] for f in modules}, {"backup", "web"})
+        self.assertTrue(any(f["name"] == "rsync_anonymous_module_listing" for f in findings))
+        validate_findings(findings)
+
+    def test_rsync_parser_keeps_file_listings_out_of_module_list(self):
+        content = (
+            "drwxr-xr-x          4,096 2024/01/01 00:00:00 .\n"
+            "-rw-r--r--            512 2024/01/01 00:00:01 backup.tar.gz\n"
+        )
+        path = self._write_temp(content)
+        findings = parse_rsync_output(path, "10.10.10.10")
+
+        self.assertFalse(any(f["entity_type"] == "rsync_module" for f in findings))
+        listing = [f for f in findings if f["name"] == "rsync_file_listing_exposed"]
+        self.assertEqual(len(listing), 1)
+        files = listing[0]["attributes"]["files"]
+        self.assertTrue(any(f["name"] == "backup.tar.gz" and f["size"] == 512 for f in files))
+        self.assertTrue(any(f["name"] == "." and f["size"] == 4096 for f in files))
+        validate_findings(findings)
+
+    def test_smtp_user_enum_parser_emits_users_and_summary_leak(self):
+        content = (
+            "10.10.10.10: root exists\n"
+            "10.10.10.10: exists: www-data\n"
+            "[-] baduser does not exist\n"
+        )
+        path = self._write_temp(content)
+        findings = parse_smtp_user_enum_output(path, "10.10.10.10")
+
+        users = [f for f in findings if f["entity_type"] == "user"]
+        self.assertEqual({f["name"] for f in users}, {"root", "www-data"})
+        self.assertTrue(any(f["name"] == "smtp_valid_users_enumerated" for f in findings))
+        validate_findings(findings)
+
+    def test_smtp_user_enum_ignores_status_codes_and_reads_250_email(self):
+        content = (
+            "10.10.10.10: 250 2.1.5 <bob@target>... Recipient ok\n"
+            "252 2.0.0 lonelycode\n"
+        )
+        path = self._write_temp(content)
+        findings = parse_smtp_user_enum_output(path, "10.10.10.10")
+        users = {f["name"] for f in findings if f["entity_type"] == "user"}
+        self.assertIn("bob", users)                 # local part of the 250 address
+        self.assertNotIn("2.1.5", users)            # enhanced status code, not a user
+        self.assertNotIn("2.0.0", users)
         validate_findings(findings)
 
     def test_ldapdomaindump_parser(self):

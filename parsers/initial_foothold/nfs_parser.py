@@ -68,7 +68,9 @@ def parse_nfs_output(file_path, target_host):
                 "host": target_host,
                 "port": 2049,
                 "source_tool": "nfs",
-                "entity_type": "share",
+                # Distinct from SMB 'share' so NFS exports fire NFS-mount guidance,
+                # not smbclient/smbmap commands from the SMB share rules.
+                "entity_type": "nfs_export",
                 "name": export,
                 "version": None,
                 "attributes": {

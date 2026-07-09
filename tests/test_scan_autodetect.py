@@ -56,6 +56,42 @@ class ScanAutodetectTests(unittest.TestCase):
         self.addCleanup(lambda: Path(tmp_path).unlink(missing_ok=True))
         self.assertEqual(_sniff_file_type(tmp_path), "potfile_txt")
 
+    def test_sniff_detects_redis_info(self):
+        content = "# Server\nredis_version:7.0.11\n"
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as tmp:
+            tmp.write(content)
+            tmp_path = tmp.name
+
+        self.addCleanup(lambda: Path(tmp_path).unlink(missing_ok=True))
+        self.assertEqual(_sniff_file_type(tmp_path), "redis_txt")
+
+    def test_sniff_detects_rsync_by_filename(self):
+        content = "backup          Backup files\nweb             Web root\n"
+        with tempfile.NamedTemporaryFile(mode="w", prefix="rsync_", suffix=".txt", delete=False, encoding="utf-8") as tmp:
+            tmp.write(content)
+            tmp_path = tmp.name
+
+        self.addCleanup(lambda: Path(tmp_path).unlink(missing_ok=True))
+        self.assertEqual(_sniff_file_type(tmp_path), "rsync_txt")
+
+    def test_sniff_detects_smtp_user_enum(self):
+        content = "10.10.10.10: exists: root\n"
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as tmp:
+            tmp.write(content)
+            tmp_path = tmp.name
+
+        self.addCleanup(lambda: Path(tmp_path).unlink(missing_ok=True))
+        self.assertEqual(_sniff_file_type(tmp_path), "smtp_user_enum_txt")
+
+    def test_sniff_does_not_treat_bare_exists_as_smtp_user_enum(self):
+        content = "cache check\nexists: root\n"
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False, encoding="utf-8") as tmp:
+            tmp.write(content)
+            tmp_path = tmp.name
+
+        self.addCleanup(lambda: Path(tmp_path).unlink(missing_ok=True))
+        self.assertIsNone(_sniff_file_type(tmp_path))
+
     def test_sniff_detects_gobuster_header_with_uppercase_url_and_ansi(self):
         content = (
             "\ufeff\x1b[32m===============================================================\x1b[0m\n"

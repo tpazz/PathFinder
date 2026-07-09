@@ -80,5 +80,41 @@ class NewRuleTests(unittest.TestCase):
         self.assertIn("31d6cfe0d16ae931b73c59d7e0c089c0", commands)
 
 
+class NewServiceParserRuleTests(unittest.TestCase):
+    """Findings from the Redis / rsync / SMTP / NFS parsers fire their intended
+    rules (and NFS exports do NOT fire the SMB share rules)."""
+
+    def setUp(self):
+        self.synth = _synth()
+
+    def test_redis_unauthenticated_fires(self):
+        findings = [_f("10.10.10.10", 6379, "redis-cli", "misconfiguration", "redis_unauthenticated_info",
+                       description="Redis INFO responded without authentication", confidence="high", score=84)]
+        self.assertTrue(any("Redis" in n for n in _names(self.synth.generate_attack_paths(findings))))
+
+    def test_rsync_anonymous_listing_fires(self):
+        findings = [_f("10.10.10.10", 873, "rsync", "misconfiguration", "rsync_anonymous_module_listing",
+                       modules=["backups"], confidence="high", score=82)]
+        self.assertTrue(any("Rsync" in n for n in _names(self.synth.generate_attack_paths(findings))))
+
+    def test_smtp_user_enum_fires(self):
+        findings = [_f("10.10.10.10", 25, "smtp-user-enum", "information_leak", "smtp_valid_users_enumerated",
+                       users=["root", "admin"], confidence="high", score=78)]
+        self.assertTrue(any("SMTP User Enumeration" in n for n in _names(self.synth.generate_attack_paths(findings))))
+
+    def test_nfs_export_fires_nfs_rule_not_smb(self):
+        findings = [_f("10.10.10.10", 2049, "nfs", "nfs_export", "/srv/share",
+                       clients=["*"], options=["rw", "no_root_squash"], world_accessible=True)]
+        names = _names(self.synth.generate_attack_paths(findings))
+        self.assertIn("NFS Export Accessible - Mount and Loot", names)
+        self.assertFalse(any("SMB" in n for n in names))
+
+    def test_nfs_no_root_squash_fires(self):
+        findings = [_f("10.10.10.10", 2049, "nfs", "privilege_escalation", "nfs_no_root_squash",
+                       export="/srv/share", description="NFS export /srv/share includes no_root_squash and rw")]
+        self.assertIn("NFS no_root_squash - SUID Shell via NFS",
+                      _names(self.synth.generate_attack_paths(findings)))
+
+
 if __name__ == "__main__":
     unittest.main()
