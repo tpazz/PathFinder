@@ -52,6 +52,7 @@ python3 -m main.pathfinder scan loot/ --show-all
 | JSONL with `"template-id"` / `"matched-at"` | nuclei |
 | JSON with `"target_url"` + `"plugins"` | wpscan |
 | JSON with `"ai_surfaces"` / `"type":"llm_enum"` | one-shot-enum AI/LLM enumeration |
+| JSON with `"type":"ai_post_exploitation_loot"` | PathFinder AI loot collector |
 | JSON with `"users"` + `"groups"` | enum4linux-ng |
 | JSON with `"Certificate Templates"` | certipy |
 | Text with `VALID USERNAME:` | Kerbrute |
@@ -215,6 +216,32 @@ recovery, and cross-surface RAG/tool chains).
 python3 -m main.pathfinder --llm-enum-json loot/10.10.10.10/llm_enum_11434.json
 # (or just drop the loot dir in front of `scan` - it is auto-detected)
 ```
+
+#### 4f. AI post-exploitation loot collector
+
+After an authorised foothold on a host running AI/RAG/model services, run the
+read-only collector from the target-side project/app directory. It gathers
+redacted provider/vector/MLflow/object-store/notebook secret references,
+RAG/vector config, MCP/agent manifests, prompt templates, model artifacts, and
+unsafe loader signals into JSON.
+
+```bash
+python3 tools/ai_loot_collector.py . -o ai_loot.json
+
+# Optional broader collection from common Linux/Windows app locations
+python3 tools/ai_loot_collector.py /opt/app /srv/rag --common-roots -o ai_loot.json
+```
+
+Transfer `ai_loot.json` back to the attack host and either pass it directly or
+drop it into the host's loot directory for scan-mode autodetection.
+
+```bash
+python3 -m main.pathfinder --ai-loot-json ai_loot.json
+python3 -m main.pathfinder scan loot/
+```
+
+Secret values are redacted by default. Use `--include-secret-values` only when
+you intentionally need raw values preserved in the collector output.
 
 #### 5. enum4linux-ng
 
@@ -433,14 +460,20 @@ python3 -m main.pathfinder -i findings.json
 
 ## Credential Management
 
-PathFinder maintains a persistent credential store. Credentials you add are automatically tested against all discovered login services by the attack path synthesizer.
+PathFinder maintains a persistent manual identity/secret store. Confirmed
+username+password/hash credentials are automatically tested against discovered
+login services by the attack path synthesizer. Username-only entries become
+`user` findings, and password-only entries become lower-confidence
+`password_candidate` findings that only combine with enumerated users or
+common-default account contexts for manual, lockout-aware checks.
 
 ```bash
-# Add a found credential (interactive wizard)
+# Add a found credential, username, or password candidate (interactive wizard)
 python3 -m main.pathfinder --add-cred
 ```
 
-The wizard prompts for username, password or hash, and where you found it. Credentials are saved to `main/credentials.json`.
+The wizard prompts for a username, optional password/hash, or a password-only
+candidate, plus where you found it. Entries are saved to `main/credentials.json`.
 
 ---
 

@@ -115,6 +115,24 @@ ATLAS_TAGS = {
         "AML.T0010 ML Supply Chain Compromise", "AML.T0025 Exfiltration via Cyber Means", "AML.T0044 Full ML Model Access"],
     "MLflow + Object Store - Writable Artifact to Code Execution": [
         "AML.T0010 ML Supply Chain Compromise", "AML.T0044 Full ML Model Access"],
+    "AI Loot - Platform Secrets and Tokens Found": [
+        "AML.T0025 Exfiltration via Cyber Means", "AML.T0040 ML Model Inference API Access"],
+    "AI Loot - Vector/RAG Configuration Pivot": [
+        "AML.T0070 RAG Poisoning", "AML.T0057 LLM Data Leakage", "AML.T0025 Exfiltration via Cyber Means"],
+    "AI Loot - Agent/MCP Tool Manifest Found": [
+        "AML.T0053 LLM Plugin Compromise", "AML.T0051 LLM Prompt Injection"],
+    "AI Loot - MLflow and Object Store Artifact Chain": [
+        "AML.T0010 ML Supply Chain Compromise", "AML.T0044 Full ML Model Access"],
+    "AI Loot - Notebook Runtime Pivot": [
+        "AML.T0010 ML Supply Chain Compromise", "AML.T0025 Exfiltration via Cyber Means"],
+    "AI Loot - Prompt and System Instruction Templates": [
+        "AML.T0051 LLM Prompt Injection", "AML.T0057 LLM Data Leakage"],
+    "AI Loot - Unsafe Model Loader Found": [
+        "AML.T0010 ML Supply Chain Compromise", "AML.T0044 Full ML Model Access"],
+    "AI Loot - Writable Model or RAG Artifact": [
+        "AML.T0010 ML Supply Chain Compromise", "AML.T0070 RAG Poisoning"],
+    "AI Loot - Model Artifact Inventory": [
+        "AML.T0010 ML Supply Chain Compromise"],
 }
 
 

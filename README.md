@@ -30,13 +30,14 @@ PathFinder aims to:
 ## Key Features
 
 - **Auto-Detect Scan Mode:** Drop all tool outputs into a folder and run `pathfinder scan ./loot/`. PathFinder identifies file types by content and runs the right parser automatically - no need to remember the flag names under exam pressure.
-- **Multi-Input Parsing:** Ingests and normalises data from Nmap, Gobuster, ffuf, Nikto, WhatWeb, nuclei, wpscan, enum4linux-ng, smbmap, NetExec/CrackMapExec, SNMP, NFS/showmount, Redis, rsync, SMTP user enumeration, SQLMap, LinPEAS, WinPEAS, SharpHound, ldapdomaindump, Kerbrute, impacket-GetNPUsers, impacket-GetUserSPNs, impacket-secretsdump, john/hashcat `.pot` files, and certipy.
+- **Multi-Input Parsing:** Ingests and normalises data from Nmap, Gobuster, ffuf, Nikto, WhatWeb, nuclei, wpscan, enum4linux-ng, smbmap, NetExec/CrackMapExec, SNMP, NFS/showmount, Redis, rsync, SMTP user enumeration, SQLMap, LinPEAS, WinPEAS, SharpHound, ldapdomaindump, Kerbrute, impacket-GetNPUsers, impacket-GetUserSPNs, impacket-secretsdump, john/hashcat `.pot` files, certipy, and the PathFinder AI loot collector.
 - **Vulnerability & Exploit Mapping:** Correlates identified services and versions with known CVEs and public exploits via Exploit-DB (`searchsploit`) and GitHub.
-- **Attack Path Synthesis:** An 83-rule engine covering initial foothold, credential reuse and pass-the-hash, web attacks, Redis/rsync/SMTP enum leads, Linux/Windows privilege escalation, Active Directory attack paths (Kerberoasting, AS-REP roasting, DCSync, ACL abuse, delegation, AD CS/ESC), and **AI/LLM attack surfaces** (prompt injection, agent/MCP tool abuse, RAG poisoning, exposed inference APIs, MLflow/Jupyter RCE, LangServe, model-serving, workflow-builder, custom tool-enabled agents, A2A/multi-agent rogue registration & workflow abuse, LLM-to-SQL query-to-RCE, unauthenticated vector-store extraction, exposed object stores, artifact-write-to-RCE chains, confirmed-MCP-tool abuse, and cross-surface RAG/tool chains) mapped to the OWASP LLM Top 10 and tagged with **MITRE ATLAS** technique IDs.
+- **Attack Path Synthesis:** A 97-rule engine covering initial foothold, credential reuse, password-candidate spraying/default-account checks, pass-the-hash, web attacks, Redis/rsync/SMTP enum leads, Linux/Windows privilege escalation, Active Directory attack paths (Kerberoasting, AS-REP roasting, DCSync, ACL abuse, delegation, AD CS/ESC), and **AI/LLM attack surfaces** (prompt injection, agent/MCP tool abuse, RAG poisoning, exposed inference APIs, MLflow/Jupyter RCE, LangServe, model-serving, workflow-builder, custom tool-enabled agents, A2A/multi-agent rogue registration & workflow abuse, LLM-to-SQL query-to-RCE, unauthenticated vector-store extraction, exposed object stores, artifact-write-to-RCE chains, confirmed-MCP-tool abuse, AI post-exploitation loot, and cross-surface RAG/tool chains) mapped to the OWASP LLM Top 10 and tagged with **MITRE ATLAS** technique IDs.
 - **Triage-First Output:** Attack paths are still fully generated, but the default display groups repeated rule hits across hosts and shows the top leads first. Use `--show-all` for the exhaustive path list, `--top N` to tune the grouped view, and `--min-likelihood medium|high` to hide lower-confidence validation leads from the terminal output.
 - **AI/LLM Target Analysis:** Ingests one-shot-enum's AI-surface enumeration (OpenAI-compatible APIs, Ollama, vLLM/TGI, LangServe, agent/MCP, RAG stores, MinIO/S3-compatible object stores, MLflow, model servers, notebooks, workflow builders, image generation, and more) as `ai_service` findings and synthesises attack paths for them. Also consumes the inferred **agent profile** - role, architecture (single-agent / multi-agent / A2A / MCP tool-server / vector-store / RAG), capabilities, and orchestration framework - plus, when one-shot-enum's active/vector checks ran, **confirmed MCP tool inventories** and **unauthenticated vector-store collections**. Object-store findings are correlated with MLflow and model-serving surfaces to highlight artifact-write-to-RCE supply-chain paths. Even custom agents that match no known framework get an archetype-specific attack path (e.g. a multi-agent/A2A system gets a rogue-registration & workflow-abuse path; an NL-to-SQL agent gets a query-to-database-RCE path), and the injection-relevant rules ship **copy-pasteable prompt-injection examples** (system-prompt leak, tool-call coercion, argument smuggling, RAG poisoning, workflow-gate bypass, SSTI) tuned to each surface. `--ai-brief FILE` writes a markdown attack-intelligence brief (AI surfaces, crown jewels, trust boundaries, ATLAS-tagged paths). Useful for AI-focused engagements and AI pentest study.
+- **AI Post-Exploitation Loot:** `tools/ai_loot_collector.py` is a read-only, cross-platform collector you can run after a foothold. It gathers AI-specific local evidence - redacted provider/vector/MLflow/object-store/notebook secrets, RAG/vector config, MCP/agent tool manifests, prompt templates, model artifacts, and unsafe loader signals - into `ai_loot.json`, which PathFinder consumes with `--ai-loot-json` or scan-mode autodetection.
 - **Iterative Workflow:** Save findings to JSON after initial recon, reload and append later stages (post-exploitation, AD enumeration) without re-running parsers.
-- **Interactive Credential Management:** Add found credentials with `--add-cred`. They are automatically weaponised against all discovered login services by the synthesiser.
+- **Interactive Credential Management:** Add found credentials, usernames, or password candidates with `--add-cred`. Confirmed username+secret pairs are weaponised against login services; password-only candidates stay lower-confidence and only combine with enumerated users or common-default account contexts for manual, lockout-aware checks.
 - **User-Trainable Intelligence:** Teach PathFinder new attack patterns with `--learn`.
 - **Tool Output Compatibility:** Handles multiple output format variants, ANSI colour codes, timestamped entries, and version differences across all supported tools. Colour output is TTY-aware (auto-disabled when piped) and can be forced off with `--no-color`.
 - **OSCP Exam Profile:** `--oscp` strips prohibited-tool commands (sqlmap, nuclei) from suggested attack paths - keeping the lead but replacing the command with a manual-exploitation note - flags Metasploit's one-target limit, and warns if a prohibited tool's output was ingested. `one-shot-enum --run --oscp` propagates the profile through the whole pipeline. (Always verify against the current PEN-200 exam guide; exam rules change.)
@@ -69,6 +70,27 @@ python3 -m main.pathfinder scan loot/ --top 10
 python3 -m main.pathfinder scan loot/ --min-likelihood medium
 python3 -m main.pathfinder scan loot/ --show-all
 ```
+
+### AI Post-Exploitation Collector
+
+After an authorized foothold on a host running AI/RAG/model services, run the
+read-only collector from the target-side project/app directory:
+
+```bash
+python3 tools/ai_loot_collector.py . -o ai_loot.json
+```
+
+Transfer `ai_loot.json` back to your attack host and either drop it into the
+host's loot directory for scan mode or pass it directly:
+
+```bash
+python3 -m main.pathfinder --ai-loot-json ai_loot.json -o findings.json
+python3 -m main.pathfinder scan loot/
+```
+
+Secret values are redacted by default; the JSON records names, source paths,
+short hashes, and samples so PathFinder can suggest post-exploitation AI attack
+paths without turning the collector into an exploitation tool.
 
 **Output:**
 

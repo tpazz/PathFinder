@@ -53,6 +53,65 @@
         }
     },
     {
+        "name": "Password Candidate + Enumerated User - Lockout-Aware Spray",
+        "priority": 76,
+        "host_scope": "any_host",
+        "triggers": [
+            { "id": 1, "entity_type": "password_candidate", "name_match": { "type": "regex", "value": ".*" }, "host_scope": "any_host" },
+            { "id": 2, "entity_type": "user", "name_match": { "type": "regex", "value": ".*" }, "host_scope": "any_host" },
+            { "id": 3, "entity_type": "service", "name_match": { "type": "regex", "value": "(ssh|ftp|rdp|ms-wbt-server|winrm|smb|microsoft-ds)" } }
+        ],
+        "suggestion": {
+            "description": "Password candidate from '{trigger.1.attributes.source_of_credential}' can be manually tested with user '{trigger.2.name}' against '{trigger.3.name}' on {trigger.3.host}:{trigger.3.port}.",
+            "rationale": "A password without a confirmed username is not a credential, but it becomes a useful lower-confidence lead when valid usernames and login services are known. Treat this as manual, lockout-aware validation rather than a broad brute-force run.",
+            "commands": [
+                "Confirm lockout policy before spraying; test one password at a time and wait for the lockout window.",
+                "For SMB/WinRM: crackmapexec {trigger.3.name} {trigger.3.host} -u '{trigger.2.name}' -p '{trigger.1.attributes.password}' --continue-on-success",
+                "For SSH: ssh {trigger.2.name}@{trigger.3.host}  # try the candidate password interactively only if in scope",
+                "Record any successful pair back with --add-cred as a confirmed credential."
+            ]
+        }
+    },
+    {
+        "name": "Password Candidate + Default Service Account - Manual Check",
+        "priority": 68,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "password_candidate", "name_match": { "type": "regex", "value": ".*" }, "host_scope": "any_host" },
+            { "id": 2, "entity_type": "service", "name_match": { "type": "regex", "value": "(ssh|ftp|rdp|ms-wbt-server|winrm|smb|microsoft-ds|mysql|mariadb|postgres|postgresql|mssql|ms-sql|tomcat|jenkins)" } }
+        ],
+        "suggestion": {
+            "description": "Password candidate from '{trigger.1.attributes.source_of_credential}' may be worth a manual default-account check against '{trigger.2.name}' on {trigger.2.host}:{trigger.2.port}.",
+            "rationale": "Some services commonly retain default or predictable local usernames. A password-only candidate can therefore be useful even before usernames are enumerated, but this is lower-confidence than a real credential or a known-user spray.",
+            "commands": [
+                "Manual only: confirm lockout/rate-limit policy first; do not broad-spray default usernames.",
+                "Try a tiny service-appropriate set: admin, administrator, root, guest, service, tomcat, jenkins, postgres, mysql, sa.",
+                "For SMB/WinRM/RDP-style services: test one default username at a time with the candidate password.",
+                "For database/admin services: try the product default username only if that service is in scope.",
+                "If any pair works, add it back with --add-cred as a confirmed credential."
+            ]
+        }
+    },
+    {
+        "name": "Password Candidate + Web Login - Manual Default-User Check",
+        "priority": 66,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "password_candidate", "name_match": { "type": "regex", "value": ".*" }, "host_scope": "any_host" },
+            { "id": 2, "entity_type": "web_content", "name_match": { "type": "regex", "value": "(login|signin|auth|admin|user|account|portal|wp-login)" } }
+        ],
+        "suggestion": {
+            "description": "Password candidate from '{trigger.1.attributes.source_of_credential}' can be manually tested against web login '{trigger.2.name}' on {trigger.2.host}:{trigger.2.port} with a tiny default-user set.",
+            "rationale": "Admin panels often use default or predictable usernames such as admin, administrator, root, or the product name. This is a low-confidence manual check and should not be treated as a confirmed credential.",
+            "commands": [
+                "Browse to: http://{trigger.2.host}:{trigger.2.port}{trigger.2.name}",
+                "Try only a tiny default-user set: admin, administrator, root, guest, service, webadmin.",
+                "If WordPress: try admin only if user enumeration has not already disproved it.",
+                "If any pair works, add it back with --add-cred as a confirmed credential."
+            ]
+        }
+    },
+    {
         "name": "Unauthenticated Redis - Data Exposure and File-Write Checks",
         "priority": 84,
         "host_scope": "same_host",
@@ -1637,6 +1696,175 @@
                 "Weaviate: GraphQL { Get { <Class> { <textField> } } } or GET /v1/objects?class=<Class>&limit=1000",
                 "Grep the dumped chunks for password/token/secret/api_key, hostnames, file paths, and SSH keys.",
                 "Only fall back to embedding inversion (reconstructing source text from the stored vectors) if the source text is not readable in plaintext."
+            ],
+            "references": ["https://owasp.org/www-project-top-10-for-large-language-model-applications/"]
+        }
+    },
+    {
+        "_comment": "=== AI post-exploitation loot (fed by tools/ai_loot_collector.py; PEAS-style local evidence) ===",
+        "name": "AI Loot - Platform Secrets and Tokens Found",
+        "priority": 88,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "ai_post_exploitation", "name_match": { "type": "exact", "value": "ai_secret_reference" } }
+        ],
+        "suggestion": {
+            "description": "AI/platform secret references were found on {trigger.1.host}: {trigger.1.attributes.secret_names}.",
+            "rationale": "Local AI app configs commonly hold provider keys, vector DB tokens, MLflow credentials, object-store keys, notebook tokens, and cloud credentials. These are post-foothold pivots into the model/RAG/artifact control plane; the collector redacts values by default, so validate scope from the source paths before use.",
+            "commands": [
+                "Review the collector samples and source paths: {trigger.1.attributes.samples}",
+                "Validate each credential's scope with read-only API calls first; do not mutate vector stores, model artifacts, or tool backends until authorized.",
+                "Prioritize keys tied to MLflow, S3/MinIO, vector stores, MCP/tool servers, and notebook runtimes."
+            ],
+            "references": ["https://owasp.org/www-project-top-10-for-large-language-model-applications/"]
+        }
+    },
+    {
+        "name": "AI Loot - Vector/RAG Configuration Pivot",
+        "priority": 86,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "ai_post_exploitation", "name_match": { "type": "regex", "value": "^(vector_store_config_found|rag_source_reference)$" } }
+        ],
+        "suggestion": {
+            "description": "Vector/RAG evidence was found on {trigger.1.host}: {trigger.1.attributes.label}.",
+            "rationale": "Config and source references often reveal the exact vector engine, collection names, embedding pipeline, knowledge-base paths, and chunk stores. Real RAG wins usually come from plaintext chunks, metadata, source paths, and credentials before any embedding inversion is needed.",
+            "commands": [
+                "Review source paths and snippets: {trigger.1.attributes.samples}",
+                "Map collection/index names, source document directories, chunk stores, and embedding model settings.",
+                "If credentials or local access are available, perform low-volume read-only chunk extraction with vectors disabled where possible.",
+                "Search chunks/metadata for secrets, system prompts, tool instructions, hostnames, runbooks, and detection rules."
+            ],
+            "references": ["https://owasp.org/www-project-top-10-for-large-language-model-applications/"]
+        }
+    },
+    {
+        "name": "AI Loot - Agent/MCP Tool Manifest Found",
+        "priority": 89,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "ai_post_exploitation", "name_match": { "type": "regex", "value": "^(mcp_tool_manifest_found|agent_manifest_found)$" } }
+        ],
+        "suggestion": {
+            "description": "Agent/MCP manifest evidence was found on {trigger.1.host}; tool names: {trigger.1.attributes.tool_names}, risk categories: {trigger.1.attributes.risk_categories}.",
+            "rationale": "Local tool manifests and agent cards map the real authority behind an AI system: filesystem, shell, browser, database, cloud, and secret-management capabilities. This is high-value post-exploitation intelligence because tool descriptions and schemas identify the exact trust boundaries to validate.",
+            "commands": [
+                "Review tool schemas/manifests: {trigger.1.attributes.samples}",
+                "Map each tool to its backend identity, allowed paths/hosts/tables, and authorization boundary.",
+                "Check whether enforcement is in code, policy, or prompt text; prompt-only gates are weak.",
+                "Use only low-impact read-only validation unless state-changing tool tests are explicitly in scope."
+            ],
+            "references": ["https://owasp.org/www-project-top-10-for-large-language-model-applications/"]
+        }
+    },
+    {
+        "name": "AI Loot - MLflow and Object Store Artifact Chain",
+        "priority": 91,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "ai_post_exploitation", "name_match": { "type": "exact", "value": "mlflow_config_reference" } },
+            { "id": 2, "entity_type": "ai_post_exploitation", "name_match": { "type": "exact", "value": "object_store_config_reference" } }
+        ],
+        "suggestion": {
+            "description": "Local config on {trigger.1.host} references both MLflow and object-store/artifact storage.",
+            "rationale": "MLflow is the registry/control plane; S3/MinIO/object storage is often the artifact data plane. Together they form the model supply-chain path: artifact URI discovery, permission validation, unsafe loader review, and only then controlled artifact tamper testing if authorized.",
+            "commands": [
+                "Review MLflow references: {trigger.1.attributes.samples}",
+                "Review object-store references: {trigger.2.attributes.samples}",
+                "Map registered model artifact_uri values to bucket/key paths and identify which service consumes them.",
+                "Check for pickle/joblib/torch/pyfunc loaders and writable buckets before considering artifact replacement tests."
+            ],
+            "references": ["https://owasp.org/www-project-top-10-for-large-language-model-applications/"]
+        }
+    },
+    {
+        "name": "AI Loot - Notebook Runtime Pivot",
+        "priority": 84,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "ai_post_exploitation", "name_match": { "type": "exact", "value": "notebook_runtime_reference" } }
+        ],
+        "suggestion": {
+            "description": "Notebook/runtime evidence was found on {trigger.1.host}.",
+            "rationale": "Jupyter and notebook runtimes frequently bridge shell access to AI platform control: environment variables, mounted secrets, MLflow/vector DB connection settings, model caches, and service-account tokens. This mirrors classic post-exploitation env/config loot, but with AI-specific pivots.",
+            "commands": [
+                "Review notebook/runtime samples: {trigger.1.attributes.samples}",
+                "Check for Jupyter tokens, running kernels, model cache directories, MLflow/vector DB credentials, and mounted cloud/kubernetes secrets.",
+                "Use recovered tokens for read-only validation before any kernel/tool execution."
+            ],
+            "references": ["https://owasp.org/www-project-top-10-for-large-language-model-applications/"]
+        }
+    },
+    {
+        "name": "AI Loot - Prompt and System Instruction Templates",
+        "priority": 78,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "ai_post_exploitation", "name_match": { "type": "exact", "value": "prompt_template_found" } }
+        ],
+        "suggestion": {
+            "description": "Prompt/system instruction templates were found on {trigger.1.host}.",
+            "rationale": "Prompt templates reveal hidden rules, retrieval boundaries, tool-routing logic, guardrails, and workflow gates. They are not impact by themselves, but they make prompt injection, tool-argument testing, and RAG poisoning much more targeted.",
+            "commands": [
+                "Review prompt template samples: {trigger.1.attributes.samples}",
+                "Identify tool names, retrieval variables, forbidden actions, approval gates, and hidden system/developer instructions.",
+                "Use this intelligence to design low-impact prompt-injection and tool-boundary tests against the matching application surface."
+            ],
+            "references": ["https://owasp.org/www-project-top-10-for-large-language-model-applications/"]
+        }
+    },
+    {
+        "name": "AI Loot - Unsafe Model Loader Found",
+        "priority": 90,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "ai_post_exploitation", "name_match": { "type": "exact", "value": "unsafe_model_loader_found" } }
+        ],
+        "suggestion": {
+            "description": "Unsafe AI/model artifact loader signals were found on {trigger.1.host}: {trigger.1.attributes.signals}.",
+            "rationale": "pickle/joblib/torch/yaml unsafe loaders and trust_remote_code boundaries are the practical route from artifact write access to code execution. The key question is not just whether the loader exists, but whether an attacker-controlled artifact path reaches it.",
+            "commands": [
+                "Review loader samples: {trigger.1.attributes.samples}",
+                "Trace which artifact path, registry, bucket, cache, or model name flows into the loader.",
+                "Correlate with writable_ai_artifact_found, MLflow artifact URIs, object-store references, and model-serving configs.",
+                "Confirm consumer identity and trigger conditions before any artifact replacement test."
+            ],
+            "references": ["https://owasp.org/www-project-top-10-for-large-language-model-applications/"]
+        }
+    },
+    {
+        "name": "AI Loot - Writable Model or RAG Artifact",
+        "priority": 89,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "ai_post_exploitation", "name_match": { "type": "exact", "value": "writable_ai_artifact_found" } }
+        ],
+        "suggestion": {
+            "description": "Writable AI/ML artifacts were found on {trigger.1.host}: categories {trigger.1.attributes.categories}.",
+            "rationale": "Writable datasets, prompt templates, tokenizers, LoRA adapters, checkpoints, or serialized model artifacts are supply-chain control points. Impact depends on the downstream consumer: a retraining job, model server, RAG ingestion pipeline, or unsafe loader.",
+            "commands": [
+                "Review writable artifact samples: {trigger.1.attributes.samples}",
+                "Map each writable artifact to its consumer and trigger schedule (training, serving, retrieval refresh, notebook load, MLflow load).",
+                "Back up and diff before any authorized tamper test; prefer harmless markers/canaries for first validation.",
+                "If unsafe_model_loader_found also exists, prioritize serialized artifacts (.pkl/.joblib/.pt/.pth/.ckpt)."
+            ],
+            "references": ["https://owasp.org/www-project-top-10-for-large-language-model-applications/"]
+        }
+    },
+    {
+        "name": "AI Loot - Model Artifact Inventory",
+        "priority": 74,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "ai_post_exploitation", "name_match": { "type": "exact", "value": "ai_model_artifact_inventory" } }
+        ],
+        "suggestion": {
+            "description": "AI/ML artifacts were inventoried on {trigger.1.host}: categories {trigger.1.attributes.categories}.",
+            "rationale": "Artifact inventory is lower-confidence by itself, but it maps what can be read, backed up, compared, or correlated with loaders and serving configs. It is the starting point for supply-chain review, not proof of exploitability.",
+            "commands": [
+                "Review artifact samples: {trigger.1.attributes.samples}",
+                "Correlate artifact paths with loader code, MLflow metadata, object-store references, and serving configs.",
+                "Prioritize writable artifacts and serialized formats only when a consuming process is identified."
             ],
             "references": ["https://owasp.org/www-project-top-10-for-large-language-model-applications/"]
         }

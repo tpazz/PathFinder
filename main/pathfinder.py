@@ -93,6 +93,48 @@ def format_finding_display(name, entity_type):
     return display_name, display_type
 
 
+def _rule_line(char="=", colour=None):
+    colour = colour if colour is not None else C.CYAN
+    return f"{C.BOLD}{colour}{char * 80}{C.END}"
+
+
+def _label(label, width=13):
+    return f"{C.BOLD}{C.CYAN}{label:<{width}}{C.END}"
+
+
+def _priority_token(label, value):
+    return f"{C.BOLD}{C.YELLOW}[{label}: {value}]{C.END}"
+
+
+def _score_token(score):
+    try:
+        numeric = int(score)
+    except (TypeError, ValueError):
+        return f"{C.BOLD}{C.YELLOW}[Score: {score}]{C.END}"
+    colour = C.RED if numeric >= 90 else C.YELLOW if numeric >= 70 else C.GREEN
+    return f"{C.BOLD}{colour}[Score: {numeric:>3}]{C.END}"
+
+
+def _finding_type_token(entity_type):
+    plain = f"({entity_type or 'unknown'})"
+    if entity_type == "privilege_escalation":
+        colour = C.RED
+        weight = C.BOLD
+    elif entity_type == "web_content":
+        colour = C.LIGHT_BLUE
+        weight = ""
+    elif entity_type == "misconfiguration":
+        colour = C.YELLOW
+        weight = ""
+    elif entity_type == "vulnerability":
+        colour = C.RED
+        weight = C.BOLD
+    else:
+        colour = C.YELLOW
+        weight = ""
+    return f"{weight}{colour}{plain:<26}{C.END}"
+
+
 def filter_prioritized_findings(findings, max_vulns):
     """Filters the list of prioritized findings to limit the number of EDB/GitHub results."""
     edb, github, other = [], [], []
@@ -138,6 +180,10 @@ def _dedup_key(finding):
             secret = next((str(attrs[f]) for f in _CREDENTIAL_SECRET_FIELDS if attrs.get(f)), name)
             return ("credential", finding.get("host"), name, domain, secret)
         return ("credential", finding.get("host"), name, domain)
+    if entity_type == "password_candidate":
+        attrs = finding.get("attributes") or {}
+        secret = str(attrs.get("password") or finding.get("name") or "")
+        return ("password_candidate", finding.get("host"), secret)
     return (finding.get("host"), finding.get("port"), finding.get("name"), entity_type)
 
 
@@ -225,7 +271,7 @@ def validate_parser_output(parser_name, findings):
 
 
 def manage_credentials():
-    """Provides an interactive wizard for users to add credentials they have found."""
+    """Provides an interactive wizard for users to add identities/secrets they have found."""
     print(f"\n{C.BOLD}{C.CYAN}[*] Pathfinder Credential Manager{C.END}")
     creds = []
     if os.path.exists(CREDENTIALS_FILE):
@@ -236,14 +282,23 @@ def manage_credentials():
         except json.JSONDecodeError:
             print(f"{C.BOLD}{C.YELLOW}[!] Warning: {CREDENTIALS_FILE} is corrupted. Starting fresh.{C.END}")
 
-    print(f"    [+] Found {len(creds)} existing credentials.")
+    print(f"    [+] Found {len(creds)} existing manual entr{'y' if len(creds) == 1 else 'ies'}.")
 
     try:
         while True:
-            print("\n--- Adding a New Credential ---")
-            username = input(" > Enter username (or press Enter to finish): ").strip()
-            if not username: break
-            cred_type = input(" > Is this a [p]assword or a [h]ash? [p]: ").strip().lower() or 'p'
+            print("\n--- Adding a Manual Identity / Secret ---")
+            username = input(" > Enter username (blank for password-only, or 'q' to finish): ").strip()
+            if username.lower() in {"q", "quit", "done", "exit"}:
+                break
+            if username:
+                cred_type = input(" > Add [p]assword, [h]ash, or [n]o secret / username-only? [p]: ").strip().lower() or 'p'
+            else:
+                cred_type = input(" > Password-only candidate? Enter [p]assword or [q]uit: ").strip().lower() or 'p'
+                if cred_type in {"q", "quit", "done", "exit"}:
+                    break
+                if cred_type != 'p':
+                    print(f"{C.BOLD}{C.YELLOW}[!] Password-only entries need a cleartext password. Skipping.{C.END}")
+                    continue
 
             password, hash_val, hash_type = None, None, None
             if cred_type == 'p':
@@ -251,12 +306,34 @@ def manage_credentials():
             elif cred_type == 'h':
                 hash_val = input(" > Enter full hash: ").strip()
                 hash_type = input(" > Enter hash type (e.g., NTLM, Kerberos AS-REP (18200)): ").strip()
+            elif cred_type == 'n' and username:
+                pass
             else:
                 print(f"{C.BOLD}{C.YELLOW}[!] Invalid type. Skipping.{C.END}"); continue
 
-            source = input(" > Where did you find this credential? (e.g., 'config.php.bak'): ").strip()
-            creds.append({"username": username, "password": password, "hash": hash_val, "hash_type": hash_type, "source": source})
-            print(f"    {C.BOLD}{C.GREEN}[+] Credential for '{username}' added.{C.END}")
+            if not any([username, password, hash_val]):
+                print(f"{C.BOLD}{C.YELLOW}[!] Nothing to add. Skipping.{C.END}")
+                continue
+
+            source = input(" > Where did you find this? (e.g., 'config.php.bak'): ").strip()
+            if username and (password or hash_val):
+                kind = "credential"
+                label = f"Credential for '{username}'"
+            elif username:
+                kind = "user"
+                label = f"Username '{username}'"
+            else:
+                kind = "password_candidate"
+                label = "Password candidate"
+            creds.append({
+                "kind": kind,
+                "username": username or None,
+                "password": password,
+                "hash": hash_val,
+                "hash_type": hash_type,
+                "source": source,
+            })
+            print(f"    {C.BOLD}{C.GREEN}[+] {label} added as {kind}.{C.END}")
     except KeyboardInterrupt:
         print(f"\n{C.BOLD}{C.YELLOW}[!] User interrupted credential entry.{C.END}")
 
@@ -385,6 +462,9 @@ def _sniff_file_type_details(path):
     # JSON formats. Be careful not to misclassify plain-text logs that start
     # with bracketed tokens like [INFO], [*], or [+].
     if stripped.startswith('{') or re.match(r'^\[\s*[{"]', stripped):
+        if '"type": "ai_post_exploitation_loot"' in sanitized_head or '"type":"ai_post_exploitation_loot"' in sanitized_head \
+                or '"tool": "pathfinder-ai-loot-collector"' in sanitized_head:
+            return 'ai_loot_json', 'matched PathFinder AI post-exploitation loot signature'
         # one-shot-enum LLM/AI enumeration output (self-identifying).
         if '"ai_surfaces"' in sanitized_head or '"type": "llm_enum"' in sanitized_head or '"type":"llm_enum"' in sanitized_head:
             return 'llm_enum_json', 'matched one-shot-enum LLM enum signature'
@@ -636,7 +716,7 @@ def _save_findings(args, findings):
 
 
 def _is_ai_related_finding(finding):
-    if finding.get("entity_type") == "ai_service":
+    if finding.get("entity_type") in ("ai_service", "ai_post_exploitation"):
         return True
     return str(finding.get("source_tool") or "").startswith("one-shot-enum-llm")
 
@@ -755,60 +835,62 @@ def _group_attack_paths(paths):
 
 def _print_path_details(path, args):
     suggestion = path.get("suggestion") or {}
-    print(f"\n  [{C.BOLD}+{C.END}] Description:\n      {suggestion.get('description', '')}")
+    print(f"\n  {C.BOLD}{C.GREEN}[+]{C.END} {C.BOLD}Description:{C.END}\n      {suggestion.get('description', '')}")
     if getattr(args, 'verbose', 0) > 0:
-        print(f"\n  [{C.BOLD}+{C.END}] Rationale:\n      {suggestion.get('rationale', '')}")
+        print(f"\n  {C.BOLD}{C.GREEN}[+]{C.END} {C.BOLD}Rationale:{C.END}\n      {suggestion.get('rationale', '')}")
     if suggestion.get('commands'):
-        print(f"\n  [{C.BOLD}+{C.END}] Suggested Commands:")
+        print(f"\n  {C.BOLD}{C.GREEN}[+]{C.END} {C.BOLD}Suggested Commands:{C.END}")
         cmds = suggestion.get('commands') or []
         uses_msf = False
         if getattr(args, 'oscp', False):
             cmds, uses_msf = _oscp_process_commands(cmds)
         for cmd in cmds:
-            print(f"      - {cmd}")
+            print(f"      {C.GREEN}-{C.END} {cmd}")
         if uses_msf:
             print(f"      {C.YELLOW}[OSCP] Metasploit/Meterpreter is limited to ONE target on the exam.{C.END}")
     if suggestion.get('injection_examples'):
-        print(f"\n  [{C.BOLD}+{C.END}] {C.BOLD}Prompt-injection examples:{C.END}")
+        print(f"\n  {C.BOLD}{C.GREEN}[+]{C.END} {C.BOLD}Prompt-injection examples:{C.END}")
         for ex in suggestion['injection_examples']:
-            print(f"      - {ex}")
+            print(f"      {C.GREEN}-{C.END} {ex}")
     if path.get('atlas'):
-        print(f"\n  [{C.BOLD}+{C.END}] MITRE ATLAS:")
+        print(f"\n  {C.BOLD}{C.GREEN}[+]{C.END} {C.BOLD}MITRE ATLAS:{C.END}")
         for tag in path['atlas']:
-            print(f"      - {tag}")
+            print(f"      {C.GREEN}-{C.END} {tag}")
     if suggestion.get('references'):
-        print(f"\n  [{C.BOLD}+{C.END}] References:")
+        print(f"\n  {C.BOLD}{C.GREEN}[+]{C.END} {C.BOLD}References:{C.END}")
         for ref in suggestion['references']:
-            print(f"      - {ref}")
+            print(f"      {C.GREEN}-{C.END} {ref}")
     if getattr(args, 'verbose', 0) > 0 and path.get('evidence'):
-        print(f"\n  [{C.BOLD}+{C.END}] Matched Evidence:")
+        print(f"\n  {C.BOLD}{C.GREEN}[+]{C.END} {C.BOLD}Matched Evidence:{C.END}")
         for ev in path['evidence']:
-            print(f"      - {ev}")
+            print(f"      {C.GREEN}-{C.END} {ev}")
 
 
 def _print_attack_path(path, args, index):
-    print("\n" + "="*80)
-    print(f"{C.BOLD}ATTACK PATH #{index}{C.END}")
+    print("\n" + _rule_line())
+    print(f"{C.BOLD}{C.CYAN}ATTACK PATH #{index}{C.END}")
     eff = path.get('effective_priority', path['priority'])
     base = path['priority']
-    prio_label = (f"[Priority: {eff}]" if eff == base
-                  else f"[Priority: {eff}  (base {base}, adjusted for evidence quality)]")
-    print(f"Name:       {C.BOLD}{path['name']}{C.END} {C.YELLOW}{C.BOLD}{prio_label}{C.END}")
-    print(f"Likelihood: {LIKELIHOOD_LABELS[_path_likelihood(path)]}")
-    print(f"Target:     {path['host']}")
-    print("="*80)
+    prio_label = (f"{eff}" if eff == base
+                  else f"{eff}  (base {base}, adjusted for evidence quality)")
+    print(f"{_priority_token('Priority', prio_label)}")
+    print(f"{_label('Name:')} {C.BOLD}{path['name']}{C.END}")
+    print(f"{_label('Likelihood:')} {LIKELIHOOD_LABELS[_path_likelihood(path)]}")
+    print(f"{_label('Target:')} {path['host']}")
+    print(_rule_line())
     _print_path_details(path, args)
 
 
 def _print_attack_path_group(group, args, index):
     path = group["representative"]
-    print("\n" + "="*80)
-    print(f"{C.BOLD}TRIAGE ATTACK PATH #{index}{C.END}")
-    print(f"Name:       {C.BOLD}{group['name']}{C.END} {C.YELLOW}{C.BOLD}[Top Priority: {group['max_priority']}]{C.END}")
-    print(f"Likelihood: {LIKELIHOOD_LABELS[group['likelihood']]}")
-    print(f"Targets:    {group['targets']}")
-    print(f"Grouped hits: {group['count']} underlying path(s)")
-    print("="*80)
+    print("\n" + _rule_line())
+    print(f"{C.BOLD}{C.CYAN}TRIAGE ATTACK PATH #{index}{C.END}")
+    print(f"{_priority_token('Top Priority', group['max_priority'])}")
+    print(f"{_label('Name:')} {C.BOLD}{group['name']}{C.END}")
+    print(f"{_label('Likelihood:')} {LIKELIHOOD_LABELS[group['likelihood']]}")
+    print(f"{_label('Targets:')} {group['targets']}")
+    print(f"{_label('Grouped hits:')} {group['count']} underlying path(s)")
+    print(_rule_line())
     _print_path_details(path, args)
 
 
@@ -827,7 +909,9 @@ def _display_results(args, synthesizer, prioritized_findings):
 
     if display_paths:
         path_label = "AI-related potential attack path(s)" if ai_only else "potential attack path(s)"
-        print(f"\n{C.BOLD}{C.YELLOW}--- PathFinder has identified {len(display_paths)} {path_label}! ---{C.END}")
+        print(f"\n{_rule_line('-', C.YELLOW)}")
+        print(f"{C.BOLD}{C.YELLOW}PathFinder identified {len(display_paths)} {path_label}{C.END}")
+        print(_rule_line('-', C.YELLOW))
         if getattr(args, 'show_all', False):
             for i, path in enumerate(display_paths, start=1):
                 _print_attack_path(path, args, i)
@@ -843,7 +927,7 @@ def _display_results(args, synthesizer, prioritized_findings):
                 _print_attack_path_group(group, args, i)
             if len(shown_groups) < len(groups):
                 print(f"\n{C.BOLD}{C.YELLOW}[!] {len(groups) - len(shown_groups)} additional grouped lead(s) hidden by --top {top}.{C.END}")
-        print("\n" + "="*80)
+        print("\n" + _rule_line())
     else:
         path_scope = "AI-related " if ai_only else ""
         print(f"\n{C.BOLD}{C.YELLOW}[!] No specific {path_scope}attack paths were synthesized from the findings.{C.END}")
@@ -852,22 +936,26 @@ def _display_results(args, synthesizer, prioritized_findings):
     filtered_list = filter_prioritized_findings(display_findings, args.max_vulns)
 
     finding_label = "AI Findings" if ai_only else "Total Findings"
-    print(f"\n{C.BOLD}{C.YELLOW}--- {finding_label}: {len(filtered_list)} (Public Exploits limited to --max-vulns, total discovered: {total_exploit_count}):{C.END}")
+    print(f"\n{_rule_line('-', C.YELLOW)}")
+    print(f"{C.BOLD}{C.YELLOW}{finding_label}: {len(filtered_list)}{C.END} "
+          f"{C.YELLOW}(Public Exploits limited to --max-vulns, total discovered: {total_exploit_count}){C.END}")
+    print(_rule_line('-', C.YELLOW))
 
     filtered_list.sort(key=lambda x: x.get("attributes", {}).get("score", 0), reverse=True)
 
     for i, p_finding in enumerate(filtered_list):
         score = p_finding.get("attributes", {}).get("score", "N/A")
-        display_name, display_type = format_finding_display(p_finding.get('name'), p_finding.get('entity_type'))
-        print(f"\n[{i+1}] [Score: {score}] {display_name} {display_type}")
-        print(f"    Host: {p_finding.get('host')}, Port: {p_finding.get('port')}")
+        display_name, _ = format_finding_display(p_finding.get('name'), p_finding.get('entity_type'))
+        display_type = _finding_type_token(p_finding.get('entity_type'))
+        print(f"\n{C.BOLD}{C.CYAN}[{i+1:03d}]{C.END} {_score_token(score)} {display_type} {display_name}")
+        print(f"      {_label('Host:', 6)}{p_finding.get('host')}   {_label('Port:', 6)}{p_finding.get('port')}")
         attributes = p_finding.get("attributes", {})
         if attributes.get("metasploit_module"):
-            print(f"    {C.BOLD}Metasploit Module:{C.END} {attributes['metasploit_module']}")
+            print(f"      {C.BOLD}Metasploit Module:{C.END} {attributes['metasploit_module']}")
             if getattr(args, 'oscp', False):
-                print(f"    {C.YELLOW}[OSCP] Metasploit is limited to one target on the exam.{C.END}")
+                print(f"      {C.YELLOW}[OSCP] Metasploit is limited to one target on the exam.{C.END}")
         if attributes.get("url"):
-            print(f"    {C.BOLD}URL:{C.END} {attributes['url']}")
+            print(f"      {C.BOLD}URL:{C.END} {attributes['url']}")
 
     return suggested_paths
 
@@ -1194,7 +1282,7 @@ def main():
 
     lg = main_parser.add_argument_group('Intelligence Management Arguments')
     lg.add_argument("--learn", action="store_true", help="Enter interactive mode to teach a new attack path.")
-    lg.add_argument("--add-cred", action="store_true", help="Enter interactive mode to manually add a found credential.")
+    lg.add_argument("--add-cred", action="store_true", help="Enter interactive mode to manually add a credential, username, or password candidate.")
 
     gg = main_parser.add_argument_group('General Arguments')
     gg.add_argument("-v", "--verbose", action="count", default=0, help="Verbosity level (-v, -vv).")

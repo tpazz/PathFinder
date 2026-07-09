@@ -29,6 +29,7 @@ from parsers.initial_foothold.snmp_parser import parse_snmp_output
 from parsers.initial_foothold.sqlmap_parser import parse_sqlmap_log
 from parsers.initial_foothold.whatweb_parser import parse_whatweb_json
 from parsers.initial_foothold.wpscan_parser import parse_wpscan_json
+from parsers.post_exploitation.ai_loot_parser import parse_ai_loot_json
 from parsers.privilege_escalation.linpeas_parser import parse_linpeas
 from parsers.privilege_escalation.winpeas_parser import parse_winpeas
 
@@ -68,6 +69,8 @@ PARSER_SPECS = [
                False, lambda p, ctx: parse_wpscan_json(p)),
     ParserSpec("llm_enum_json", "--llm-enum-json", "Path to one-shot-enum LLM/AI enumeration JSON.",
                False, lambda p, ctx: parse_llm_enum_json(p)),
+    ParserSpec("ai_loot_json", "--ai-loot-json", "Path to PathFinder AI post-exploitation loot collector JSON.",
+               False, lambda p, ctx: parse_ai_loot_json(p)),
     ParserSpec("enum4linux_json", "--enum4linux-json", "Path to enum4linux-ng JSON output file.",
                True, lambda p, ctx: parse_enum4linux_json(p, ctx.target_host)),
     ParserSpec("smbmap_txt", "--smbmap-txt", "Path to smbmap text output file.",
