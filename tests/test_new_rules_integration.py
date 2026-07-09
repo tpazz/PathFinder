@@ -63,6 +63,15 @@ class NewRuleTests(unittest.TestCase):
         self.assertGreaterEqual(len(cve), 1)
         self.assertIn("CVE-2021-41773", cve[0]["suggestion"]["description"])
 
+    def test_parameterized_url_fires_sqlmap_triage_candidate(self):
+        findings = [_f("10.10.10.10", 80, "ffuf", "web_parameterized_url",
+                       "http://10.10.10.10/item.php?id=1",
+                       url="http://10.10.10.10/item.php?id=1", parameters=["id"], score=45)]
+        paths = _synth().generate_attack_paths(findings)
+        triage = [p for p in paths if p["name"] == "Parameterized URL - SQLi Triage Candidate"]
+        self.assertEqual(len(triage), 1)
+        self.assertIn("sqlmap -u 'http://10.10.10.10/item.php?id=1'", triage[0]["suggestion"]["commands"][0])
+
     def test_hash_credential_reuse_emits_pth_command(self):
         """A hash-only credential (e.g. from secretsdump) reused against SMB should
         produce a usable pass-the-hash command, not just a password command."""

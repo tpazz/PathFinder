@@ -8,6 +8,8 @@ from parsers.active_directory.certipy_parser import parse_certipy_json
 from parsers.active_directory.kerberos_parser import parse_getuserspns_output
 from parsers.active_directory.secretsdump_parser import parse_secretsdump
 from parsers.initial_foothold.ffuf_parser import parse_ffuf_json
+from parsers.initial_foothold.gobuster_parser import parse_gobuster_output
+from parsers.initial_foothold.nikto_parser import parse_nikto_json
 from parsers.initial_foothold.netexec_parser import parse_netexec_output
 from parsers.initial_foothold.nuclei_parser import parse_nuclei_jsonl
 from parsers.initial_foothold.smbmap_parser import parse_smbmap_output
@@ -41,6 +43,41 @@ class NewParserTests(unittest.TestCase):
         self.assertTrue(admin["attributes"]["is_directory_guess"])
         self.assertFalse(next(f for f in findings if f["name"] == "/index.html")["attributes"]["is_directory_guess"])
 
+    def test_ffuf_emits_sqlmap_candidate_for_parameterized_url(self):
+        payload = {
+            "commandline": "ffuf -u http://10.10.10.10/FUZZ -w wl",
+            "results": [
+                {"input": {"FUZZ": "item.php?id=1"}, "status": 200, "length": 100,
+                 "url": "http://10.10.10.10/item.php?id=1", "host": "10.10.10.10:80"},
+            ],
+            "config": {},
+        }
+        findings = parse_ffuf_json(self._write(json.dumps(payload), ".json"))
+        validate_findings(findings)
+        candidate = next(f for f in findings if f["entity_type"] == "web_parameterized_url")
+        self.assertEqual(candidate["attributes"]["url"], "http://10.10.10.10/item.php?id=1")
+        self.assertEqual(candidate["attributes"]["parameters"], ["id"])
+
+    def test_gobuster_and_nikto_emit_sqlmap_candidates_for_parameterized_urls(self):
+        gobuster_findings = parse_gobuster_output(
+            self._write("/search.php?q=test (Status: 200) [Size: 10]\n"),
+            "10.10.10.10",
+            80,
+        )
+        nikto_payload = {
+            "host": "10.10.10.11",
+            "port": "8080",
+            "vulnerabilities": [{"id": "001", "msg": "/view.php?page=home might be interesting",
+                                 "url": "/view.php?page=home", "method": "GET"}],
+        }
+        nikto_findings = parse_nikto_json(self._write(json.dumps(nikto_payload), ".json"))
+        validate_findings(gobuster_findings + nikto_findings)
+
+        urls = {f["attributes"]["url"] for f in gobuster_findings + nikto_findings
+                if f["entity_type"] == "web_parameterized_url"}
+        self.assertIn("http://10.10.10.10:80/search.php?q=test", urls)
+        self.assertIn("http://10.10.10.11:8080/view.php?page=home", urls)
+
     def test_nuclei(self):
         lines = [
             json.dumps({"template-id": "CVE-2021-41773", "info": {"name": "Apache Path Traversal", "severity": "high",
@@ -57,6 +94,14 @@ class NewParserTests(unittest.TestCase):
         self.assertEqual(vuln["attributes"]["severity"], "high")
         info = next(f for f in findings if f["attributes"]["severity"] == "info")
         self.assertEqual(info["entity_type"], "information_leak")
+
+    def test_nuclei_emits_sqlmap_candidate_for_parameterized_match(self):
+        line = json.dumps({"template-id": "reflected-param", "info": {"name": "Reflected parameter", "severity": "info"},
+                           "matched-at": "http://10.10.10.10/product.php?cat=2"})
+        findings = parse_nuclei_jsonl(self._write(line + "\n", ".jsonl"))
+        validate_findings(findings)
+        candidate = next(f for f in findings if f["entity_type"] == "web_parameterized_url")
+        self.assertEqual(candidate["attributes"]["parameters"], ["cat"])
 
     def test_wpscan(self):
         payload = {

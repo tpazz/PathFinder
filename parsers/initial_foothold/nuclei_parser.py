@@ -1,6 +1,7 @@
 import json
 from parsers.ansi import warn
 from urllib.parse import urlparse
+from parsers.initial_foothold.web_url_helpers import parameterized_url_finding
 
 # Severities that warrant a high-signal "vulnerability" finding; everything else
 # (low/info/unknown) is recorded as an information_leak for context.
@@ -66,7 +67,7 @@ def parse_nuclei_jsonl(file_path):
             continue
         seen.add(identifier)
 
-        findings.append({
+        finding = {
             "host": host,
             "port": port,
             "source_tool": "nuclei",
@@ -84,6 +85,12 @@ def parse_nuclei_jsonl(file_path):
                 "references": info.get("reference"),
                 "description": info.get("description") or info.get("name"),
             },
-        })
+        }
+        findings.append(finding)
+        param_finding = parameterized_url_finding(
+            host, port, "nuclei", record.get("matched-at") or record.get("matched_at"), name
+        )
+        if param_finding:
+            findings.append(param_finding)
 
     return findings

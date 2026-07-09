@@ -1,7 +1,10 @@
+import io
 import json
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 
 from main.attack_path_synthesizer import AttackPathSynthesizer
 from main.finding_schema import validate_findings
@@ -374,6 +377,34 @@ class AiBriefTests(unittest.TestCase):
     def test_brief_empty_without_ai_findings(self):
         from main.pathfinder import generate_ai_brief
         self.assertEqual(generate_ai_brief([{"entity_type": "software_product", "name": "x"}], []), "")
+
+
+class AiOnlyDisplayTests(unittest.TestCase):
+    def test_ai_only_display_hides_non_ai_paths_and_findings(self):
+        from main.pathfinder import _display_results
+
+        synth = AttackPathSynthesizer(rules_file_path=RULES_FILE)
+        findings = [
+            {"host": "10.0.0.20", "port": 8000, "source_tool": "one-shot-enum-llm",
+             "entity_type": "ai_service", "name": "openai-compatible", "version": None,
+             "attributes": {"score": 90, "base_url": "http://10.0.0.20:8000/v1"}},
+            {"host": "10.0.0.10", "port": 80, "source_tool": "sqlmap",
+             "entity_type": "vulnerability", "name": "sql_injection_found", "version": None,
+             "attributes": {"score": 95, "url": "http://10.0.0.10/item.php?id=1", "parameter": "id"}},
+        ]
+        args = SimpleNamespace(ai_only=True, verbose=0, max_vulns=10, oscp=False)
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            paths = _display_results(args, synth, findings)
+
+        text = out.getvalue()
+        self.assertTrue(any("SQL Injection" in p["name"] for p in paths))
+        self.assertIn("AI-only display", text)
+        self.assertIn("Exposed LLM API", text)
+        self.assertIn("openai-compatible", text)
+        self.assertNotIn("SQL Injection", text)
+        self.assertNotIn("sql_injection_found", text)
 
 
 if __name__ == "__main__":

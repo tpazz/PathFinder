@@ -33,6 +33,12 @@ python3 -m main.pathfinder scan loot/ --target-host TARGET_IP
 
 # Save findings for later or for iterative analysis
 python3 -m main.pathfinder scan loot/ --target-host TARGET_IP -o findings.json
+
+# Keep noisy engagements readable: display only the top grouped triage leads
+python3 -m main.pathfinder scan loot/ --top 10
+
+# Show every synthesized attack path instead of grouped triage output
+python3 -m main.pathfinder scan loot/ --show-all
 ```
 
 **What scan mode detects automatically:**
@@ -452,6 +458,17 @@ python3 -m main.pathfinder scan loot/ --skip-github
 
 # Show more detail: rationale, matched evidence per attack path
 python3 -m main.pathfinder scan loot/ -v
+
+# Keep the terminal focused on more actionable leads
+python3 -m main.pathfinder scan loot/ --min-likelihood medium
+python3 -m main.pathfinder scan loot/ --min-likelihood high
+
+# Tune grouped triage output; use 0 to show every group
+python3 -m main.pathfinder scan loot/ --top 20
+python3 -m main.pathfinder scan loot/ --top 0
+
+# Fall back to the old exhaustive attack-path listing
+python3 -m main.pathfinder scan loot/ --show-all
 
 # Teach PathFinder a new attack path rule (interactive)
 python3 -m main.pathfinder --learn

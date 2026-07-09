@@ -1,6 +1,7 @@
 import json
 from parsers.ansi import warn
 from urllib.parse import urlparse
+from parsers.initial_foothold.web_url_helpers import parameterized_url_finding
 
 
 def _result_path(result):
@@ -105,5 +106,8 @@ def parse_ffuf_json(json_file_path):
             "version": None,
             "attributes": attributes,
         })
+        param_finding = parameterized_url_finding(host, port, "ffuf", result.get("url"), path)
+        if param_finding:
+            findings.append(param_finding)
 
     return findings

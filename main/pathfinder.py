@@ -635,60 +635,224 @@ def _save_findings(args, findings):
         print(f"\n{C.BOLD}{C.YELLOW}[!] Error saving to JSON file: {e}{C.END}")
 
 
+def _is_ai_related_finding(finding):
+    if finding.get("entity_type") == "ai_service":
+        return True
+    return str(finding.get("source_tool") or "").startswith("one-shot-enum-llm")
+
+
+def _is_ai_related_path(path):
+    if path.get("atlas"):
+        return True
+    return any("(ai_service)" in str(evidence) for evidence in (path.get("evidence") or []))
+
+
+LIKELIHOOD_RANK = {"low": 0, "medium": 1, "high": 2}
+LIKELIHOOD_LABELS = {
+    "high": "Critical / likely exploitation",
+    "medium": "High-signal next steps",
+    "low": "Manual validation / lower confidence",
+}
+DEFAULT_TRIAGE_TOP = 20
+
+
+def _path_text(path):
+    suggestion = path.get("suggestion") or {}
+    parts = [
+        path.get("name", ""),
+        suggestion.get("description", ""),
+        suggestion.get("rationale", ""),
+        " ".join(suggestion.get("commands") or []),
+        " ".join(path.get("evidence") or []),
+    ]
+    return " ".join(str(p) for p in parts if p).lower()
+
+
+def _path_likelihood(path):
+    """Actionability estimate used only for human triage output.
+
+    The rule priority remains the source of truth for path generation. Likelihood
+    answers a narrower question: "how likely is this to be worth trying first?"
+    """
+    effective = path.get("effective_priority", path.get("priority", 0)) or 0
+    evidence_score = path.get("evidence_score", 0) or 0
+    text = _path_text(path)
+
+    low_validation_terms = (
+        "triage candidate", "parameterized url", "manual validation",
+        "interesting but", "review manually",
+    )
+    if effective < 80 and any(term in text for term in low_validation_terms):
+        return "low"
+
+    high_action_terms = (
+        "confirmed", "credential reuse", "pass-the-hash", "pwn3d", "dcsync",
+        "secretsdump", "webshell", "rce", "remote code execution", "writable",
+        "write-to-rce", "artifact write to code execution", "no_root_squash",
+        "kerberoast", "as-rep", "admin access",
+    )
+    if effective >= 90 or any(term in text for term in high_action_terms):
+        return "high"
+    if effective >= 75 or evidence_score >= 80:
+        return "medium"
+    return "low"
+
+
+def _passes_min_likelihood(path, min_likelihood):
+    wanted = min_likelihood if min_likelihood in LIKELIHOOD_RANK else "low"
+    return LIKELIHOOD_RANK[_path_likelihood(path)] >= LIKELIHOOD_RANK[wanted]
+
+
+def _target_label(path):
+    return str(path.get("host") or "GLOBAL")
+
+
+def _target_summary(paths, limit=5):
+    targets = []
+    seen = set()
+    for path in paths:
+        label = _target_label(path)
+        if label in seen:
+            continue
+        seen.add(label)
+        targets.append(label)
+    shown = targets[:limit]
+    extra = len(targets) - len(shown)
+    suffix = f" (+{extra} more)" if extra > 0 else ""
+    return ", ".join(shown) + suffix if shown else "n/a"
+
+
+def _group_attack_paths(paths):
+    groups_by_name = {}
+    for path in paths:
+        key = path.get("name") or "<unnamed>"
+        group = groups_by_name.setdefault(key, {"name": key, "paths": []})
+        group["paths"].append(path)
+
+    groups = []
+    for group in groups_by_name.values():
+        grouped_paths = group["paths"]
+        representative = grouped_paths[0]
+        likelihoods = [_path_likelihood(p) for p in grouped_paths]
+        group["representative"] = representative
+        group["count"] = len(grouped_paths)
+        group["likelihood"] = max(likelihoods, key=lambda x: LIKELIHOOD_RANK[x])
+        group["max_priority"] = max(
+            p.get("effective_priority", p.get("priority", 0)) or 0 for p in grouped_paths
+        )
+        group["max_evidence_score"] = max(p.get("evidence_score", 0) or 0 for p in grouped_paths)
+        group["targets"] = _target_summary(grouped_paths)
+        groups.append(group)
+
+    groups.sort(key=lambda g: (
+        -LIKELIHOOD_RANK[g["likelihood"]],
+        -g["max_priority"],
+        -g["max_evidence_score"],
+        g["name"],
+    ))
+    return groups
+
+
+def _print_path_details(path, args):
+    suggestion = path.get("suggestion") or {}
+    print(f"\n  [{C.BOLD}+{C.END}] Description:\n      {suggestion.get('description', '')}")
+    if getattr(args, 'verbose', 0) > 0:
+        print(f"\n  [{C.BOLD}+{C.END}] Rationale:\n      {suggestion.get('rationale', '')}")
+    if suggestion.get('commands'):
+        print(f"\n  [{C.BOLD}+{C.END}] Suggested Commands:")
+        cmds = suggestion.get('commands') or []
+        uses_msf = False
+        if getattr(args, 'oscp', False):
+            cmds, uses_msf = _oscp_process_commands(cmds)
+        for cmd in cmds:
+            print(f"      - {cmd}")
+        if uses_msf:
+            print(f"      {C.YELLOW}[OSCP] Metasploit/Meterpreter is limited to ONE target on the exam.{C.END}")
+    if suggestion.get('injection_examples'):
+        print(f"\n  [{C.BOLD}+{C.END}] {C.BOLD}Prompt-injection examples:{C.END}")
+        for ex in suggestion['injection_examples']:
+            print(f"      - {ex}")
+    if path.get('atlas'):
+        print(f"\n  [{C.BOLD}+{C.END}] MITRE ATLAS:")
+        for tag in path['atlas']:
+            print(f"      - {tag}")
+    if suggestion.get('references'):
+        print(f"\n  [{C.BOLD}+{C.END}] References:")
+        for ref in suggestion['references']:
+            print(f"      - {ref}")
+    if getattr(args, 'verbose', 0) > 0 and path.get('evidence'):
+        print(f"\n  [{C.BOLD}+{C.END}] Matched Evidence:")
+        for ev in path['evidence']:
+            print(f"      - {ev}")
+
+
+def _print_attack_path(path, args, index):
+    print("\n" + "="*80)
+    print(f"{C.BOLD}ATTACK PATH #{index}{C.END}")
+    eff = path.get('effective_priority', path['priority'])
+    base = path['priority']
+    prio_label = (f"[Priority: {eff}]" if eff == base
+                  else f"[Priority: {eff}  (base {base}, adjusted for evidence quality)]")
+    print(f"Name:       {C.BOLD}{path['name']}{C.END} {C.YELLOW}{C.BOLD}{prio_label}{C.END}")
+    print(f"Likelihood: {LIKELIHOOD_LABELS[_path_likelihood(path)]}")
+    print(f"Target:     {path['host']}")
+    print("="*80)
+    _print_path_details(path, args)
+
+
+def _print_attack_path_group(group, args, index):
+    path = group["representative"]
+    print("\n" + "="*80)
+    print(f"{C.BOLD}TRIAGE ATTACK PATH #{index}{C.END}")
+    print(f"Name:       {C.BOLD}{group['name']}{C.END} {C.YELLOW}{C.BOLD}[Top Priority: {group['max_priority']}]{C.END}")
+    print(f"Likelihood: {LIKELIHOOD_LABELS[group['likelihood']]}")
+    print(f"Targets:    {group['targets']}")
+    print(f"Grouped hits: {group['count']} underlying path(s)")
+    print("="*80)
+    _print_path_details(path, args)
+
+
 def _display_results(args, synthesizer, prioritized_findings):
     """Runs the synthesizer and prints attack paths + findings list."""
     print(f"\n{C.BOLD}{C.CYAN}[*] Running Attack Path Synthesizer...{C.END}")
     suggested_paths = synthesizer.generate_attack_paths(prioritized_findings)
+    ai_only = getattr(args, 'ai_only', False)
+    display_paths = [p for p in suggested_paths if _is_ai_related_path(p)] if ai_only else suggested_paths
+    display_findings = [f for f in prioritized_findings if _is_ai_related_finding(f)] if ai_only else prioritized_findings
+    min_likelihood = getattr(args, 'min_likelihood', 'low')
+    display_paths = [p for p in display_paths if _passes_min_likelihood(p, min_likelihood)]
 
-    if suggested_paths:
-        print(f"\n{C.BOLD}{C.YELLOW}--- PathFinder has identified {len(suggested_paths)} potential attack path(s)! ---{C.END}")
-        for i, path in enumerate(suggested_paths):
-            print("\n" + "="*80)
-            print(f"{C.BOLD}ATTACK PATH #{i+1}{C.END}")
-            eff = path.get('effective_priority', path['priority'])
-            base = path['priority']
-            prio_label = (f"[Priority: {eff}]" if eff == base
-                          else f"[Priority: {eff}  (base {base}, adjusted for evidence quality)]")
-            print(f"Name:       {C.BOLD}{path['name']}{C.END} {C.YELLOW}{C.BOLD}{prio_label}{C.END}")
-            print(f"Target:     {path['host']}")
-            print("="*80)
-            print(f"\n  [{C.BOLD}+{C.END}] Description:\n      {path['suggestion']['description']}")
-            if args.verbose > 0:
-                print(f"\n  [{C.BOLD}+{C.END}] Rationale:\n      {path['suggestion']['rationale']}")
-            if path['suggestion'].get('commands'):
-                print(f"\n  [{C.BOLD}+{C.END}] Suggested Commands:")
-                cmds = path['suggestion']['commands']
-                uses_msf = False
-                if getattr(args, 'oscp', False):
-                    cmds, uses_msf = _oscp_process_commands(cmds)
-                for cmd in cmds:
-                    print(f"      - {cmd}")
-                if uses_msf:
-                    print(f"      {C.YELLOW}[OSCP] Metasploit/Meterpreter is limited to ONE target on the exam.{C.END}")
-            if path['suggestion'].get('injection_examples'):
-                print(f"\n  [{C.BOLD}+{C.END}] {C.BOLD}Prompt-injection examples:{C.END}")
-                for ex in path['suggestion']['injection_examples']:
-                    print(f"      - {ex}")
-            if path.get('atlas'):
-                print(f"\n  [{C.BOLD}+{C.END}] MITRE ATLAS:")
-                for tag in path['atlas']:
-                    print(f"      - {tag}")
-            if path['suggestion'].get('references'):
-                print(f"\n  [{C.BOLD}+{C.END}] References:")
-                for ref in path['suggestion']['references']:
-                    print(f"      - {ref}")
-            if args.verbose > 0 and path.get('evidence'):
-                print(f"\n  [{C.BOLD}+{C.END}] Matched Evidence:")
-                for ev in path['evidence']:
-                    print(f"      - {ev}")
+    if ai_only:
+        print(f"\n{C.BOLD}{C.CYAN}[*] AI-only display: showing AI-related attack paths and findings only.{C.END}")
+
+    if display_paths:
+        path_label = "AI-related potential attack path(s)" if ai_only else "potential attack path(s)"
+        print(f"\n{C.BOLD}{C.YELLOW}--- PathFinder has identified {len(display_paths)} {path_label}! ---{C.END}")
+        if getattr(args, 'show_all', False):
+            for i, path in enumerate(display_paths, start=1):
+                _print_attack_path(path, args, i)
+        else:
+            groups = _group_attack_paths(display_paths)
+            top = getattr(args, 'top', DEFAULT_TRIAGE_TOP)
+            shown_groups = groups if not top or top <= 0 else groups[:top]
+            print(f"{C.BOLD}{C.CYAN}[*] Triage view: showing {len(shown_groups)} grouped lead(s) "
+                  f"from {len(display_paths)} path(s). Use --show-all for the exhaustive list.{C.END}")
+            if min_likelihood != "low":
+                print(f"{C.BOLD}{C.CYAN}[*] Minimum likelihood filter: {min_likelihood}.{C.END}")
+            for i, group in enumerate(shown_groups, start=1):
+                _print_attack_path_group(group, args, i)
+            if len(shown_groups) < len(groups):
+                print(f"\n{C.BOLD}{C.YELLOW}[!] {len(groups) - len(shown_groups)} additional grouped lead(s) hidden by --top {top}.{C.END}")
         print("\n" + "="*80)
     else:
-        print(f"\n{C.BOLD}{C.YELLOW}[!] No specific attack paths were synthesized from the findings.{C.END}")
+        path_scope = "AI-related " if ai_only else ""
+        print(f"\n{C.BOLD}{C.YELLOW}[!] No specific {path_scope}attack paths were synthesized from the findings.{C.END}")
 
-    total_exploit_count = sum(1 for f in prioritized_findings if f.get("source_tool") in ["searchsploit_mapper", "github_exploit_mapper"])
-    filtered_list = filter_prioritized_findings(prioritized_findings, args.max_vulns)
+    total_exploit_count = sum(1 for f in display_findings if f.get("source_tool") in ["searchsploit_mapper", "github_exploit_mapper"])
+    filtered_list = filter_prioritized_findings(display_findings, args.max_vulns)
 
-    print(f"\n{C.BOLD}{C.YELLOW}--- Total Findings: {len(filtered_list)} (Public Exploits limited to --max-vulns, total discovered: {total_exploit_count}):{C.END}")
+    finding_label = "AI Findings" if ai_only else "Total Findings"
+    print(f"\n{C.BOLD}{C.YELLOW}--- {finding_label}: {len(filtered_list)} (Public Exploits limited to --max-vulns, total discovered: {total_exploit_count}):{C.END}")
 
     filtered_list.sort(key=lambda x: x.get("attributes", {}).get("score", 0), reverse=True)
 
@@ -1009,6 +1173,10 @@ def main():
     scan_p.add_argument('--no-color', action='store_true', help='Disable ANSI colour output.')
     scan_p.add_argument('--oscp', action='store_true', help='OSCP exam profile: strip prohibited-tool commands (sqlmap, nuclei) from suggestions and flag the Metasploit one-target limit.')
     scan_p.add_argument('--ai-brief', metavar='FILE', help='Write a markdown AI attack-intelligence brief (surfaces, crown jewels, trust boundaries, MITRE ATLAS-tagged paths) to FILE.')
+    scan_p.add_argument('--ai-only', action='store_true', help='Display only AI-related findings and attack paths.')
+    scan_p.add_argument('--show-all', action='store_true', help='Display every synthesized attack path instead of the grouped triage view.')
+    scan_p.add_argument('--top', type=int, default=DEFAULT_TRIAGE_TOP, help=f'Max grouped attack-path leads to display in triage view (default: {DEFAULT_TRIAGE_TOP}; 0 = all).')
+    scan_p.add_argument('--min-likelihood', choices=sorted(LIKELIHOOD_RANK.keys()), default='low', help='Only display attack paths at or above this triage likelihood (default: low).')
 
     # ── manual mode args (no subcommand) ──────────────────────────────────────
     # The per-parser input flags are generated from the single PARSER_SPECS list.
@@ -1038,6 +1206,10 @@ def main():
     gg.add_argument("--no-color", action="store_true", help="Disable ANSI colour output.")
     gg.add_argument("--oscp", action="store_true", help="OSCP exam profile: strip prohibited-tool commands (sqlmap, nuclei) from suggestions and flag the Metasploit one-target limit.")
     gg.add_argument("--ai-brief", metavar="FILE", help="Write a markdown AI attack-intelligence brief (surfaces, crown jewels, trust boundaries, MITRE ATLAS-tagged paths) to FILE.")
+    gg.add_argument("--ai-only", action="store_true", help="Display only AI-related findings and attack paths.")
+    gg.add_argument("--show-all", action="store_true", help="Display every synthesized attack path instead of the grouped triage view.")
+    gg.add_argument("--top", type=int, default=DEFAULT_TRIAGE_TOP, help=f"Max grouped attack-path leads to display in triage view (default: {DEFAULT_TRIAGE_TOP}; 0 = all).")
+    gg.add_argument("--min-likelihood", choices=sorted(LIKELIHOOD_RANK.keys()), default="low", help="Only display attack paths at or above this triage likelihood (default: low).")
 
     args = main_parser.parse_args()
     configure_logging(args.verbose)

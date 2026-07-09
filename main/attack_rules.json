@@ -112,6 +112,23 @@
 
     {
         "_comment": "=== SQL INJECTION ===",
+        "name": "Parameterized URL - SQLi Triage Candidate",
+        "priority": 74,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "web_parameterized_url", "name_match": { "type": "regex", "value": ".*" } }
+        ],
+        "suggestion": {
+            "description": "Parameterized URL discovered on {trigger.1.host}:{trigger.1.port}: {trigger.1.attributes.url}",
+            "rationale": "A discovered URL with query parameters is a targeted SQLi triage candidate. Run sqlmap only against concrete parameterized URLs rather than crawling the whole site blindly.",
+            "commands": [
+                "sqlmap -u '{trigger.1.attributes.url}' --batch --smart --level=1 --risk=1",
+                "Parameters observed: {trigger.1.attributes.parameters}"
+            ],
+            "references": ["https://github.com/sqlmapproject/sqlmap/wiki/Usage"]
+        }
+    },
+    {
         "name": "SQL Injection to OS Shell",
         "priority": 96,
         "host_scope": "same_host",

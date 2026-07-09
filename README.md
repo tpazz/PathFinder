@@ -33,6 +33,7 @@ PathFinder aims to:
 - **Multi-Input Parsing:** Ingests and normalises data from Nmap, Gobuster, ffuf, Nikto, WhatWeb, nuclei, wpscan, enum4linux-ng, smbmap, NetExec/CrackMapExec, SNMP, NFS/showmount, Redis, rsync, SMTP user enumeration, SQLMap, LinPEAS, WinPEAS, SharpHound, ldapdomaindump, Kerbrute, impacket-GetNPUsers, impacket-GetUserSPNs, impacket-secretsdump, john/hashcat `.pot` files, and certipy.
 - **Vulnerability & Exploit Mapping:** Correlates identified services and versions with known CVEs and public exploits via Exploit-DB (`searchsploit`) and GitHub.
 - **Attack Path Synthesis:** An 83-rule engine covering initial foothold, credential reuse and pass-the-hash, web attacks, Redis/rsync/SMTP enum leads, Linux/Windows privilege escalation, Active Directory attack paths (Kerberoasting, AS-REP roasting, DCSync, ACL abuse, delegation, AD CS/ESC), and **AI/LLM attack surfaces** (prompt injection, agent/MCP tool abuse, RAG poisoning, exposed inference APIs, MLflow/Jupyter RCE, LangServe, model-serving, workflow-builder, custom tool-enabled agents, A2A/multi-agent rogue registration & workflow abuse, LLM-to-SQL query-to-RCE, unauthenticated vector-store extraction, exposed object stores, artifact-write-to-RCE chains, confirmed-MCP-tool abuse, and cross-surface RAG/tool chains) mapped to the OWASP LLM Top 10 and tagged with **MITRE ATLAS** technique IDs.
+- **Triage-First Output:** Attack paths are still fully generated, but the default display groups repeated rule hits across hosts and shows the top leads first. Use `--show-all` for the exhaustive path list, `--top N` to tune the grouped view, and `--min-likelihood medium|high` to hide lower-confidence validation leads from the terminal output.
 - **AI/LLM Target Analysis:** Ingests one-shot-enum's AI-surface enumeration (OpenAI-compatible APIs, Ollama, vLLM/TGI, LangServe, agent/MCP, RAG stores, MinIO/S3-compatible object stores, MLflow, model servers, notebooks, workflow builders, image generation, and more) as `ai_service` findings and synthesises attack paths for them. Also consumes the inferred **agent profile** - role, architecture (single-agent / multi-agent / A2A / MCP tool-server / vector-store / RAG), capabilities, and orchestration framework - plus, when one-shot-enum's active/vector checks ran, **confirmed MCP tool inventories** and **unauthenticated vector-store collections**. Object-store findings are correlated with MLflow and model-serving surfaces to highlight artifact-write-to-RCE supply-chain paths. Even custom agents that match no known framework get an archetype-specific attack path (e.g. a multi-agent/A2A system gets a rogue-registration & workflow-abuse path; an NL-to-SQL agent gets a query-to-database-RCE path), and the injection-relevant rules ship **copy-pasteable prompt-injection examples** (system-prompt leak, tool-call coercion, argument smuggling, RAG poisoning, workflow-gate bypass, SSTI) tuned to each surface. `--ai-brief FILE` writes a markdown attack-intelligence brief (AI surfaces, crown jewels, trust boundaries, ATLAS-tagged paths). Useful for AI-focused engagements and AI pentest study.
 - **Iterative Workflow:** Save findings to JSON after initial recon, reload and append later stages (post-exploitation, AD enumeration) without re-running parsers.
 - **Interactive Credential Management:** Add found credentials with `--add-cred`. They are automatically weaponised against all discovered login services by the synthesiser.
@@ -56,6 +57,17 @@ nikto -h http://192.168.56.10 -o loot/nikto.json -Format json
 
 # Point PathFinder at the loot directory - target IP inferred from nmap
 python3 -m main.pathfinder scan loot/ -o findings.json -v
+```
+
+For noisy multi-host scans, the terminal output defaults to a grouped triage
+view equivalent to `--top 20 --min-likelihood low`. Nothing is discarded: saved
+findings and internally generated paths remain complete, while the display
+favours the most actionable leads.
+
+```bash
+python3 -m main.pathfinder scan loot/ --top 10
+python3 -m main.pathfinder scan loot/ --min-likelihood medium
+python3 -m main.pathfinder scan loot/ --show-all
 ```
 
 **Output:**

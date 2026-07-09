@@ -2,15 +2,23 @@
 gobuster port attribution, and single-pass AI-brief wiring.
 """
 import json
+import io
 import os
 import shutil
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 
 from main.attack_path_synthesizer import AttackPathSynthesizer, _finding_confidence_penalty
-from main.pathfinder import _gobuster_extract_target, maybe_write_ai_brief
+from main.pathfinder import (
+    _display_results,
+    _gobuster_extract_target,
+    _group_attack_paths,
+    _path_likelihood,
+    maybe_write_ai_brief,
+)
 
 
 def _finding(entity_type, name, host="H", **attrs):
@@ -113,6 +121,63 @@ class RankingTests(_SynthMixin, unittest.TestCase):
         synth = self._synth([_one_trigger_rule("R", 88, "vulnerability", "x")])
         paths = synth.generate_attack_paths([_finding("vulnerability", "x")])
         self.assertEqual(paths[0]["effective_priority"], paths[0]["priority"])
+
+
+class TriageDisplayTests(unittest.TestCase):
+    def _path(self, name, host="H", priority=80, effective_priority=None, evidence_score=0):
+        return {
+            "name": name,
+            "priority": priority,
+            "effective_priority": effective_priority if effective_priority is not None else priority,
+            "evidence_score": evidence_score,
+            "host": host,
+            "suggestion": {"description": name, "rationale": "r", "commands": [], "references": []},
+            "atlas": [],
+            "evidence": [f"Trigger 1: {name} (vulnerability)"],
+        }
+
+    def test_parameterized_sqlmap_candidate_is_low_likelihood(self):
+        path = self._path("Parameterized URL - SQLi Triage Candidate", priority=74)
+        self.assertEqual(_path_likelihood(path), "low")
+
+    def test_actionable_chain_is_high_likelihood(self):
+        path = self._path("Credential Reuse on Login Service", priority=82)
+        self.assertEqual(_path_likelihood(path), "high")
+
+    def test_grouping_collapses_repeated_rule_hits(self):
+        groups = _group_attack_paths([
+            self._path("Known Vulnerable Software with Public Exploit", host="10.0.0.1", priority=85),
+            self._path("Known Vulnerable Software with Public Exploit", host="10.0.0.2", priority=85),
+        ])
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]["count"], 2)
+        self.assertIn("10.0.0.1", groups[0]["targets"])
+        self.assertIn("10.0.0.2", groups[0]["targets"])
+
+    def test_display_defaults_to_grouped_top_triage(self):
+        class Synth:
+            def generate_attack_paths(self, _findings):
+                return [
+                    self_path("Credential Reuse on Login Service", host="10.0.0.1", priority=88),
+                    self_path("Credential Reuse on Login Service", host="10.0.0.2", priority=88),
+                    self_path("Parameterized URL - SQLi Triage Candidate", host="10.0.0.3", priority=74),
+                ]
+
+        def self_path(name, host, priority):
+            return self._path(name, host=host, priority=priority)
+
+        args = SimpleNamespace(ai_only=False, verbose=0, max_vulns=10, oscp=False,
+                               show_all=False, top=1, min_likelihood="low")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            paths = _display_results(args, Synth(), [])
+
+        text = out.getvalue()
+        self.assertEqual(len(paths), 3)
+        self.assertIn("TRIAGE ATTACK PATH #1", text)
+        self.assertIn("Grouped hits: 2 underlying path(s)", text)
+        self.assertIn("Use --show-all", text)
+        self.assertIn("additional grouped lead(s) hidden by --top 1", text)
 
 
 class RegexValidationTests(_SynthMixin, unittest.TestCase):
