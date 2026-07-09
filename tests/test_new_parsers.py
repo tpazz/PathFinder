@@ -13,6 +13,7 @@ from parsers.initial_foothold.nikto_parser import parse_nikto_json
 from parsers.initial_foothold.netexec_parser import parse_netexec_output
 from parsers.initial_foothold.nuclei_parser import parse_nuclei_jsonl
 from parsers.initial_foothold.smbmap_parser import parse_smbmap_output
+from parsers.initial_foothold.web_url_helpers import parameterized_url_finding
 from parsers.initial_foothold.wpscan_parser import parse_wpscan_json
 
 
@@ -77,6 +78,12 @@ class NewParserTests(unittest.TestCase):
                 if f["entity_type"] == "web_parameterized_url"}
         self.assertIn("http://10.10.10.10:80/search.php?q=test", urls)
         self.assertIn("http://10.10.10.11:8080/view.php?page=home", urls)
+
+    def test_parameterized_url_helper_uses_https_for_common_alt_tls_ports(self):
+        finding = parameterized_url_finding("10.10.10.10", 8443, "test", "/search.php?q=test")
+
+        self.assertIsNotNone(finding)
+        self.assertEqual(finding["attributes"]["url"], "https://10.10.10.10:8443/search.php?q=test")
 
     def test_nuclei(self):
         lines = [

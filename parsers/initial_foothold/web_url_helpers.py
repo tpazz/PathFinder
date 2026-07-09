@@ -10,7 +10,7 @@ def _absolute_url(host, port, candidate):
         return value
     if not value.startswith("/"):
         value = "/" + value
-    scheme = "https" if port == 443 else "http"
+    scheme = "https" if port in {443, 8443, 9443} else "http"
     return f"{scheme}://{host}:{port}{value}"
 
 

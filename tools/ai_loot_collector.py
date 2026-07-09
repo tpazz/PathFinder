@@ -58,6 +58,19 @@ SECRET_NAME_RE = re.compile(
     re.IGNORECASE,
 )
 
+TOKEN_VALUE_RE = re.compile(
+    r"("
+    r"sk-[A-Za-z0-9_-]{8,}|"
+    r"AKIA[0-9A-Z]{16}|"
+    r"ASIA[0-9A-Z]{16}|"
+    r"gh[pousr]_[A-Za-z0-9_]{20,}|"
+    r"xox[baprs]-[A-Za-z0-9-]{10,}|"
+    r"hf_[A-Za-z0-9]{20,}"
+    r")"
+)
+
+HIGH_ENTROPY_VALUE_RE = re.compile(r"(?<![A-Za-z0-9/+_=.-])([A-Za-z0-9/+_=.-]{40,})(?![A-Za-z0-9/+_=.-])")
+
 VECTOR_PATTERNS = [
     ("qdrant", re.compile(r"\b(QDRANT_URL|QDRANT_HOST|qdrant[_\-.]?(?:url|host)|:6333\b)", re.I)),
     ("chroma", re.compile(r"\b(CHROMA_|chroma[_\-.]?(?:url|host|persist|collection))", re.I)),
@@ -192,6 +205,19 @@ def clean_snippet(line: str) -> str:
     for match in SECRET_NAME_RE.finditer(line):
         key = match.group(1)
         line = line.replace(match.group(0), f"{key}=<redacted>")
+    line = TOKEN_VALUE_RE.sub("<redacted-token>", line)
+
+    def redact_high_entropy(match: re.Match) -> str:
+        value = match.group(1)
+        classes = sum([
+            bool(re.search(r"[a-z]", value)),
+            bool(re.search(r"[A-Z]", value)),
+            bool(re.search(r"\d", value)),
+            bool(re.search(r"[^A-Za-z0-9]", value)),
+        ])
+        return "<redacted-token>" if classes >= 3 else value
+
+    line = HIGH_ENTROPY_VALUE_RE.sub(redact_high_entropy, line)
     return line[:500]
 
 
@@ -270,7 +296,7 @@ def classify_tool_risk(text: str) -> list[str]:
 def inspect_json_structure(path: Path, text: str, out: dict[str, list[dict[str, Any]]]) -> None:
     try:
         data = json.loads(text)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError, ValueError):
         return
     if not isinstance(data, (dict, list)):
         return
@@ -385,6 +411,21 @@ def inspect_text_file(path: Path, text: str, out: dict[str, list[dict[str, Any]]
                 })
 
 
+def dedupe_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped = []
+    seen = set()
+    for record in records:
+        try:
+            key = json.dumps(record, sort_keys=True, default=str)
+        except (TypeError, ValueError):
+            key = repr(sorted(record.items())) if isinstance(record, dict) else repr(record)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(record)
+    return deduped
+
+
 def main() -> int:
     args = parse_args()
     roots = list(args.roots)
@@ -408,23 +449,30 @@ def main() -> int:
     }
 
     files = walk_paths(roots, args.max_files)
+    skipped_errors = 0
     for path in files:
-        category = artifact_category(path)
-        if category:
-            record = {
-                **source_record(path),
-                "category": category,
-                "size": path.stat().st_size if path.exists() else None,
-                **write_state(path),
-            }
-            findings["model_artifacts"].append(record)
+        try:
+            category = artifact_category(path)
+            if category:
+                record = {
+                    **source_record(path),
+                    "category": category,
+                    "size": path.stat().st_size if path.exists() else None,
+                    **write_state(path),
+                }
+                findings["model_artifacts"].append(record)
 
-        if not is_text_candidate(path):
+            if not is_text_candidate(path):
+                continue
+            text = load_text(path, max_bytes)
+            if text is None:
+                continue
+            inspect_text_file(path, text, findings, args.include_secret_values)
+        except Exception:
+            skipped_errors += 1
             continue
-        text = load_text(path, max_bytes)
-        if text is None:
-            continue
-        inspect_text_file(path, text, findings, args.include_secret_values)
+
+    findings = {key: dedupe_records(value) for key, value in findings.items()}
 
     payload = {
         "tool": TOOL_NAME,
@@ -441,6 +489,7 @@ def main() -> int:
         },
         "stats": {
             "files_seen": len(files),
+            "files_skipped_due_to_errors": skipped_errors,
             "findings_by_category": {key: len(value) for key, value in findings.items()},
         },
         "findings": findings,

@@ -57,6 +57,33 @@ class MapperScoringTests(unittest.TestCase):
         scores = self._scores([_f("privilege_escalation", "dcsync_rights_found")])
         self.assertEqual(scores["dcsync_rights_found"], 95)
 
+    def test_github_exploit_finding_name_omits_long_description(self):
+        mapper = VulnerabilityMapper(use_github=True, use_searchsploit=False, github_cache_file=None)
+        mapper._search_github_for_exploits = lambda _product, _version: [{
+            "repo_name": "S1ckB0y1337/Active-Directory-Exploitation-Cheat-Sheet",
+            "url": "https://github.com/S1ckB0y1337/Active-Directory-Exploitation-Cheat-Sheet",
+            "description": "A cheat sheet that contains common enumeration and attack methods for Windows Active Directory.",
+            "stars": 100,
+            "search_term_used": "ldap exploit",
+            "relevance_score": 60,
+            "relevance_reasons": ["matched product tokens"],
+        }]
+
+        findings = mapper.map_and_prioritize([{
+            "host": "h",
+            "port": 389,
+            "source_tool": "nmap",
+            "entity_type": "software_product",
+            "name": "Microsoft Windows Active Directory LDAP",
+            "version": "10.0",
+            "attributes": {"search_name": "ldap"},
+        }])
+        gh = next(f for f in findings if f.get("source_tool") == "github_exploit_mapper")
+
+        self.assertEqual(gh["name"], "GitHub Exploit: S1ckB0y1337/Active-Directory-Exploitation-Cheat-Sheet")
+        self.assertEqual(gh["attributes"]["repo_name"], "S1ckB0y1337/Active-Directory-Exploitation-Cheat-Sheet")
+        self.assertIn("common enumeration", gh["attributes"]["description"])
+
 
 if __name__ == "__main__":
     unittest.main()

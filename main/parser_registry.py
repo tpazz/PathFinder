@@ -70,7 +70,7 @@ PARSER_SPECS = [
     ParserSpec("llm_enum_json", "--llm-enum-json", "Path to one-shot-enum LLM/AI enumeration JSON.",
                False, lambda p, ctx: parse_llm_enum_json(p)),
     ParserSpec("ai_loot_json", "--ai-loot-json", "Path to PathFinder AI post-exploitation loot collector JSON.",
-               False, lambda p, ctx: parse_ai_loot_json(p)),
+               False, lambda p, ctx: parse_ai_loot_json(p, ctx.target_host)),
     ParserSpec("enum4linux_json", "--enum4linux-json", "Path to enum4linux-ng JSON output file.",
                True, lambda p, ctx: parse_enum4linux_json(p, ctx.target_host)),
     ParserSpec("smbmap_txt", "--smbmap-txt", "Path to smbmap text output file.",
