@@ -7,7 +7,7 @@ from pathlib import Path
 
 from main.attack_path_synthesizer import AttackPathSynthesizer
 from main.finding_schema import validate_findings
-from main.pathfinder import _sniff_file_type
+from main.pathfinder import _sniff_file_type, generate_ai_brief
 from parsers.post_exploitation.ai_loot_parser import parse_ai_loot_json
 
 
@@ -100,6 +100,60 @@ class AiLootCollectorTests(unittest.TestCase):
         self.addCleanup(lambda: Path(path).unlink(missing_ok=True))
 
         self.assertEqual(_sniff_file_type(path), "ai_loot_json")
+
+    def test_ai_brief_includes_collector_only_loot(self):
+        findings = [
+            {
+                "host": "app01",
+                "port": None,
+                "source_tool": "ai-loot-collector",
+                "entity_type": "ai_post_exploitation",
+                "name": "ai_secret_reference",
+                "version": None,
+                "attributes": {
+                    "score": 88,
+                    "count": 2,
+                    "secret_names": ["OPENAI_API_KEY", "AWS_ENDPOINT_URL"],
+                    "samples": ["app/.env"],
+                },
+            },
+            {
+                "host": "app01",
+                "port": None,
+                "source_tool": "ai-loot-collector",
+                "entity_type": "ai_post_exploitation",
+                "name": "unsafe_model_loader_found",
+                "version": None,
+                "attributes": {
+                    "score": 90,
+                    "signals": ["torch.load"],
+                    "samples": ["app/loader.py"],
+                },
+            },
+        ]
+        paths = [
+            {
+                "name": "AI Loot - Unsafe Model Loader Found",
+                "priority": 90,
+                "effective_priority": 90,
+                "host": "app01",
+                "suggestion": {
+                    "description": "Unsafe loader found.",
+                    "commands": ["Review loader samples."],
+                    "references": [],
+                },
+                "atlas": ["AML.T0010 ML Supply Chain Compromise"],
+                "evidence": [],
+            }
+        ]
+
+        brief = generate_ai_brief(findings, paths)
+        self.assertIn("## AI Post-Exploitation Loot", brief)
+        self.assertIn("Secrets / tokens", brief)
+        self.assertIn("OPENAI_API_KEY", brief)
+        self.assertIn("Unsafe model loaders", brief)
+        self.assertIn("torch.load", brief)
+        self.assertIn("AI Loot - Unsafe Model Loader Found", brief)
 
 
 if __name__ == "__main__":

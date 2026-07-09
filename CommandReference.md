@@ -242,6 +242,9 @@ python3 -m main.pathfinder scan loot/
 
 Secret values are redacted by default. Use `--include-secret-values` only when
 you intentionally need raw values preserved in the collector output.
+`--ai-brief FILE` includes collector evidence in an **AI Post-Exploitation
+Loot** section and carries AI Loot attack paths into the prioritized AI path
+summary.
 
 #### 5. enum4linux-ng
 
