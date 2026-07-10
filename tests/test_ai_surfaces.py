@@ -1,10 +1,7 @@
-import io
 import json
 import tempfile
 import unittest
-from contextlib import redirect_stdout
 from pathlib import Path
-from types import SimpleNamespace
 
 from main.attack_path_synthesizer import AttackPathSynthesizer
 from main.finding_schema import validate_findings
@@ -355,56 +352,6 @@ class InjectionExampleTests(unittest.TestCase):
         p = next(x for x in self._paths("agent-mcp") if "Agent/MCP" in x["name"])
         joined = " ".join(p["suggestion"]["injection_examples"]).lower()
         self.assertIn("tool call", joined)
-
-
-class AiBriefTests(unittest.TestCase):
-    def test_brief_has_sections_and_atlas(self):
-        from main.pathfinder import generate_ai_brief
-        synth = AttackPathSynthesizer(rules_file_path=RULES_FILE)
-        findings = [
-            {"host": "10.0.0.20", "port": 6333, "entity_type": "ai_service", "name": "vector-store-open", "version": None,
-             "attributes": {"score": 92, "label": "Unauthenticated Qdrant", "base_url": "http://10.0.0.20:6333",
-                            "vector_store_engine": "Qdrant", "vector_store_url": "http://10.0.0.20:6333/collections",
-                            "vector_store_collections": ["runbook_corpus"], "vector_store_collection_count": 1}},
-        ]
-        paths = synth.generate_attack_paths(findings)
-        brief = generate_ai_brief(findings, paths)
-        self.assertIn("# AI Attack Intelligence Brief", brief)
-        self.assertIn("## Crown Jewels", brief)
-        self.assertIn("## Trust Boundaries", brief)
-        self.assertIn("AML.T", brief)
-
-    def test_brief_empty_without_ai_findings(self):
-        from main.pathfinder import generate_ai_brief
-        self.assertEqual(generate_ai_brief([{"entity_type": "software_product", "name": "x"}], []), "")
-
-
-class AiOnlyDisplayTests(unittest.TestCase):
-    def test_ai_only_display_hides_non_ai_paths_and_findings(self):
-        from main.pathfinder import _display_results
-
-        synth = AttackPathSynthesizer(rules_file_path=RULES_FILE)
-        findings = [
-            {"host": "10.0.0.20", "port": 8000, "source_tool": "one-shot-enum-llm",
-             "entity_type": "ai_service", "name": "openai-compatible", "version": None,
-             "attributes": {"score": 90, "base_url": "http://10.0.0.20:8000/v1"}},
-            {"host": "10.0.0.10", "port": 80, "source_tool": "sqlmap",
-             "entity_type": "vulnerability", "name": "sql_injection_found", "version": None,
-             "attributes": {"score": 95, "url": "http://10.0.0.10/item.php?id=1", "parameter": "id"}},
-        ]
-        args = SimpleNamespace(ai_only=True, verbose=0, max_vulns=10, oscp=False)
-
-        out = io.StringIO()
-        with redirect_stdout(out):
-            paths = _display_results(args, synth, findings)
-
-        text = out.getvalue()
-        self.assertTrue(any("SQL Injection" in p["name"] for p in paths))
-        self.assertIn("AI-only display", text)
-        self.assertIn("Exposed LLM API", text)
-        self.assertIn("openai-compatible", text)
-        self.assertNotIn("SQL Injection", text)
-        self.assertNotIn("sql_injection_found", text)
 
 
 if __name__ == "__main__":

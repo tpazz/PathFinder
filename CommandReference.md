@@ -95,7 +95,7 @@ loot/
 python3 -m main.pathfinder scan loot/     # no --target-host needed; hosts come from the dirs
 ```
 
-`one-shot-enum --suggest`/`--run` produces exactly this layout automatically
+`one-shot-enum --pathfinder-suggest`/`--pathfinder` produces exactly this layout automatically
 (including each host's `nmap.xml`), so the two tools line up end to end.
 
 ---
@@ -212,7 +212,7 @@ poisoning, artifact-consumer compromise, unauthenticated inference, schema
 recovery, and cross-surface RAG/tool chains).
 
 ```bash
-# produced automatically by:  one-shot-enum <target> --ai-paths --run
+# produced automatically by:  one-shot-enum <target> --pathfinder
 python3 -m main.pathfinder --llm-enum-json loot/10.10.10.10/llm_enum_11434.json
 # (or just drop the loot dir in front of `scan` - it is auto-detected)
 ```
@@ -242,9 +242,6 @@ python3 -m main.pathfinder scan loot/
 
 Secret values are redacted by default. Use `--include-secret-values` only when
 you intentionally need raw values preserved in the collector output.
-`--ai-brief FILE` includes collector evidence in an **AI Post-Exploitation
-Loot** section and carries AI Loot attack paths into the prioritized AI path
-summary.
 
 #### 5. enum4linux-ng
 

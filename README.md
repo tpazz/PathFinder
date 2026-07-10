@@ -1,100 +1,93 @@
 # PathFinder
 
-**Intelligent Reconnaissance Analysis and Attack Path Suggestion for Pentesters.**
+PathFinder turns recon loot into prioritised attack paths. Drop tool output into
+a folder, run `scan`, and it parses the files, maps versions to public exploit
+signals, correlates findings across hosts, and prints the most useful next steps
+first.
 
-## Overview
+It is built for authorised labs, CTFs, and pentest workflows where you want fast
+triage without losing the underlying evidence.
 
-PathFinder is a command-line tool designed to act as an intelligent assistant during the reconnaissance and exploitation phases of penetration testing. It helps answer the critical question: **"What am I missing here...?"**
-
-Instead of manually correlating findings from various scanning tools (like Nmap, Gobuster, LinPEAS), PathFinder parses their output, applies a ruleset based on common offensive security patterns and known vulnerabilities, and synthesises potential attack paths. It prioritises findings based on exploitability and impact, helping testers focus their efforts - especially in time-constrained scenarios like CTFs or OSCP-style exams.
-
-## The Problem
-
-Manual analysis of scan data is time-consuming and prone to human error. Key connections between disparate findings might be missed:
-- A specific service version vulnerable to a known exploit
-- Default credentials working on an overlooked service
-- A file upload capability + writable web root = webshell opportunity
-- An AS-REP roastable user discovered via SharpHound, with a hash captured by GetNPUsers
-- SUID binaries or sudo misconfigurations surfaced by LinPEAS
-
-## The Solution
-
-PathFinder aims to:
-- **Automate Analysis:** Ingest data from common recon tools
-- **Correlate Findings:** Link service versions, open ports, discovered paths, credentials, and privilege escalation vectors
-- **Suggest Attack Paths:** Move beyond simple vulnerability listing to suggest multi-step attack chains based on combined evidence
-- **Prioritise:** Use a heuristic scoring system to highlight the most promising leads
-- **Provide Context:** Explain *why* a suggestion is being made, with suggested commands and HackTricks references
-- **Integrate:** Suggest relevant Metasploit modules, `searchsploit` queries, and public GitHub exploits
-
-## Key Features
-
-- **Auto-Detect Scan Mode:** Drop all tool outputs into a folder and run `pathfinder scan ./loot/`. PathFinder identifies file types by content and runs the right parser automatically - no need to remember the flag names under exam pressure.
-- **Multi-Input Parsing:** Ingests and normalises data from Nmap, Gobuster, ffuf, Nikto, WhatWeb, nuclei, wpscan, enum4linux-ng, smbmap, NetExec/CrackMapExec, SNMP, NFS/showmount, Redis, rsync, SMTP user enumeration, SQLMap, LinPEAS, WinPEAS, SharpHound, ldapdomaindump, Kerbrute, impacket-GetNPUsers, impacket-GetUserSPNs, impacket-secretsdump, john/hashcat `.pot` files, certipy, and the PathFinder AI loot collector.
-- **Vulnerability & Exploit Mapping:** Correlates identified services and versions with known CVEs and public exploits via Exploit-DB (`searchsploit`) and GitHub.
-- **Attack Path Synthesis:** A 97-rule engine covering initial foothold, credential reuse, password-candidate spraying/default-account checks, pass-the-hash, web attacks, Redis/rsync/SMTP enum leads, Linux/Windows privilege escalation, Active Directory attack paths (Kerberoasting, AS-REP roasting, DCSync, ACL abuse, delegation, AD CS/ESC), and **AI/LLM attack surfaces** (prompt injection, agent/MCP tool abuse, RAG poisoning, exposed inference APIs, MLflow/Jupyter RCE, LangServe, model-serving, workflow-builder, custom tool-enabled agents, A2A/multi-agent rogue registration & workflow abuse, LLM-to-SQL query-to-RCE, unauthenticated vector-store extraction, exposed object stores, artifact-write-to-RCE chains, confirmed-MCP-tool abuse, AI post-exploitation loot, and cross-surface RAG/tool chains) mapped to the OWASP LLM Top 10 and tagged with **MITRE ATLAS** technique IDs.
-- **Triage-First Output:** Attack paths are still fully generated, but the default display groups repeated rule hits across hosts and shows the top leads first. Use `--show-all` for the exhaustive path list, `--top N` to tune the grouped view, and `--min-likelihood medium|high` to hide lower-confidence validation leads from the terminal output.
-- **AI/LLM Target Analysis:** Ingests one-shot-enum's AI-surface enumeration (OpenAI-compatible APIs, Ollama, vLLM/TGI, LangServe, agent/MCP, RAG stores, MinIO/S3-compatible object stores, MLflow, model servers, notebooks, workflow builders, image generation, and more) as `ai_service` findings and synthesises attack paths for them. Also consumes the inferred **agent profile** - role, architecture (single-agent / multi-agent / A2A / MCP tool-server / vector-store / RAG), capabilities, and orchestration framework - plus, when one-shot-enum's active/vector checks ran, **confirmed MCP tool inventories** and **unauthenticated vector-store collections**. Object-store findings are correlated with MLflow and model-serving surfaces to highlight artifact-write-to-RCE supply-chain paths. Even custom agents that match no known framework get an archetype-specific attack path (e.g. a multi-agent/A2A system gets a rogue-registration & workflow-abuse path; an NL-to-SQL agent gets a query-to-database-RCE path), and the injection-relevant rules ship **copy-pasteable prompt-injection examples** (system-prompt leak, tool-call coercion, argument smuggling, RAG poisoning, workflow-gate bypass, SSTI) tuned to each surface. `--ai-brief FILE` writes a markdown attack-intelligence brief covering live AI surfaces, collector-driven post-exploitation loot, crown jewels, trust boundaries, and ATLAS-tagged paths. Useful for AI-focused engagements and AI pentest study.
-- **AI Post-Exploitation Loot:** `tools/ai_loot_collector.py` is a read-only, cross-platform collector you can run after a foothold. It gathers AI-specific local evidence - redacted provider/vector/MLflow/object-store/notebook secrets, RAG/vector config, MCP/agent tool manifests, prompt templates, model artifacts, and unsafe loader signals - into `ai_loot.json`, which PathFinder consumes with `--ai-loot-json` or scan-mode autodetection and includes in `--ai-brief` output.
-- **Iterative Workflow:** Save findings to JSON after initial recon, reload and append later stages (post-exploitation, AD enumeration) without re-running parsers.
-- **Interactive Credential Management:** Add found credentials, usernames, or password candidates with `--add-cred`. Confirmed username+secret pairs are weaponised against login services; password-only candidates stay lower-confidence and only combine with enumerated users or common-default account contexts for manual, lockout-aware checks.
-- **User-Trainable Intelligence:** Teach PathFinder new attack patterns with `--learn`.
-- **Tool Output Compatibility:** Handles multiple output format variants, ANSI colour codes, timestamped entries, and version differences across all supported tools. Colour output is TTY-aware (auto-disabled when piped) and can be forced off with `--no-color`.
-- **OSCP Exam Profile:** `--oscp` strips prohibited-tool commands (sqlmap, nuclei) from suggested attack paths - keeping the lead but replacing the command with a manual-exploitation note - flags Metasploit's one-target limit, and warns if a prohibited tool's output was ingested. `one-shot-enum --run --oscp` propagates the profile through the whole pipeline. (Always verify against the current PEN-200 exam guide; exam rules change.)
-- **Multi-Host Engagements:** Scan mode ingests an entire engagement at once. Put each host's output in a `loot/<host>/` subdirectory and PathFinder attributes every finding to the right host and correlates across them - so a credential captured on one box is automatically sprayed against services on every other host. A flat single-host loot directory still works unchanged.
-
----
-
-## Example Workflow
-
-### Scan Mode (Quick Start)
+## Quick Start
 
 ```bash
-# Save all tool outputs to a loot directory as you enumerate
-nmap -sV -sC -A -oX loot/nmap.xml 192.168.56.10
-gobuster dir -u http://192.168.56.10 -w /usr/share/seclists/Discovery/Web-Content/raft-medium-directories.txt -o loot/gobuster.txt
-nikto -h http://192.168.56.10 -o loot/nikto.json -Format json
-./linpeas.sh | tee loot/linpeas.txt    # on the target, transfer back
-
-# Point PathFinder at the loot directory - target IP inferred from nmap
-python3 -m main.pathfinder scan loot/ -o findings.json -v
-```
-
-For noisy multi-host scans, the terminal output defaults to a grouped triage
-view equivalent to `--top 20 --min-likelihood low`. Nothing is discarded: saved
-findings and internally generated paths remain complete, while the display
-favours the most actionable leads.
-
-```bash
+python3 -m main.pathfinder scan loot/ -o findings.json
 python3 -m main.pathfinder scan loot/ --top 10
 python3 -m main.pathfinder scan loot/ --min-likelihood medium
 python3 -m main.pathfinder scan loot/ --show-all
 ```
 
-### AI Post-Exploitation Collector
+For one-shot-enum users:
 
-After an authorized foothold on a host running AI/RAG/model services, run the
-read-only collector from the target-side project/app directory:
+```bash
+python one-shot-enum.py 10.10.10.10 --pathfinder
+```
+
+PathFinder understands per-host loot folders automatically:
+
+```text
+loot/
+  10.10.10.10/
+    nmap.xml
+    ffuf_80.json
+    nikto_80.json
+  10.10.10.20/
+    nmap.xml
+    enum4linux_10.10.10.20.json
+```
+
+## What It Parses
+
+PathFinder supports Nmap, Gobuster, ffuf, Nikto, WhatWeb, nuclei, WPScan,
+enum4linux-ng, smbmap, NetExec/CrackMapExec, SNMP, NFS/showmount, Redis, rsync,
+SMTP user enum, SQLMap logs, LinPEAS, WinPEAS, SharpHound, ldapdomaindump,
+Kerbrute, GetNPUsers, GetUserSPNs, secretsdump, john/hashcat `.pot` files,
+certipy, one-shot-enum AI surface JSON, and the AI loot collector JSON.
+
+## Core Features
+
+- Auto-detects loot files in `scan` mode.
+- Synthesises attack paths from a 97-rule engine.
+- Groups repeated findings by default so multi-host output stays readable.
+- Correlates credentials, usernames, hashes, shares, web paths, AD findings, and
+  AI/LLM surfaces across hosts.
+- Maps software/version findings to Searchsploit and GitHub exploit leads.
+- Supports an OSCP profile with `--oscp` for manual-safe suggestions around
+  restricted tools.
+- Saves/reloads findings with `-o findings.json` and `-i findings.json`.
+
+## Useful Flags
+
+- `--top N`: show the top grouped leads (`20` by default, `0` for all).
+- `--min-likelihood low|medium|high`: hide lower-confidence leads.
+- `--show-all`: print every generated attack path instead of grouped triage.
+- `--max-vulns N`: cap public exploit findings displayed (`10` by default).
+- `--offline`: disable GitHub and Searchsploit enrichment.
+- `--skip-github` / `--skip-searchsploit`: disable one enrichment source.
+- `--target-host HOST`: provide host context for flat loot folders.
+- `--oscp`: strip restricted-tool commands from suggestions and flag exam caveats.
+- `--no-color`: disable ANSI colour output.
+
+## AI Loot Collector
+
+After an authorised foothold on an AI/RAG/model host, run:
 
 ```bash
 python3 tools/ai_loot_collector.py . -o ai_loot.json
 ```
 
-Transfer `ai_loot.json` back to your attack host and either drop it into the
-host's loot directory for scan mode or pass it directly:
+Move `ai_loot.json` into the host loot folder or pass it directly:
 
 ```bash
 python3 -m main.pathfinder --ai-loot-json ai_loot.json -o findings.json
 python3 -m main.pathfinder scan loot/
 ```
 
-Secret values are redacted by default; the JSON records names, source paths,
-short hashes, and samples so PathFinder can suggest post-exploitation AI attack
-paths without turning the collector into an exploitation tool.
+The collector is read-only and redacts secret values by default.
 
-**Output:**
+## Output Example
 
-```
+```text
 __________         __  .__    ___________.__            .___
 \______   \_____ _/  |_|  |__ \_   _____/|__| ____    __| _/___________
  |     ___/\__  \\   __\  |  \ |    __)  |  |/    \  / __ |/ __ \_  __ \
@@ -102,256 +95,85 @@ __________         __  .__    ___________.__            .___
  |____|    (____  /__| |___|  /\___  /   |__|___|  /\____ |\___  >__|
                 \/          \/     \/            \/      \/    \/
 
-  >> [Intelligent Reconnaissance Analysis for Pentesters] <<
-           >> [By tpazz - Green Lemon Company] <<
-
-[*] Scanning loot directory: /home/kali/labs/pg-practice/loot
+[*] Scanning loot directory: /home/kali/labs/loot
 
 [*] Detected 4 parseable source(s):
     [+] nmap_xml                  -> nmap.xml
-    [+] gobuster_txt              -> gobuster.txt
-    [+] nikto_json                -> nikto.json
+    [+] ffuf_json                 -> ffuf_80.json
+    [+] nikto_json                -> nikto_80.json
     [+] linpeas_txt               -> linpeas.txt
 
 [*] Target host inferred from Nmap XML: 192.168.56.10
 
 [*] Parsing detected files...
     [+] nmap_xml                  -> 6 findings  (nmap.xml) [192.168.56.10]
-    [+] gobuster_txt              -> 9 findings  (gobuster.txt) [192.168.56.10]
-    [+] nikto_json                -> 4 findings  (nikto.json) [192.168.56.10]
+    [+] ffuf_json                 -> 9 findings  (ffuf_80.json) [192.168.56.10]
+    [+] nikto_json                -> 4 findings  (nikto_80.json) [192.168.56.10]
     [+] linpeas_txt               -> 7 findings  (linpeas.txt) [192.168.56.10]
 
 [*] Running Vulnerability Mapper...
     [+] Mapper prioritized 34 findings.
 
-[*] Saving prioritized findings to: findings.json
-    [+] Successfully saved 34 findings.
-
 [*] Running Attack Path Synthesizer...
 
---- Pathfinder has identified 6 potential attack path(s)! ---
+------------------------------------------------------------
+PathFinder identified 6 potential attack path(s)
+------------------------------------------------------------
+[*] Triage view: showing 6 grouped lead(s) from 6 path(s). Use --show-all for the exhaustive list.
 
 ================================================================================
-ATTACK PATH #1
-Name:       Linux SUID Binary - Privilege Escalation  [Priority: 95]
-Target:     192.168.56.10
+TRIAGE ATTACK PATH #1
+[Top Priority: 95]
+Name:         Linux SUID Binary - Privilege Escalation
+Likelihood:   High-signal next steps
+Targets:      192.168.56.10
+Grouped hits: 1 underlying path(s)
 ================================================================================
 
   [+] Description:
-      A SUID binary was found on 192.168.56.10: /usr/bin/find (suid binary, owner: root).
+      A SUID binary was found on 192.168.56.10: /usr/bin/find.
       This binary may be abusable to escalate privileges to root.
 
   [+] Suggested Commands:
       - Check GTFOBins for exploitation technique: https://gtfobins.github.io/
       - find . -exec /bin/sh -p \; -quit
-      - find / -name . -exec /bin/sh -p \; -quit
-
-  [+] References:
-      - https://gtfobins.github.io/gtfobins/find/
-      - https://book.hacktricks.wiki/en/linux-hardening/privilege-escalation/index.html#suid-sgid
-
-================================================================================
-ATTACK PATH #2
-Name:       Sudo Misconfiguration - Abusable Command  [Priority: 92]
-Target:     192.168.56.10
-================================================================================
-
-  [+] Description:
-      sudo -l reveals an abusable command on 192.168.56.10:
-      (ALL) NOPASSWD: /usr/bin/vim
-      This may allow privilege escalation without knowing the root password.
-
-  [+] Suggested Commands:
-      - sudo /usr/bin/vim -c ':!/bin/bash'
-      - sudo /usr/bin/vim -c ':py3 import os; os.execl("/bin/bash","bash","-p")'
-      - Check GTFOBins: https://gtfobins.github.io/gtfobins/vim/#sudo
-
-  [+] References:
-      - https://gtfobins.github.io/gtfobins/vim/#sudo
-      - https://book.hacktricks.wiki/en/linux-hardening/privilege-escalation/index.html#sudo
-
-================================================================================
-ATTACK PATH #3
-Name:       Backup / Archive File Found  [Priority: 85]
-Target:     192.168.56.10
-================================================================================
-
-  [+] Description:
-      A backup or archive file was discovered at http://192.168.56.10:80/backup.zip.
-      These often contain source code, configuration files, or credentials.
-
-  [+] Suggested Commands:
-      - wget http://192.168.56.10:80/backup.zip
-      - unzip backup.zip -d backup_extracted/
-      - grep -rEi 'password|passwd|secret|db_pass|api_key' backup_extracted/
-
-  [+] References:
-      - https://book.hacktricks.wiki/en/network-services-pentesting/pentesting-web/index.html#backup-files
-
-================================================================================
-ATTACK PATH #4
-Name:       File Upload Endpoint - Potential Webshell  [Priority: 82]
-Target:     192.168.56.10
-================================================================================
-
-  [+] Description:
-      A file upload endpoint was discovered at http://192.168.56.10:80/uploads.
-      If validation is weak, uploading a PHP webshell may grant remote code execution.
-
-  [+] Suggested Commands:
-      - curl -F "file=@shell.php" http://192.168.56.10:80/uploads
-      - Upload shell.php then browse to: http://192.168.56.10/uploads/shell.php?cmd=id
-      - Try extension bypasses: .php5, .phtml, .php.jpg, .pHp
-
-  [+] References:
-      - https://book.hacktricks.wiki/en/pentesting-web/file-upload/index.html
-
-================================================================================
-ATTACK PATH #5
-Name:       Nikto - Dangerous HTTP Methods Enabled  [Priority: 75]
-Target:     192.168.56.10
-================================================================================
-
-  [+] Description:
-      Nikto identified that dangerous HTTP methods (PUT, DELETE) are enabled on
-      192.168.56.10. PUT may allow direct file upload to the web root.
-
-  [+] Suggested Commands:
-      - curl -X PUT http://192.168.56.10/shell.php -d '<?php system($_GET["cmd"]); ?>'
-      - curl -X OPTIONS http://192.168.56.10/ -v
-
-  [+] References:
-      - https://book.hacktricks.wiki/en/network-services-pentesting/pentesting-web/index.html#http-methods
-
-================================================================================
-ATTACK PATH #6
-Name:       Directory Listing / Indexing Enabled  [Priority: 60]
-Target:     192.168.56.10
-================================================================================
-
-  [+] Description:
-      Directory indexing is enabled at http://192.168.56.10:80/. Browsing exposed
-      directories may reveal source files, credentials, or sensitive data.
-
-  [+] Suggested Commands:
-      - Browse to http://192.168.56.10/ and enumerate directories manually
-      - wget -r --no-parent http://192.168.56.10/exposed-dir/
-
-  [+] References:
-      - https://book.hacktricks.wiki/en/network-services-pentesting/pentesting-web/index.html#directory-listing
 
 ================================================================================
 
---- Total Findings: 20 (Public Exploits limited to --max-vulns, total discovered: 12):
+------------------------------------------------------------
+Total Findings: 20 (Public Exploits limited to --max-vulns, total discovered: 12)
+------------------------------------------------------------
 
-[1] [Score: 95] suid_binary_found (privilege_escalation)
-    Host: 192.168.56.10, Port: None
+[001] [Score: 95] (privilege_escalation) suid_binary_found
+      Host: 192.168.56.10   Port: None
 
-[2] [Score: 92] sudo_misconfiguration (privilege_escalation)
-    Host: 192.168.56.10, Port: None
+[002] [Score: 85] (web_content) /backup.zip
+      Host: 192.168.56.10   Port: 80
 
-[3] [Score: 85] /backup.zip (web_content)
-    Host: 192.168.56.10, Port: 80
-
-[4] [Score: 82] /uploads (web_content)
-    Host: 192.168.56.10, Port: 80
-
-[5] [Score: 80] EDB-ID #50383 - Apache HTTP Server 2.4.49 - Path Traversal and RCE (vulnerability)
-    Host: 192.168.56.10, Port: 80
-
-[6] [Score: 75] dangerous_http_methods_enabled (misconfiguration)
-    Host: 192.168.56.10, Port: 80
-
-[7] [Score: 70] /admin (web_content)
-    Host: 192.168.56.10, Port: 80
-
-[8] [Score: 60] directory_indexing_enabled (misconfiguration)
-    Host: 192.168.56.10, Port: 80
-
-[9] [Score: 40] Apache httpd 2.4.49 (software_product)
-    Host: 192.168.56.10, Port: 80
-
-[10] [Score: 40] OpenSSH 7.6p1 Ubuntu (software_product)
-    Host: 192.168.56.10, Port: 22
-
-[11] [Score: 10] http (service)
-    Host: 192.168.56.10, Port: 80
-
-[12] [Score: 10] ssh (service)
-    Host: 192.168.56.10, Port: 22
+[003] [Score: 80] (vulnerability) Apache HTTP Server 2.4.49 Path Traversal and RCE
+      Host: 192.168.56.10   Port: 80
+      URL: https://www.exploit-db.com/exploits/50383
 ```
 
----
-
-### Iterative Workflow - Adding Post-Exploitation Data
-
-```bash
-# You got a shell and ran WinPEAS. Add it to existing findings.
-python3 -m main.pathfinder -i findings.json \
-  --winpeas-txt winpeas.txt --target-host 192.168.56.10 \
-  -o findings.json
-
-# PathFinder will now surface Windows-specific attack paths:
-# -> SeImpersonatePrivilege - Potato Attack to SYSTEM   [Priority: 97]
-# -> AlwaysInstallElevated - MSI Shell as SYSTEM        [Priority: 93]
-# -> Unquoted Service Path - Binary Hijacking           [Priority: 88]
-```
-
-### Active Directory Scenario
-
-```bash
-# After domain enumeration
-python3 -m main.pathfinder scan loot/ --target-host corp.local
-
-# Example attack paths synthesised:
-# -> Kerberoasting - Request and Crack Service Ticket   [Priority: 90]
-# -> AS-REP Roasting - Crack Captured Hash              [Priority: 88]
-# -> DCSync Rights Found - Dump Domain Hashes           [Priority: 99]
-# -> Unconstrained Delegation - Coerce and Capture TGT  [Priority: 92]
-# -> Password Spray with Discovered Users               [Priority: 75]
-```
-
----
-
-## Installation
+## Install
 
 ```bash
 git clone https://github.com/tpazz/PathFinder.git
 cd PathFinder
-pip install -r requirements.txt
+python3 -m pip install -r requirements.txt
 ```
 
-**Optional enrichment dependencies:**
-- `searchsploit` (part of `exploitdb`) - for offline CVE/exploit lookups
-- GitHub Personal Access Token - set `GITHUB_TOKEN` env variable for higher API rate limits
+Optional enrichment:
 
-**Local runtime files:**
-- `main/credentials.json` is created locally when you use `--add-cred`.
-- `main/github_cache.json` is created locally when GitHub exploit enrichment runs.
-- Both files are intentionally gitignored and should not be committed.
+```bash
+sudo apt install exploitdb
+export GITHUB_TOKEN=...
+```
 
----
+Local files such as `main/credentials.json` and `main/github_cache.json` are
+created as needed and are gitignored.
 
-## Supported Tools
+## Ethics
 
-| Category | Tool | Output Format |
-|---|---|---|
-| Network Scanning | Nmap | XML (`-oX`) |
-| Web Enumeration | Gobuster | Text (`-o`) |
-| Web Scanning | Nikto | JSON (`-Format json`) |
-| Web Fingerprinting | WhatWeb | JSON (`--log-json`) |
-| SMB Enumeration | enum4linux-ng | JSON (`-oJ`) |
-| SNMP Enumeration | snmp-check | Text (`>` redirect) |
-| SQL Injection | SQLMap | Log file (`output/host/log`) |
-| Linux PrivEsc | LinPEAS | Text (`tee` or `>`) |
-| Windows PrivEsc | WinPEAS | Text (`>` or `Out-File`) |
-| AD Enumeration | SharpHound | Directory of JSON files |
-| AD Enumeration | ldapdomaindump | Directory of TSV files |
-| AD User Enum | Kerbrute | Text (`-o`) |
-| AD Hash Capture | impacket-GetNPUsers | Text (`-outputfile`) |
-
----
-
-## Ethical Disclaimer
-
-This tool is intended for educational purposes and authorised security testing only. Using this tool to attempt unauthorised access to any system is illegal and unethical. Always obtain explicit written permission before using this tool on any system you do not own. The developers assume no liability and are not responsible for any misuse or damage caused by this program.
+Use PathFinder only on systems you own or have explicit written permission to
+test. You are responsible for how you use the output.

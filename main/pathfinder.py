@@ -898,19 +898,14 @@ def _display_results(args, synthesizer, prioritized_findings):
     """Runs the synthesizer and prints attack paths + findings list."""
     print(f"\n{C.BOLD}{C.CYAN}[*] Running Attack Path Synthesizer...{C.END}")
     suggested_paths = synthesizer.generate_attack_paths(prioritized_findings)
-    ai_only = getattr(args, 'ai_only', False)
-    display_paths = [p for p in suggested_paths if _is_ai_related_path(p)] if ai_only else suggested_paths
-    display_findings = [f for f in prioritized_findings if _is_ai_related_finding(f)] if ai_only else prioritized_findings
+    display_paths = suggested_paths
+    display_findings = prioritized_findings
     min_likelihood = getattr(args, 'min_likelihood', 'low')
     display_paths = [p for p in display_paths if _passes_min_likelihood(p, min_likelihood)]
 
-    if ai_only:
-        print(f"\n{C.BOLD}{C.CYAN}[*] AI-only display: showing AI-related attack paths and findings only.{C.END}")
-
     if display_paths:
-        path_label = "AI-related potential attack path(s)" if ai_only else "potential attack path(s)"
         print(f"\n{_rule_line('-', C.YELLOW)}")
-        print(f"{C.BOLD}{C.YELLOW}PathFinder identified {len(display_paths)} {path_label}{C.END}")
+        print(f"{C.BOLD}{C.YELLOW}PathFinder identified {len(display_paths)} potential attack path(s){C.END}")
         print(_rule_line('-', C.YELLOW))
         if getattr(args, 'show_all', False):
             for i, path in enumerate(display_paths, start=1):
@@ -929,15 +924,13 @@ def _display_results(args, synthesizer, prioritized_findings):
                 print(f"\n{C.BOLD}{C.YELLOW}[!] {len(groups) - len(shown_groups)} additional grouped lead(s) hidden by --top {top}.{C.END}")
         print("\n" + _rule_line())
     else:
-        path_scope = "AI-related " if ai_only else ""
-        print(f"\n{C.BOLD}{C.YELLOW}[!] No specific {path_scope}attack paths were synthesized from the findings.{C.END}")
+        print(f"\n{C.BOLD}{C.YELLOW}[!] No specific attack paths were synthesized from the findings.{C.END}")
 
     total_exploit_count = sum(1 for f in display_findings if f.get("source_tool") in ["searchsploit_mapper", "github_exploit_mapper"])
     filtered_list = filter_prioritized_findings(display_findings, args.max_vulns)
 
-    finding_label = "AI Findings" if ai_only else "Total Findings"
     print(f"\n{_rule_line('-', C.YELLOW)}")
-    print(f"{C.BOLD}{C.YELLOW}{finding_label}: {len(filtered_list)}{C.END} "
+    print(f"{C.BOLD}{C.YELLOW}Total Findings: {len(filtered_list)}{C.END} "
           f"{C.YELLOW}(Public Exploits limited to --max-vulns, total discovered: {total_exploit_count}){C.END}")
     print(_rule_line('-', C.YELLOW))
 
@@ -961,200 +954,6 @@ def _display_results(args, synthesizer, prioritized_findings):
 
 
 # ── AI attack-intelligence brief ────────────────────────────────────────────────
-
-# Maps an ai_service finding name to (crown-jewel asset, why it matters). Used to
-# build the brief's crown-jewel table from whatever AI surfaces were actually found.
-_AI_CROWN_JEWELS = {
-    "vector-store-open": ("Knowledge-base corpus", "Readable source chunks - commonly leak credentials, hostnames, runbooks, and topology"),
-    "rag-vector": ("Vector store / RAG corpus", "Retrieval context the model trusts; extraction and poisoning target"),
-    "mcp-tools-confirmed": ("MCP tool capabilities", "Confirmed tools with real backend permissions (fs / exec / db / secrets)"),
-    "agent-mcp": ("Agent/MCP tool surface", "Tool invocation authority - excessive agency and confused-deputy risk"),
-    "mlflow": ("Model registry / artifacts", "Proprietary models and artifact write-to-RCE path"),
-    "notebook": ("Notebook kernel", "Unauthenticated kernel = direct code execution"),
-    "ai-agent-a2a": ("Multi-agent orchestration", "Agent registration/routing trust; rogue-agent and workflow abuse"),
-    "ai-agent-sql": ("NL-to-SQL database bridge", "Generated SQL can reach dangerous DB functions (xp_cmdshell)"),
-}
-
-
-def _ai_trust_boundaries(names):
-    """Derive the relevant trust boundaries (per the AI threat-modelling notes)
-    from the set of AI finding names/attributes actually present."""
-    boundaries = []
-    if any(n in names for n in ("openai-compatible", "ollama", "vllm", "tgi", "gradio", "langserve", "ai-agent", "ai-agent-sql")):
-        boundaries.append("**Input trust** (user prompt/query -> model): prompt injection, jailbreak, guardrail bypass.")
-    if any(n in names for n in ("agent-mcp", "mcp-tools-confirmed", "ai-agent", "ai-workflow")):
-        boundaries.append("**Tool-invocation trust** (agent -> tool server): parameter injection, overbroad tool scope, confused deputy.")
-    if any(n in names for n in ("rag-vector", "vector-store-open")):
-        boundaries.append("**Data-integrity trust** (retrieved context -> model): RAG/vector poisoning, indirect injection, chunk extraction.")
-    if "ai-agent-a2a" in names:
-        boundaries.append("**Delegation trust** (orchestrator -> sub-agents): rogue registration, agent-card spoofing, workflow-gate bypass.")
-    if any("secrets/identity" in (str(c)) for c in names):
-        boundaries.append("**Credential trust** (tool server -> secret store): secret rotation abuse, identity collapse, overprivileged role.")
-    return boundaries
-
-
-_AI_LOOT_LABELS = {
-    "ai_secret_reference": "Secrets / tokens",
-    "vector_store_config_found": "Vector-store config",
-    "rag_source_reference": "RAG source references",
-    "mlflow_config_reference": "MLflow config",
-    "object_store_config_reference": "Object-store config",
-    "notebook_runtime_reference": "Notebook/runtime references",
-    "mcp_tool_manifest_found": "MCP tool manifests",
-    "agent_manifest_found": "Agent manifests",
-    "prompt_template_found": "Prompt/system templates",
-    "unsafe_model_loader_found": "Unsafe model loaders",
-    "writable_ai_artifact_found": "Writable AI artifacts",
-    "ai_model_artifact_inventory": "Model artifact inventory",
-}
-
-
-def _brief_list(value, limit=6):
-    if value is None:
-        return ""
-    if isinstance(value, (list, tuple, set)):
-        items = [str(v) for v in value if v is not None and str(v)]
-    else:
-        items = [str(value)] if str(value) else []
-    shown = items[:limit]
-    suffix = f" (+{len(items) - len(shown)} more)" if len(items) > len(shown) else ""
-    return ", ".join(shown) + suffix
-
-
-def generate_ai_brief(prioritized_findings, attack_paths):
-    """Build a markdown AI attack-intelligence brief from AI findings + attack paths,
-    mirroring the AI-Red-Team notes' brief (surfaces, crown jewels, trust boundaries,
-    prioritized paths with MITRE ATLAS). Returns markdown text, or '' if no AI findings."""
-    ai_findings = [f for f in prioritized_findings if f.get("entity_type") == "ai_service"]
-    ai_loot_findings = [f for f in prioritized_findings if f.get("entity_type") == "ai_post_exploitation"]
-    if not ai_findings and not ai_loot_findings:
-        return ""
-
-    lines = ["# AI Attack Intelligence Brief", "",
-             "_Generated by PathFinder from one-shot-enum AI-surface enumeration and AI post-exploitation loot. "
-             "Read-only findings - validate and exploit only within your Rules of Engagement._", ""]
-
-    # --- AI surfaces grouped by host ---
-    if ai_findings:
-        lines.append("## AI Surfaces by Host")
-        hosts = sorted({f.get("host") for f in ai_findings}, key=lambda h: (h is None, h))
-        for host in hosts:
-            lines.append("")
-            lines.append(f"### {host}")
-            for f in sorted([x for x in ai_findings if x.get("host") == host],
-                            key=lambda x: x.get("attributes", {}).get("score", 0), reverse=True):
-                a = f.get("attributes", {})
-                role = a.get("agent_role") or a.get("label") or f.get("name")
-                arch = a.get("agent_architecture")
-                fw = a.get("agent_framework")
-                descriptor = ", ".join(x for x in (arch, fw) if x and x != "unknown")
-                suffix = f" ({descriptor})" if descriptor else ""
-                loc = a.get("base_url") or a.get("vector_store_url") or a.get("mcp_url") or ""
-                score = a.get("score", "?")
-                lines.append(f"- **{role}**{suffix} - `{f.get('name')}` @ {loc} [score {score}]")
-                if a.get("agent_capabilities"):
-                    lines.append(f"  - Capabilities: {', '.join(a['agent_capabilities'])}")
-                if a.get("confirmed_mcp_tools"):
-                    cats = a.get("confirmed_mcp_categories") or []
-                    cat_str = f" [{', '.join(cats)}]" if cats else ""
-                    lines.append(f"  - Confirmed MCP tools{cat_str}: {', '.join(a['confirmed_mcp_tools'])}")
-                if a.get("vector_store_collections"):
-                    lines.append(f"  - Unauthenticated {a.get('vector_store_engine', 'vector store')} collections: "
-                                 f"{', '.join(a['vector_store_collections'])}")
-
-    # --- AI post-exploitation loot grouped by host ---
-    if ai_loot_findings:
-        lines += ["", "## AI Post-Exploitation Loot", "",
-                  "| Host | Category | Count / Signal | Key evidence |",
-                  "| --- | --- | --- | --- |"]
-        for f in sorted(ai_loot_findings, key=lambda x: (
-                str(x.get("host") or ""),
-                -(x.get("attributes", {}).get("score", 0) or 0),
-                x.get("name") or "")):
-            a = f.get("attributes", {})
-            label = _AI_LOOT_LABELS.get(f.get("name"), f.get("name"))
-            count = a.get("count") or a.get("writable_count") or a.get("artifact_count") or a.get("score") or ""
-            evidence = (
-                _brief_list(a.get("secret_names")) or
-                _brief_list(a.get("tool_names")) or
-                _brief_list(a.get("risk_categories")) or
-                _brief_list(a.get("signals")) or
-                _brief_list(a.get("categories")) or
-                _brief_list(a.get("engines")) or
-                _brief_list(a.get("uris_or_hints")) or
-                _brief_list(a.get("samples"), limit=3)
-            )
-            lines.append(f"| {f.get('host')} | {label} | {count} | {evidence} |")
-
-    # --- Crown jewels ---
-    jewels = []
-    seen_jewels = set()
-    for f in ai_findings:
-        entry = _AI_CROWN_JEWELS.get(f.get("name"))
-        if entry and entry[0] not in seen_jewels:
-            seen_jewels.add(entry[0])
-            jewels.append((entry[0], f.get("host"), entry[1]))
-    if jewels:
-        lines += ["", "## Crown Jewels (highest-value AI assets reachable)", "",
-                  "| Asset | Host | Why it matters |", "| --- | --- | --- |"]
-        for asset, host, why in jewels:
-            lines.append(f"| {asset} | {host} | {why} |")
-
-    # --- Trust boundaries ---
-    names = {f.get("name") for f in ai_findings + ai_loot_findings}
-    # also expose confirmed tool categories to the boundary heuristic
-    for f in ai_findings + ai_loot_findings:
-        names.update(f.get("attributes", {}).get("confirmed_mcp_categories") or [])
-        names.update(f.get("attributes", {}).get("risk_categories") or [])
-    boundaries = _ai_trust_boundaries(names)
-    if boundaries:
-        lines += ["", "## Trust Boundaries to Test", ""]
-        lines += [f"- {b}" for b in boundaries]
-
-    # --- Prioritized AI attack paths (every AI rule carries MITRE ATLAS tags) ---
-    ai_paths = [p for p in attack_paths if p.get("atlas") or str(p.get("name", "")).startswith("AI Loot -")]
-    if ai_paths:
-        lines += ["", "## Prioritized AI Attack Paths", ""]
-        for p in ai_paths:
-            lines.append(f"### [P{p.get('effective_priority', p.get('priority'))}] {p.get('name')} - {p.get('host')}")
-            lines.append("")
-            lines.append(p["suggestion"].get("description", ""))
-            if p.get("atlas"):
-                lines.append("")
-                lines.append(f"- **MITRE ATLAS:** {', '.join(p['atlas'])}")
-            cmds = p["suggestion"].get("commands") or []
-            if cmds:
-                lines.append("- **Next steps:**")
-                lines += [f"  - {c}" for c in cmds]
-            examples = p["suggestion"].get("injection_examples") or []
-            if examples:
-                lines.append("- **Prompt-injection examples:**")
-                lines += [f"  - {e}" for e in examples]
-            lines.append("")
-
-    return "\n".join(lines).rstrip() + "\n"
-
-
-def maybe_write_ai_brief(args, paths, prioritized_findings):
-    """Write the AI intel brief to args.ai_brief if that flag was set.
-
-    Reuses the paths already synthesized by _display_results so synthesis runs
-    once per invocation.
-    """
-    brief_path = getattr(args, "ai_brief", None)
-    if not brief_path:
-        return
-    markdown = generate_ai_brief(prioritized_findings, paths)
-    if not markdown:
-        print(f"\n{C.BOLD}{C.YELLOW}[!] --ai-brief: no AI service or AI post-exploitation findings to report; brief not written.{C.END}")
-        return
-    try:
-        with open(brief_path, "w", encoding="utf-8") as fh:
-            fh.write(markdown)
-        print(f"\n{C.BOLD}{C.GREEN}[+]{C.END} AI attack-intelligence brief written to {brief_path}")
-    except IOError as e:
-        print(f"\n{C.BOLD}{C.YELLOW}[!] Error writing AI brief: {e}{C.END}")
-
 
 # ── Scan mode ─────────────────────────────────────────────────────────────────
 
@@ -1278,8 +1077,7 @@ def run_scan_mode(args):
     print(f"    {C.GREEN}[+]{C.END} Mapper prioritized {len(prioritized)} findings.")
 
     _save_findings(args, prioritized)
-    suggested_paths = _display_results(args, synthesizer, prioritized)
-    maybe_write_ai_brief(args, suggested_paths, prioritized)
+    _display_results(args, synthesizer, prioritized)
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
@@ -1315,8 +1113,6 @@ def main():
     scan_p.add_argument('--github-cache', default=os.path.join(SCRIPT_DIR, 'github_cache.json'), help='Path to GitHub lookup cache JSON file.')
     scan_p.add_argument('--no-color', action='store_true', help='Disable ANSI colour output.')
     scan_p.add_argument('--oscp', action='store_true', help='OSCP exam profile: strip prohibited-tool commands (sqlmap, nuclei) from suggestions and flag the Metasploit one-target limit.')
-    scan_p.add_argument('--ai-brief', metavar='FILE', help='Write a markdown AI attack-intelligence brief (surfaces, crown jewels, trust boundaries, MITRE ATLAS-tagged paths) to FILE.')
-    scan_p.add_argument('--ai-only', action='store_true', help='Display only AI-related findings and attack paths.')
     scan_p.add_argument('--show-all', action='store_true', help='Display every synthesized attack path instead of the grouped triage view.')
     scan_p.add_argument('--top', type=int, default=DEFAULT_TRIAGE_TOP, help=f'Max grouped attack-path leads to display in triage view (default: {DEFAULT_TRIAGE_TOP}; 0 = all).')
     scan_p.add_argument('--min-likelihood', choices=sorted(LIKELIHOOD_RANK.keys()), default='low', help='Only display attack paths at or above this triage likelihood (default: low).')
@@ -1348,8 +1144,6 @@ def main():
     gg.add_argument("--github-cache", default=os.path.join(SCRIPT_DIR, "github_cache.json"), help="Path to GitHub lookup cache JSON file.")
     gg.add_argument("--no-color", action="store_true", help="Disable ANSI colour output.")
     gg.add_argument("--oscp", action="store_true", help="OSCP exam profile: strip prohibited-tool commands (sqlmap, nuclei) from suggestions and flag the Metasploit one-target limit.")
-    gg.add_argument("--ai-brief", metavar="FILE", help="Write a markdown AI attack-intelligence brief (surfaces, crown jewels, trust boundaries, MITRE ATLAS-tagged paths) to FILE.")
-    gg.add_argument("--ai-only", action="store_true", help="Display only AI-related findings and attack paths.")
     gg.add_argument("--show-all", action="store_true", help="Display every synthesized attack path instead of the grouped triage view.")
     gg.add_argument("--top", type=int, default=DEFAULT_TRIAGE_TOP, help=f"Max grouped attack-path leads to display in triage view (default: {DEFAULT_TRIAGE_TOP}; 0 = all).")
     gg.add_argument("--min-likelihood", choices=sorted(LIKELIHOOD_RANK.keys()), default="low", help="Only display attack paths at or above this triage likelihood (default: low).")
@@ -1400,8 +1194,7 @@ def main():
         sys.exit(0)
 
     _save_findings(args, prioritized_findings)
-    suggested_paths = _display_results(args, synthesizer, prioritized_findings)
-    maybe_write_ai_brief(args, suggested_paths, prioritized_findings)
+    _display_results(args, synthesizer, prioritized_findings)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,5 @@
 """Tests for confidence-weighted attack-path ranking, regex-trigger validation,
-gobuster port attribution, and single-pass AI-brief wiring.
+and gobuster port attribution.
 """
 import json
 import io
@@ -17,7 +17,6 @@ from main.pathfinder import (
     _gobuster_extract_target,
     _group_attack_paths,
     _path_likelihood,
-    maybe_write_ai_brief,
 )
 
 
@@ -166,7 +165,7 @@ class TriageDisplayTests(unittest.TestCase):
         def self_path(name, host, priority):
             return self._path(name, host=host, priority=priority)
 
-        args = SimpleNamespace(ai_only=False, verbose=0, max_vulns=10, oscp=False,
+        args = SimpleNamespace(verbose=0, max_vulns=10, oscp=False,
                                show_all=False, top=1, min_likelihood="low")
         out = io.StringIO()
         with redirect_stdout(out):
@@ -235,33 +234,6 @@ class GobusterPortTests(unittest.TestCase):
         p = self._write("results.txt", "/x (Status: 200)\n")
         _host, port, _mode = _gobuster_extract_target(p)
         self.assertEqual(port, 80)
-
-
-class BriefWiringTests(unittest.TestCase):
-    def test_brief_written_from_supplied_paths(self):
-        # maybe_write_ai_brief now consumes the already-synthesized paths (one
-        # synthesis per run) instead of recomputing them.
-        d = tempfile.mkdtemp()
-        self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
-        brief = os.path.join(d, "brief.md")
-        args = SimpleNamespace(ai_brief=brief)
-        ai_finding = {"host": "H", "port": 443, "source_tool": "one-shot-enum",
-                      "entity_type": "ai_service", "name": "openai-compatible", "version": None,
-                      "attributes": {"score": 90, "base_url": "https://H/v1"}}
-        paths = [{"name": "Exposed LLM API - Prompt Injection & Guardrail Testing",
-                  "priority": 90, "effective_priority": 84, "evidence_score": 90, "host": "H",
-                  "suggestion": {"description": "d", "rationale": "r", "commands": [], "references": []},
-                  "atlas": ["AML.T0051 LLM Prompt Injection"], "evidence": []}]
-        maybe_write_ai_brief(args, paths, [ai_finding])
-        self.assertTrue(os.path.exists(brief))
-        text = Path(brief).read_text(encoding="utf-8")
-        self.assertIn("AI Attack Intelligence Brief", text)
-        self.assertIn("P84", text)  # brief header reflects effective priority
-
-    def test_no_brief_when_flag_absent(self):
-        args = SimpleNamespace(ai_brief=None)
-        # Should be a no-op and must not raise even with no paths.
-        self.assertIsNone(maybe_write_ai_brief(args, [], []))
 
 
 if __name__ == "__main__":
