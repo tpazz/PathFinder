@@ -918,20 +918,6 @@ def _group_attack_paths(paths):
     return groups
 
 
-def _redact_discovery_command(command):
-    """Redact common explicit secret forms while preserving useful CLI context."""
-    if not command:
-        return None
-    redacted = str(command)
-    redacted = re.sub(
-        r"(?i)(--(?:password|passwd|token|api[-_]?key|secret)(?:=|\s+))([^\s]+)",
-        r"\1<redacted>", redacted,
-    )
-    redacted = re.sub(r"(?i)(authorization:\s*bearer\s+)([^\s]+)",
-                      r"\1<redacted>", redacted)
-    return redacted
-
-
 def _finding_discovery_provenance(finding):
     attrs = finding.get("attributes") or {}
     records = attrs.get("discovery_provenance")
@@ -952,7 +938,9 @@ def _deduplicate_provenance(records):
             continue
         normalized = {
             "tool": record.get("tool") or "unknown",
-            "command": _redact_discovery_command(record.get("command")),
+            # Commands are intentionally preserved verbatim. PathFinder is a
+            # pentest loot tool and its findings may legitimately contain creds.
+            "command": record.get("command"),
             "source_file": record.get("source_file"),
             "status": record.get("status"),
         }

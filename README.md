@@ -53,7 +53,8 @@ certipy, one-shot-enum AI surface JSON, and the AI loot collector JSON.
 - Shows the discovery tool and producer command on findings and attack paths by
   default. Native command metadata (for example Nmap XML/ffuf JSON) and the
   one-shot-enum provenance manifest provide exact commands when available;
-  legacy loot is labelled `not recorded`.
+  legacy loot is labelled `not recorded`. Commands are preserved verbatim,
+  including operator-supplied credentials.
 - Correlates credentials, usernames, hashes, shares, web paths, AD findings, and
   AI/LLM surfaces across hosts.
 - Maps software/version findings to Searchsploit and GitHub exploit leads.

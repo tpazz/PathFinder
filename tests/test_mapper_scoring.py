@@ -76,13 +76,44 @@ class MapperScoringTests(unittest.TestCase):
             "entity_type": "software_product",
             "name": "Microsoft Windows Active Directory LDAP",
             "version": "10.0",
-            "attributes": {"search_name": "ldap"},
+            "attributes": {
+                "search_name": "ldap",
+                "discovery_provenance": [{
+                    "tool": "nmap",
+                    "command": "nmap -sC -sV -p389 h --script-args password=hunter2",
+                }],
+            },
         }])
         gh = next(f for f in findings if f.get("source_tool") == "github_exploit_mapper")
 
         self.assertEqual(gh["name"], "GitHub Exploit: S1ckB0y1337/Active-Directory-Exploitation-Cheat-Sheet")
         self.assertEqual(gh["attributes"]["repo_name"], "S1ckB0y1337/Active-Directory-Exploitation-Cheat-Sheet")
         self.assertIn("common enumeration", gh["attributes"]["description"])
+        provenance = gh["attributes"]["discovery_provenance"]
+        self.assertEqual([p["tool"] for p in provenance], ["nmap", "github-api"])
+        self.assertIn("password=hunter2", provenance[0]["command"])
+        self.assertIn("api.github.com/search/repositories", provenance[1]["command"])
+
+    def test_searchsploit_finding_keeps_enumeration_and_enrichment_provenance(self):
+        mapper = VulnerabilityMapper(use_github=False, use_searchsploit=True)
+        mapper._run_searchsploit = lambda _product, _version: [{
+            "Title": "Example RCE", "EDB-ID": "12345", "Type": "remote",
+            "Platform": "linux", "Path": "exploits/12345.py", "Codes": "",
+            "_pathfinder_query": "apache 2.4.49",
+        }]
+        findings = mapper.map_and_prioritize([{
+            "host": "h", "port": 80, "source_tool": "nmap",
+            "entity_type": "software_product", "name": "Apache HTTP Server",
+            "version": "2.4.49", "attributes": {
+                "search_name": "apache",
+                "discovery_provenance": [{"tool": "nmap", "command": "nmap -sV h"}],
+            },
+        }])
+        exploit = next(f for f in findings if f.get("source_tool") == "searchsploit_mapper")
+        provenance = exploit["attributes"]["discovery_provenance"]
+        self.assertEqual([p["tool"] for p in provenance], ["nmap", "searchsploit"])
+        self.assertEqual(provenance[0]["command"], "nmap -sV h")
+        self.assertEqual(provenance[1]["command"], "searchsploit --json 'apache 2.4.49'")
 
 
 if __name__ == "__main__":

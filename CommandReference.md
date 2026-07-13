@@ -99,7 +99,9 @@ python3 -m main.pathfinder scan loot/     # no --target-host needed; hosts come 
 (including each host's `nmap.xml`). Live `--pathfinder` runs also write
 `loot/_pathfinder_provenance.json`, which maps each loot file to the exact
 producer tool and command. PathFinder joins that metadata automatically and
-shows it on findings and attack paths; no additional flag is required.
+shows it on findings and attack paths; no additional flag is required. Commands
+are pentest loot and are intentionally displayed and saved verbatim, including
+credentials supplied by the operator.
 
 ---
 

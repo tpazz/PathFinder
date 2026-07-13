@@ -194,4 +194,8 @@ def parse_llm_enum_json(json_file_path):
             },
         })
 
+    discovery_command = data.get("discovery_command")
+    if isinstance(discovery_command, str) and discovery_command:
+        for finding in findings:
+            finding.setdefault("attributes", {})["discovery_command"] = discovery_command
     return findings

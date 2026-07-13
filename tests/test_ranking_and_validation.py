@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from main.attack_path_synthesizer import AttackPathSynthesizer, _finding_confidence_penalty
 from main.pathfinder import (
     _attach_discovery_provenance,
+    _deduplicate_provenance,
     _display_results,
     _gobuster_extract_target,
     _group_attack_paths,
@@ -259,6 +260,11 @@ class TriageDisplayTests(unittest.TestCase):
 
 
 class ProvenanceManifestTests(unittest.TestCase):
+    def test_commands_are_preserved_verbatim_without_redaction(self):
+        command = "ffuf -H 'Authorization: Bearer secret-token' --password hunter2"
+        records = _deduplicate_provenance([{"tool": "ffuf", "command": command}])
+        self.assertEqual(records[0]["command"], command)
+
     def test_manifest_joins_command_to_finding(self):
         with tempfile.TemporaryDirectory() as directory:
             payload = {
