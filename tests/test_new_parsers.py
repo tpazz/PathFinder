@@ -97,6 +97,9 @@ class NewParserTests(unittest.TestCase):
             body_dir.mkdir(parents=True)
             body = body_dir / "a1b2c3"
             body.write_text(
+                "GET /dashboard HTTP/1.1\r\nHost: 192.168.129.14:8080\r\n\r\n"
+                "---- ↑ Request ---- Response ↓ ----\n\n"
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n"
                 "<table><tr><th>User</th></tr><tr><td>r.chen</td></tr></table>",
                 encoding="utf-8",
             )
@@ -247,7 +250,7 @@ class NewParserTests(unittest.TestCase):
         self.assertEqual(core["version"], "5.8")
         self.assertTrue(any(f["name"] == "WordPress plugin: contact-form-7" for f in findings))
         self.assertTrue(any(f["entity_type"] == "vulnerability" for f in findings))
-        self.assertTrue(any(f["entity_type"] == "user" and f["name"] == "admin" for f in findings))
+        self.assertTrue(any(f["entity_type"] == "confirmed_username" and f["name"] == "admin" for f in findings))
 
     def test_smbmap(self):
         content = (

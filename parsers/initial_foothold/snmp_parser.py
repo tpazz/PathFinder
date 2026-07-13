@@ -183,7 +183,7 @@ def parse_snmp_output(file_path, target_host):
                 continue
             findings.append({
                 "host": target_host, "port": 161, "source_tool": "snmp",
-                "entity_type": "user",
+                "entity_type": "confirmed_username",
                 "name": user,
                 "version": None,
                 "attributes": {"source": "SNMP enumeration"}

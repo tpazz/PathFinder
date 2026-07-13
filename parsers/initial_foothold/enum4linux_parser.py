@@ -53,7 +53,7 @@ def parse_enum4linux_json(json_file_path, target_host):
             continue
         findings.append({
             "host": target_host, "port": 445, "source_tool": "enum4linux-ng",
-            "entity_type": "user", "name": _get_user_name(user), "version": None,
+            "entity_type": "confirmed_username", "name": _get_user_name(user), "version": None,
             "attributes": {"rid": user.get('rid')}
         })
 

@@ -44,6 +44,12 @@ def validate_and_normalize_finding(finding):
         if not isinstance(value, str) or not value.strip():
             raise FindingValidationError(f"'{field}' must be a non-empty string")
 
+    # `user` was the original normalized entity name. Treat saved findings from
+    # older PathFinder versions as confirmed identities while exposing the more
+    # explicit type used by current parsers and rules.
+    if normalized.get("entity_type") == "user":
+        normalized["entity_type"] = "confirmed_username"
+
     version = normalized.get("version")
     if version is not None and not isinstance(version, str):
         raise FindingValidationError("'version' must be a string or None")

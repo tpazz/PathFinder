@@ -27,8 +27,13 @@ class ScanAutodetectTests(unittest.TestCase):
             body_dir = loot / "192.168.129.14" / "ffuf_pages_http_8080"
             body_dir.mkdir(parents=True)
             body = body_dir / "a1b2c3"
-            body.write_text("<!doctype html><html><body>User: r.chen</body></html>",
-                            encoding="utf-8")
+            body.write_text(
+                "GET /dashboard HTTP/1.1\r\nHost: 192.168.129.14:8080\r\n\r\n"
+                "---- ↑ Request ---- Response ↓ ----\n\n"
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n"
+                "<!doctype html><html><body>User: r.chen</body></html>",
+                encoding="utf-8",
+            )
 
             detections = auto_detect_loot(str(loot))
 

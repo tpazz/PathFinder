@@ -111,6 +111,13 @@ class PerFindingValidationTests(unittest.TestCase):
                      "name": "u", "version": None, "attributes": {}}]
         self.assertEqual(len(validate_parser_output("demo", findings)), 1)
 
+    def test_legacy_user_entity_is_normalized_to_confirmed_username(self):
+        findings = [{"host": "dc", "port": 88, "source_tool": "kerbrute",
+                     "entity_type": "user", "name": "alice", "version": None,
+                     "attributes": {}}]
+        normalized = validate_parser_output("input-json", findings)
+        self.assertEqual(normalized[0]["entity_type"], "confirmed_username")
+
 
 if __name__ == "__main__":
     unittest.main()

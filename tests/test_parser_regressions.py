@@ -72,7 +72,7 @@ class ParserRegressionTests(unittest.TestCase):
         findings = parse_enum4linux_json(str(FIXTURES / "enum4linux_ng_sample.json"), "10.10.10.40")
         validate_findings(findings)
 
-        users = [f for f in findings if f["entity_type"] == "user"]
+        users = [f for f in findings if f["entity_type"] == "confirmed_username"]
         groups = [f for f in findings if f["entity_type"] == "group"]
         shares = [f for f in findings if f["entity_type"] == "share"]
         policy = [f for f in findings if f["entity_type"] == "misconfiguration"]
@@ -100,7 +100,7 @@ class ParserRegressionTests(unittest.TestCase):
         validate_findings(findings)
 
         os_findings = [f for f in findings if f["entity_type"] == "os_details"]
-        users = [f for f in findings if f["entity_type"] == "user"]
+        users = [f for f in findings if f["entity_type"] == "confirmed_username"]
         processes = [f for f in findings if f["entity_type"] == "software_product"]
         network = [f for f in findings if f["entity_type"] == "information_leak"]
 

@@ -34,7 +34,7 @@ class RealWorldFormatTests(unittest.TestCase):
     def test_snmpcheck_ansi_capture(self):
         findings = parse_snmp_output(str(REAL_WORLD / "snmpcheck_ansi.txt"), "10.10.10.20")
         self.assertGreaterEqual(len(findings), 4)
-        self.assertIn("admin", {f["name"] for f in findings if f["entity_type"] == "user"})
+        self.assertIn("admin", {f["name"] for f in findings if f["entity_type"] == "confirmed_username"})
         validate_findings(findings)
 
 

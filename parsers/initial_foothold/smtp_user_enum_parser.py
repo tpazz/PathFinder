@@ -62,7 +62,7 @@ def parse_smtp_user_enum_output(file_path, target_host, default_port=25):
                 "host": target_host,
                 "port": port,
                 "source_tool": "smtp-user-enum",
-                "entity_type": "user",
+                "entity_type": "confirmed_username",
                 "name": user,
                 "version": None,
                 "attributes": {

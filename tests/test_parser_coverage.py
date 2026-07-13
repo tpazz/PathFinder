@@ -263,7 +263,7 @@ class ParserCoverageTests(unittest.TestCase):
         path = self._write_temp(content)
         findings = parse_smtp_user_enum_output(path, "10.10.10.10")
 
-        users = [f for f in findings if f["entity_type"] == "user"]
+        users = [f for f in findings if f["entity_type"] == "confirmed_username"]
         self.assertEqual({f["name"] for f in users}, {"root", "www-data"})
         self.assertTrue(any(f["name"] == "smtp_valid_users_enumerated" for f in findings))
         validate_findings(findings)
@@ -275,7 +275,7 @@ class ParserCoverageTests(unittest.TestCase):
         )
         path = self._write_temp(content)
         findings = parse_smtp_user_enum_output(path, "10.10.10.10")
-        users = {f["name"] for f in findings if f["entity_type"] == "user"}
+        users = {f["name"] for f in findings if f["entity_type"] == "confirmed_username"}
         self.assertIn("bob", users)                 # local part of the 250 address
         self.assertNotIn("2.1.5", users)            # enhanced status code, not a user
         self.assertNotIn("2.0.0", users)
@@ -372,7 +372,7 @@ class ParserCoverageTests(unittest.TestCase):
         findings = parse_enum4linux_json(path, "10.10.10.50")
         validate_findings(findings)
 
-        users = [f for f in findings if f["entity_type"] == "user"]
+        users = [f for f in findings if f["entity_type"] == "confirmed_username"]
         self.assertEqual(len(users), 1)
         self.assertEqual(users[0]["name"], "legacy_user")
 
@@ -404,7 +404,7 @@ class ParserCoverageTests(unittest.TestCase):
             findings = parse_ldapdomaindump_dir(str(tmp))
             validate_findings(findings)
 
-            users = [f for f in findings if f["entity_type"] == "user"]
+            users = [f for f in findings if f["entity_type"] == "confirmed_username"]
             self.assertEqual(len(users), 1)
             self.assertEqual(users[0]["name"], "admin")
 
@@ -437,7 +437,7 @@ class ParserCoverageTests(unittest.TestCase):
 
             findings = parse_ldapdomaindump_dir(str(tmp))
             validate_findings(findings)
-            self.assertIn("admin", {f["name"] for f in findings if f["entity_type"] == "user"})
+            self.assertIn("admin", {f["name"] for f in findings if f["entity_type"] == "confirmed_username"})
 
     def test_getnpusers_hash_without_domain(self):
         """GetNPUsers hashes without @domain should still be parsed."""

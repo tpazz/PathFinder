@@ -410,7 +410,7 @@ def manage_credentials():
                 kind = "credential"
                 label = f"Credential for '{username}'"
             elif username:
-                kind = "user"
+                kind = "confirmed_username"
                 label = f"Username '{username}'"
             else:
                 kind = "password_candidate"
@@ -532,9 +532,14 @@ def _sniff_file_type_details(path):
     Reads the first ~3KB of a file and returns (parser_key, reason).
     Detection is content-based, not extension-based.
     """
+    ffuf_capture = bool(re.fullmatch(
+        r"ffuf_pages_(?:https?)_\d{1,5}",
+        os.path.basename(os.path.dirname(os.path.abspath(path))),
+        re.IGNORECASE,
+    ))
     try:
         with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-            head = f.read(3072)
+            head = f.read(65536 if ffuf_capture else 3072)
     except (IOError, OSError) as e:
         return None, f"unreadable file: {e}"
 
@@ -544,6 +549,14 @@ def _sniff_file_type_details(path):
 
     if not stripped:
         return None, "empty or whitespace-only content"
+
+    # ffuf -od stores the raw request and raw response in one capture rather
+    # than writing a bare response body. Recognise HTML inside that wrapper so
+    # the saved page reaches the webpage parser.
+    if ffuf_capture and "Request ---- Response" in sanitized_head.replace("↑", "").replace("↓", ""):
+        if (re.search(r"(?i)content-type:\s*text/html", sanitized_head)
+                or re.search(r"(?i)<!doctype\s+html|<html(?:\s|>)|<body(?:\s|>)", sanitized_head)):
+            return 'webpage_html', 'matched HTML response inside ffuf -od capture'
 
     # XML -> nmap
     if stripped.startswith('<'):
@@ -1115,7 +1128,7 @@ def _print_compact_login_bucket(bucket, rule_name):
             attrs = finding.get("attributes") or {}
             if entity_type == "service":
                 service = service or finding
-            elif entity_type == "user" and finding.get("name") not in usernames:
+            elif entity_type == "confirmed_username" and finding.get("name") not in usernames:
                 usernames.append(finding["name"])
             elif entity_type == "username_candidate" and finding.get("name") not in candidates:
                 candidates.append(finding["name"])
@@ -1162,6 +1175,33 @@ def _print_compact_login_bucket(bucket, rule_name):
 
 
 def _print_grouped_resolved_actions(group, args):
+    if group.get("name") == "Username Candidates for Manual Review":
+        candidates = []
+        for path in group["paths"]:
+            for record in _matched_finding_records(path):
+                finding = record["finding"]
+                if finding.get("entity_type") != "username_candidate":
+                    continue
+                attrs = finding.get("attributes") or {}
+                item = (
+                    finding.get("name"), attrs.get("confidence"),
+                    attrs.get("url"), attrs.get("evidence"),
+                )
+                if item not in candidates:
+                    candidates.append(item)
+        print(f"\n  {C.BOLD}{C.GREEN}[+]{C.END} {C.BOLD}Username Candidates for Manual Review:{C.END}")
+        for name, confidence, url, evidence in candidates[:MAX_GROUP_INPUTS]:
+            context = f" [{confidence} confidence]" if confidence else ""
+            print(f"      {C.GREEN}-{C.END} {name}{context}")
+            if url:
+                print(f"        Source page: {url}")
+            if evidence:
+                print(f"        Evidence: {evidence}")
+        if len(candidates) > MAX_GROUP_INPUTS:
+            print(f"      {C.YELLOW}[!] {len(candidates) - MAX_GROUP_INPUTS} more candidate(s); "
+                  "use --show-all for every candidate.")
+        return
+
     buckets = _group_action_buckets(group["paths"])
     print(f"\n  {C.BOLD}{C.GREEN}[+]{C.END} {C.BOLD}Resolved Actions:{C.END}")
     for bucket in buckets[:MAX_GROUP_ACTION_BUCKETS]:

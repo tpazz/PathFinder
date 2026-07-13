@@ -32,6 +32,10 @@ _STATIC_EXTENSIONS = {
     ".svg", ".ico", ".woff", ".woff2", ".ttf", ".eot", ".webp", ".mp4",
 }
 _TRACKING_PARAMETERS = {"fbclid", "gclid", "msclkid"}
+_FFUF_CAPTURE_SEPARATOR = re.compile(
+    r"----\s*(?:↑\s*)?Request\s*----\s*Response\s*(?:↓\s*)?----",
+    re.IGNORECASE,
+)
 
 _COMMON_FALSE_POSITIVES = {
     "about", "account", "author", "contact", "copyright",
@@ -193,6 +197,19 @@ def _page_text(content):
     text = "".join(character if character >= " " and character != "\x7f" else " "
                    for character in text)
     return " ".join(text.split())
+
+
+def _response_body(content):
+    """Return the HTTP body from an ffuf -od capture, or the original page."""
+    match = _FFUF_CAPTURE_SEPARATOR.search(content)
+    if not match:
+        return content
+    response = content[match.end():].lstrip("\r\n")
+    if response.upper().startswith("HTTP/"):
+        header_end = re.search(r"\r?\n\r?\n", response)
+        if header_end:
+            response = response[header_end.end():]
+    return response
 
 
 def _ffuf_result_source(path, target_host):
@@ -443,6 +460,7 @@ def extract_parameter_candidates(content, target_host, port, base_url):
 def parse_webpage_html(path, target_host):
     with open(path, "r", encoding="utf-8", errors="ignore") as handle:
         content = handle.read(5_000_000)
+    content = _response_body(content)
     port, url = _source_details(path, target_host)
     findings = []
     for candidate in extract_username_candidates(content):

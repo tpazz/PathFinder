@@ -17,7 +17,7 @@ def parse_kerbrute_output(file_path, domain):
         domain (str): The target domain name.
 
     Returns:
-        list: A list of 'user' finding dictionaries.
+        list: A list of 'confirmed_username' finding dictionaries.
     """
     findings = []
     seen_users = set()
@@ -49,7 +49,7 @@ def parse_kerbrute_output(file_path, domain):
                     seen_users.add(username.lower())
                     findings.append({
                         "host": domain, "port": 88, "source_tool": "kerbrute",
-                        "entity_type": "user", "name": username, "version": None,
+                        "entity_type": "confirmed_username", "name": username, "version": None,
                         "attributes": {"source": "Kerberos user enumeration", "raw_line": raw}
                     })
     except FileNotFoundError:

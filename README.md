@@ -50,7 +50,10 @@ certipy, one-shot-enum AI surface JSON, and the AI loot collector JSON.
 - Auto-detects loot files in `scan` mode.
 - Extracts potential usernames from saved webpage text by default. These remain
   `username_candidate` findings requiring manual validation and are never
-  promoted to confirmed users automatically.
+  promoted to confirmed users automatically. Tool-enumerated and manually
+  supplied usernames are labelled `confirmed_username`; candidates receive a
+  dedicated `Username Candidates for Manual Review` attack path in both full
+  and grouped triage views.
 - When one-shot-enum stores ffuf matched responses, recursively ingests those
   discovered pages and maps each response back to its original URL and ffuf
   discovery command.

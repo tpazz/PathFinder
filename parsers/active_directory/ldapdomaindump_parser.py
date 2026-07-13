@@ -90,7 +90,7 @@ def parse_ldapdomaindump_dir(dir_path):
 
         findings.append({
             "host": domain or "UNKNOWN_DOMAIN", "port": 389, "source_tool": "ldapdomaindump",
-            "entity_type": "user", "name": sam, "version": None,
+            "entity_type": "confirmed_username", "name": sam, "version": None,
             "attributes": selected_user_attrs
         })
 

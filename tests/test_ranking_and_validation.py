@@ -221,7 +221,7 @@ class TriageDisplayTests(unittest.TestCase):
                 "attributes": {"discovery_provenance": [{"tool": tool, "command": command}]},
             }
 
-        def path(user, service, port, entity_type="user"):
+        def path(user, service, port, entity_type="confirmed_username"):
             tool = "webpage_identity_extractor" if entity_type == "username_candidate" else "kerbrute"
             command = "curl http://target/" if entity_type == "username_candidate" else "kerbrute userenum ..."
             user_finding = finding(entity_type, user, "DC", None, tool, command)
@@ -244,7 +244,6 @@ class TriageDisplayTests(unittest.TestCase):
 
         paths = [
             path("alice", "ssh", 22), path("bob", "ssh", 22),
-            path("ts_svc", "ssh", 22, "username_candidate"),
             path("alice", "smb", 445),
         ]
 
@@ -259,15 +258,54 @@ class TriageDisplayTests(unittest.TestCase):
             _display_results(args, Synth(), [])
         text = out.getvalue()
         self.assertIn("Resolved Actions:", text)
-        self.assertIn("ssh (service) @ 10.0.0.5:22 (3 resolved variant(s))", text)
+        self.assertIn("ssh (service) @ 10.0.0.5:22 (2 resolved variant(s))", text)
         self.assertIn("smb (service) @ 10.0.0.5:445 (1 resolved variant(s))", text)
         self.assertIn("Tool: kerbrute", text)
         self.assertIn("Command: kerbrute userenum ...", text)
         self.assertIn("Confirmed usernames: alice, bob", text)
-        self.assertIn("Potential usernames (manual triage): ts_svc", text)
         self.assertIn("Core command:", text)
         self.assertIn("nxc ssh 10.0.0.5 -u '<USERNAME>' -p '<PASSWORD>'", text)
         self.assertNotIn("nxc ssh 10.0.0.5 -u alice -p Password1", text)
+
+    def test_grouped_username_candidates_have_dedicated_manual_review_section(self):
+        paths = []
+        for username in ("r.chen", "ts_svc"):
+            finding = {
+                "host": "192.168.129.14", "port": 8080,
+                "source_tool": "webpage_identity_extractor",
+                "entity_type": "username_candidate", "name": username, "version": None,
+                "attributes": {
+                    "confidence": "high", "url": "http://192.168.129.14:8080/dashboard",
+                    "evidence": f"Recent activity | {username}",
+                },
+            }
+            paths.append({
+                "name": "Username Candidates for Manual Review",
+                "priority": 72, "effective_priority": 72, "evidence_score": 35,
+                "host": "192.168.129.14", "atlas": [],
+                "suggestion": {
+                    "description": f"Review {username}", "rationale": "heuristic",
+                    "commands": [], "references": [],
+                },
+                "evidence": [f"Trigger 1: {username} (username_candidate)"],
+                "matched_findings": [{"trigger_id": 1, "finding": finding}],
+            })
+
+        class Synth:
+            def generate_attack_paths(self, _findings):
+                return paths
+
+        args = SimpleNamespace(verbose=0, max_vulns=10, oscp=False,
+                               show_all=False, top=20, min_likelihood="low")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            _display_results(args, Synth(), [])
+        text = out.getvalue()
+        self.assertIn("Name:         Username Candidates for Manual Review", text)
+        self.assertIn("Username Candidates for Manual Review:", text)
+        self.assertIn("r.chen [high confidence]", text)
+        self.assertIn("ts_svc [high confidence]", text)
+        self.assertIn("Source page: http://192.168.129.14:8080/dashboard", text)
 
     def test_default_findings_display_includes_discovery_tool_and_command(self):
         finding = _finding("service", "ssh", host="10.0.0.5", score=50)
@@ -433,7 +471,7 @@ class ProvenanceManifestTests(unittest.TestCase):
                 json.dumps(payload), encoding="utf-8"
             )
             records = _load_provenance_manifest(directory)
-            finding = _finding("user", "alice")
+            finding = _finding("confirmed_username", "alice")
             _attach_discovery_provenance(
                 finding, "10.0.0.5\\kerbrute.txt", records["10.0.0.5/kerbrute.txt"]
             )

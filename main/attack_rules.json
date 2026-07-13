@@ -56,7 +56,7 @@
         "host_scope": "any_host",
         "triggers": [
             { "id": 1, "entity_type": "password_candidate", "name_match": { "type": "regex", "value": ".*" }, "host_scope": "any_host" },
-            { "id": 2, "entity_type": "user", "name_match": { "type": "regex", "value": ".*" }, "host_scope": "any_host" },
+            { "id": 2, "entity_type": "confirmed_username", "name_match": { "type": "regex", "value": ".*" }, "host_scope": "any_host" },
             { "id": 3, "entity_type": "service", "name_match": { "type": "regex", "value": "(ssh|ftp|rdp|ms-wbt-server|winrm|smb|microsoft-ds)" } }
         ],
         "suggestion": {
@@ -505,7 +505,7 @@
         "priority": 83,
         "host_scope": "any_host",
         "triggers": [
-            { "id": 1, "entity_type": "user", "name_match": { "type": "regex", "value": ".*" } },
+            { "id": 1, "entity_type": "confirmed_username", "name_match": { "type": "regex", "value": ".*" } },
             { "id": 2, "entity_type": "service", "name_match": { "type": "regex", "value": "(ssh|ftp|rdp|ms-wbt-server|winrm|smb|microsoft-ds)" } }
         ],
         "suggestion": {
@@ -517,18 +517,19 @@
         }
     },
     {
-        "name": "Password Spray Discovered Users Against Services",
+        "name": "Username Candidates for Manual Review",
         "priority": 72,
         "host_scope": "any_host",
         "triggers": [
-            { "id": 1, "entity_type": "username_candidate", "name_match": { "type": "regex", "value": ".*" } },
-            { "id": 2, "entity_type": "service", "name_match": { "type": "regex", "value": "(ssh|ftp|rdp|ms-wbt-server|winrm|smb|microsoft-ds)" } }
+            { "id": 1, "entity_type": "username_candidate", "name_match": { "type": "regex", "value": ".*" } }
         ],
         "suggestion": {
-            "description": "Potential username '{trigger.1.name}' was extracted from webpage content. Manually triage it before attempting a password spray against '{trigger.2.name}' on {trigger.2.host}:{trigger.2.port}.",
+            "description": "Potential username '{trigger.1.name}' was extracted from webpage content and requires manual review.",
             "rationale": "Webpage identity extraction is heuristic. The candidate is shown as a manual lead and is deliberately not promoted to a confirmed user.",
             "commands": [
-                "nxc <PROTOCOL> <TARGET> -u '<USERNAME>' -p '<PASSWORD>'"
+                "Review source page: {trigger.1.attributes.url}",
+                "Review evidence: {trigger.1.attributes.evidence}",
+                "If validated, add '{trigger.1.name}' as a confirmed username with --add-cred."
             ]
         }
     },
@@ -537,7 +538,7 @@
         "priority": 85,
         "host_scope": "same_host",
         "triggers": [
-            { "id": 1, "entity_type": "user", "name_match": { "type": "regex", "value": ".*" } },
+            { "id": 1, "entity_type": "confirmed_username", "name_match": { "type": "regex", "value": ".*" } },
             { "id": 2, "entity_type": "misconfiguration", "name_match": { "type": "exact", "value": "password_policy_details" } }
         ],
         "suggestion": {

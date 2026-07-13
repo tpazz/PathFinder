@@ -306,8 +306,8 @@ class TestADLabScenario(unittest.TestCase):
             _f("CORP.LOCAL", 445, "enum4linux-ng", "misconfiguration", "password_policy_details",
                min_length=5, pw_complexity="0", score=75),
             # kerbrute users
-            _f("CORP.LOCAL", 88, "kerbrute", "user", "svc_sql", source="Kerberos user enumeration", score=20),
-            _f("CORP.LOCAL", 88, "kerbrute", "user", "admin", source="Kerberos user enumeration", score=20),
+            _f("CORP.LOCAL", 88, "kerbrute", "confirmed_username", "svc_sql", source="Kerberos user enumeration", score=20),
+            _f("CORP.LOCAL", 88, "kerbrute", "confirmed_username", "admin", source="Kerberos user enumeration", score=20),
             # Services
             _f("10.10.10.100", 445, "nmap", "service", "microsoft-ds", score=10),
             _f("10.10.10.100", 5985, "nmap", "service", "winrm", score=10),
@@ -404,8 +404,8 @@ class TestSMBShareEnumerationLab(unittest.TestCase):
             _f("10.10.10.50", 445, "nmap", "service", "microsoft-ds", score=10),
             _f("10.10.10.50", 445, "enum4linux-ng", "share", "backups", comment="Backup share", score=20),
             _f("10.10.10.50", 445, "enum4linux-ng", "share", "IPC$", comment="IPC Service", score=20),
-            _f("10.10.10.50", 445, "enum4linux-ng", "user", "alice", rid=1001, score=20),
-            _f("10.10.10.50", 445, "enum4linux-ng", "user", "bob", rid=1002, score=20),
+            _f("10.10.10.50", 445, "enum4linux-ng", "confirmed_username", "alice", rid=1001, score=20),
+            _f("10.10.10.50", 445, "enum4linux-ng", "confirmed_username", "bob", rid=1002, score=20),
             _f("MANUALLY_ADDED", None, "manual_input", "credential", "alice", password="Welcome1", hash=None, score=100),
         ]
 
@@ -486,8 +486,8 @@ class TestSNMPIntelligenceLab(unittest.TestCase):
             _f("10.10.10.80", 22, "nmap", "service", "ssh", score=10),
             _f("10.10.10.80", 161, "snmp", "os_details", "snmp_system_information",
                description="Linux target 5.4.0-42-generic x86_64", score=15),
-            _f("10.10.10.80", 161, "snmp", "user", "admin", source="SNMP enumeration", score=20),
-            _f("10.10.10.80", 161, "snmp", "user", "svc_backup", source="SNMP enumeration", score=20),
+            _f("10.10.10.80", 161, "snmp", "confirmed_username", "admin", source="SNMP enumeration", score=20),
+            _f("10.10.10.80", 161, "snmp", "confirmed_username", "svc_backup", source="SNMP enumeration", score=20),
         ]
 
     def test_snmp_intelligence_fires(self):

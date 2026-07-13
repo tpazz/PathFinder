@@ -52,8 +52,9 @@ def parse_wpscan_json(json_file_path):
 
     Emits the WordPress core, plugins, and theme as software_product findings
     (so the exploit mapper can enrich them by version), each reported
-    vulnerability as a vulnerability finding, and enumerated users as user
-    findings (so credential spraying / brute-force rules can fire).
+    vulnerability as a vulnerability finding, and enumerated users as
+    confirmed_username findings (so credential spraying / brute-force rules
+    can fire).
     """
     findings = []
     try:
@@ -113,7 +114,7 @@ def parse_wpscan_json(json_file_path):
         for username in users:
             findings.append({
                 "host": host, "port": port, "source_tool": "wpscan",
-                "entity_type": "user", "name": username, "version": None,
+                "entity_type": "confirmed_username", "name": username, "version": None,
                 "attributes": {"source": "wpscan user enumeration"},
             })
 

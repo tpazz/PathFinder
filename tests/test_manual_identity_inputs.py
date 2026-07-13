@@ -44,7 +44,7 @@ class ManualIdentityInputTests(unittest.TestCase):
         by_type = {f["entity_type"]: f for f in findings}
         self.assertEqual(by_type["credential"]["name"], "alice")
         self.assertEqual(by_type["credential"]["attributes"]["password"], "Welcome1")
-        self.assertEqual(by_type["user"]["name"], "bob")
+        self.assertEqual(by_type["confirmed_username"]["name"], "bob")
         self.assertEqual(by_type["password_candidate"]["name"], "manual_password_candidate")
         self.assertEqual(by_type["password_candidate"]["attributes"]["password"], "Summer2026!")
 
@@ -61,7 +61,7 @@ class ManualIdentityInputTests(unittest.TestCase):
                 vm_module.CREDENTIALS_FILE = original
 
         self.assertEqual(len(findings), 1)
-        self.assertEqual(findings[0]["entity_type"], "user")
+        self.assertEqual(findings[0]["entity_type"], "confirmed_username")
         self.assertEqual(findings[0]["name"], "charlie")
 
     def test_password_candidates_deduplicate_by_secret(self):
@@ -78,7 +78,7 @@ class ManualIdentityInputTests(unittest.TestCase):
         findings = [
             _finding("MANUALLY_ADDED", None, "password_candidate", "manual_password_candidate",
                      password="Summer2026!", source_of_credential="config.php", confidence="medium"),
-            _finding("dc", None, "user", "alice"),
+            _finding("dc", None, "confirmed_username", "alice"),
             _finding("dc", 445, "service", "microsoft-ds"),
         ]
         paths = AttackPathSynthesizer(RULES_FILE).generate_attack_paths(findings)
@@ -116,17 +116,18 @@ class ManualIdentityInputTests(unittest.TestCase):
         self.assertIn("Password Candidate + Web Login - Manual Default-User Check", names)
         self.assertNotIn("Credential Reuse on Web Login Page", names)
 
-    def test_web_username_candidate_gets_manual_spray_lead_but_is_not_a_user(self):
+    def test_web_username_candidate_gets_manual_review_path_but_is_not_confirmed(self):
         candidate = _finding(
             "web", 80, "username_candidate", "ts_svc",
             candidate_only=True, requires_manual_validation=True, confidence="high",
+            url="http://web/dashboard", evidence="User: ts_svc",
         )
         findings = [candidate, _finding("server", 22, "service", "ssh")]
         paths = AttackPathSynthesizer(RULES_FILE).generate_attack_paths(findings)
-        spray = [p for p in paths if p["name"] == "Password Spray Discovered Users Against Services"]
-        self.assertEqual(len(spray), 1)
-        self.assertIn("Manually triage", spray[0]["suggestion"]["description"])
-        self.assertIn("<USERNAME>", spray[0]["suggestion"]["commands"][0])
+        review = [p for p in paths if p["name"] == "Username Candidates for Manual Review"]
+        self.assertEqual(len(review), 1)
+        self.assertIn("manual review", review[0]["suggestion"]["description"])
+        self.assertIn("http://web/dashboard", review[0]["suggestion"]["commands"][0])
         self.assertEqual(candidate["entity_type"], "username_candidate")
         self.assertFalse(any("Discovered User with Weak Password Policy" in p["name"] for p in paths))
 

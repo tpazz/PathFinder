@@ -81,7 +81,13 @@ class ScanSmokeTests(unittest.TestCase):
             host_dir = loot / "192.168.129.14"
             body_dir = host_dir / "ffuf_pages_http_8080"
             body_dir.mkdir(parents=True)
-            (body_dir / "a1b2c3").write_text(dashboard, encoding="utf-8")
+            (body_dir / "a1b2c3").write_text(
+                "GET /dashboard HTTP/1.1\r\nHost: 192.168.129.14:8080\r\n\r\n"
+                "---- ↑ Request ---- Response ↓ ----\n\n"
+                "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\n\r\n"
+                + dashboard,
+                encoding="utf-8",
+            )
             (host_dir / "ffuf_8080.json").write_text(json.dumps({
                 "commandline": command,
                 "results": [{
@@ -105,6 +111,8 @@ class ScanSmokeTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + "\n" + result.stderr)
         for username in ("r.chen", "m.silva", "j.park", "ts_svc"):
             self.assertIn(username, result.stdout)
+        self.assertIn("(username_candidate)", result.stdout)
+        self.assertIn("Username Candidates for Manual Review", result.stdout)
         self.assertIn("http://192.168.129.14:8080/dashboard", result.stdout)
         self.assertIn(command, result.stdout)
 

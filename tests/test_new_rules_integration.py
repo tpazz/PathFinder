@@ -99,7 +99,7 @@ class NewRuleTests(unittest.TestCase):
     def test_smb_service_enum_fallback_is_suppressed_after_user_enumeration(self):
         findings = [
             _f("10.10.10.10", 445, "nmap", "service", "microsoft-ds", score=10),
-            _f("10.10.10.10", 445, "enum4linux-ng", "user", "alice"),
+            _f("10.10.10.10", 445, "enum4linux-ng", "confirmed_username", "alice"),
         ]
         paths = _synth().generate_attack_paths(findings)
         self.assertNotIn("SMB Service - Enumerate Shares and Users", _names(paths))
