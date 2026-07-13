@@ -4,6 +4,10 @@ import json
 import os
 import re
 import logging
+import shlex
+import shutil
+import subprocess
+import time
 import xml.etree.ElementTree as ET
 
 # Import the core logic components and the single parser registry.
@@ -963,6 +967,8 @@ def _path_discovery_provenance(path):
 
 
 def _print_discovery_provenance(records, args, indent="  "):
+    if getattr(args, "hide_discovery", False):
+        return
     records = _deduplicate_provenance(records)
     if not records:
         return
@@ -979,6 +985,8 @@ def _print_discovery_provenance(records, args, indent="  "):
 
 
 def _print_finding_discovery(finding, args):
+    if getattr(args, "hide_discovery", False):
+        return
     records = _deduplicate_provenance(_finding_discovery_provenance(finding))
     for index, record in enumerate(records):
         label = "Discovery:" if index == 0 else "Corroborated:"
@@ -998,6 +1006,17 @@ _ACTION_ENTITY_TYPES = {
 MAX_GROUP_ACTION_BUCKETS = 8
 MAX_GROUP_INPUTS = 8
 MAX_GROUP_COMMANDS = 8
+CREDENTIAL_VALIDATION_TIMEOUT = 60
+_LOGIN_PROTOCOLS = {
+    "ssh": "ssh",
+    "ftp": "ftp",
+    "rdp": "rdp",
+    "ms-wbt-server": "rdp",
+    "winrm": "winrm",
+    "smb": "smb",
+    "microsoft-ds": "smb",
+}
+_LOGIN_DEFAULT_PORTS = {"ftp": 21, "ssh": 22, "smb": 445, "rdp": 3389, "winrm": 5985}
 
 
 def _matched_finding_records(path):
@@ -1082,6 +1101,194 @@ def _print_grouped_resolved_actions(group, args):
     if len(buckets) > MAX_GROUP_ACTION_BUCKETS:
         print(f"      {C.YELLOW}[!] {len(buckets) - MAX_GROUP_ACTION_BUCKETS} more action bucket(s); "
               "use --show-all for every variant.")
+
+
+def _credential_validation_binary(protocol):
+    for binary in ("nxc", "netexec"):
+        if shutil.which(binary):
+            return binary, True
+    if protocol in {"smb", "winrm", "ssh"} and shutil.which("crackmapexec"):
+        return "crackmapexec", True
+    return "nxc", False
+
+
+def _display_command(argv):
+    if os.name == "nt":
+        return subprocess.list2cmdline(argv)
+    return shlex.join(argv)
+
+
+def _usable_ntlm_hash(attributes):
+    direct = attributes.get("nt_hash") or attributes.get("ntlm_hash")
+    if direct:
+        return direct
+    hash_value = attributes.get("hash")
+    hash_type = str(attributes.get("hash_type") or "").lower()
+    if hash_value and ("ntlm" in hash_type or hash_type in {"nt", "nthash"}):
+        return hash_value
+    return None
+
+
+def _credential_validation_actions(paths):
+    """Build one active login attempt per resolved credential/service pairing."""
+    actions = []
+    seen = set()
+    for path in paths:
+        if path.get("name") != "Credential Reuse on Login Service":
+            continue
+        findings = [record["finding"] for record in _matched_finding_records(path)]
+        credential = next((f for f in findings if f.get("entity_type") == "credential"), None)
+        service = next((f for f in findings if f.get("entity_type") == "service"), None)
+        if not credential or not service:
+            continue
+        protocol = _LOGIN_PROTOCOLS.get(str(service.get("name") or "").lower())
+        attrs = credential.get("attributes") or {}
+        username = attrs.get("username") or credential.get("name")
+        password = attrs.get("password")
+        hash_value = _usable_ntlm_hash(attrs)
+        if not protocol or not username:
+            continue
+        if password:
+            secret_kind, secret = "password", str(password)
+        elif hash_value and protocol in {"smb", "winrm"}:
+            secret_kind, secret = "hash", str(hash_value)
+        else:
+            continue
+        host = service.get("host") or path.get("host")
+        if not host:
+            continue
+        port = service.get("port")
+        key = (protocol, str(host), port, str(username), secret_kind, secret)
+        if key in seen:
+            continue
+        seen.add(key)
+        binary, binary_available = _credential_validation_binary(protocol)
+        argv = [binary, protocol, str(host)]
+        if port and port != _LOGIN_DEFAULT_PORTS.get(protocol):
+            argv.extend(["--port", str(port)])
+        argv.extend(["-u", str(username), "-p" if secret_kind == "password" else "-H", secret])
+        domain = attrs.get("domain")
+        if domain and "\\" not in str(username) and "@" not in str(username):
+            argv.extend(["-d", str(domain)])
+        actions.append({
+            "protocol": protocol, "host": str(host), "port": port,
+            "username": str(username), "secret": secret, "secret_kind": secret_kind,
+            "argv": argv, "command": _display_command(argv),
+            "binary_available": binary_available,
+        })
+    return actions
+
+
+def _credential_login_succeeded(output, action):
+    clean = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", output or "")
+    lowered = clean.lower()
+    if "pwn3d!" in lowered:
+        return True
+    username = action["username"].lower()
+    for line in lowered.splitlines():
+        if "[+]" in line and username in line:
+            return True
+        if "login successful" in line or "authentication successful" in line:
+            if username in line or action["host"].lower() in line:
+                return True
+    return False
+
+
+def _credential_login_rejected(output, action):
+    clean = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", output or "").lower()
+    username = action["username"].lower()
+    return any("[-]" in line and username in line for line in clean.splitlines())
+
+
+def _print_credential_validation_plan(actions):
+    print(f"\n{C.BOLD}{C.CYAN}Credential Validation Plan{C.END}")
+    print(f"  {C.GREEN}{len(actions)} active login attempt(s) queued sequentially{C.END}")
+    for host in dict.fromkeys(action["host"] for action in actions):
+        host_actions = [action for action in actions if action["host"] == host]
+        print(f"\n  {C.BOLD}{C.CYAN}Host: {host}  ({len(host_actions)} attempt(s)){C.END}")
+        for action in host_actions:
+            identity = f"{action['username']}:{action['secret']}"
+            print(f"    {C.BOLD}{action['protocol']:<8}{C.END} {identity}")
+            print(f"      {action['command']}")
+
+
+def _validation_cell(value, width):
+    value = str(value)
+    if len(value) > width:
+        value = value[:width - 1] + "~"
+    return value.ljust(width)
+
+
+def _subprocess_text(value):
+    if isinstance(value, bytes):
+        return value.decode(errors="replace")
+    return value or ""
+
+
+def _run_credential_validations(paths):
+    actions = _credential_validation_actions(paths)
+    if not actions:
+        print(f"\n{C.BOLD}{C.YELLOW}[!] Credential validation requested, but no resolved "
+              f"credential/login-service actions were available.{C.END}")
+        return []
+
+    _print_credential_validation_plan(actions)
+    print(f"\n{C.BOLD}{C.CYAN}Credential Validation Stage{C.END}")
+    print(f"  {'#':<4}{'SERVICE':<10}{'TARGET':<24}{'IDENTITY':<24}{'STATUS':<12}{'TIME':>5}")
+    results = []
+    for index, action in enumerate(actions, start=1):
+        print(f"\n  {C.CYAN}[{index}/{len(actions)}] Running:{C.END} {action['command']}")
+        started = time.monotonic()
+        output = ""
+        if not action["binary_available"]:
+            status = "no tool"
+        else:
+            try:
+                completed = subprocess.run(
+                    action["argv"], capture_output=True, text=True,
+                    errors="replace", stdin=subprocess.DEVNULL,
+                    timeout=CREDENTIAL_VALIDATION_TIMEOUT, check=False,
+                )
+                output = _subprocess_text(completed.stdout) + _subprocess_text(completed.stderr)
+                if _credential_login_succeeded(output, action):
+                    status = "SUCCESS"
+                elif _credential_login_rejected(output, action):
+                    status = "rejected"
+                elif completed.returncode:
+                    status = f"exit {completed.returncode}"
+                else:
+                    status = "unknown"
+            except subprocess.TimeoutExpired as exc:
+                output = _subprocess_text(exc.stdout) + _subprocess_text(exc.stderr)
+                status = "timed out"
+            except OSError as exc:
+                output = str(exc)
+                status = "failed"
+        elapsed = int(time.monotonic() - started)
+        target = f"{action['host']}:{action['port']}" if action.get("port") else action["host"]
+        identity = f"{action['username']}:{action['secret']}"
+        colour = C.GREEN if status == "SUCCESS" else C.YELLOW if status in {"unknown", "no tool"} else C.RED
+        print(f"  {index:<4}{_validation_cell(action['protocol'], 10)}"
+              f"{_validation_cell(target, 24)}{_validation_cell(identity, 24)}"
+              f"{colour}{status:<12}{C.END}{elapsed // 60:02d}:{elapsed % 60:02d}")
+        result = {**action, "status": status, "output": output}
+        results.append(result)
+        if status == "SUCCESS":
+            print(f"\n  {C.BOLD}{C.GREEN}[+] VALID LOGIN: {identity} -> "
+                  f"{action['protocol']}://{target}{C.END}\n")
+
+    successes = [result for result in results if result["status"] == "SUCCESS"]
+    print(f"\n{C.BOLD}{C.CYAN}Credential Validation Summary:{C.END} "
+          f"{C.GREEN}{len(successes)} successful{C.END}, "
+          f"{len(results) - len(successes)} unsuccessful/inconclusive, "
+          f"{len(results)} total")
+    if successes:
+        print(f"{C.BOLD}{C.GREEN}[+] Confirmed valid login(s):{C.END}")
+        for result in successes:
+            target = f"{result['host']}:{result['port']}" if result.get("port") else result["host"]
+            print(f"    {C.GREEN}-{C.END} {result['username']}:{result['secret']} -> "
+                  f"{result['protocol']}://{target}")
+    return results
 
 
 def _print_path_details(path, args):
@@ -1215,30 +1422,42 @@ def _display_results(args, synthesizer, prioritized_findings):
     else:
         print(f"\n{C.BOLD}{C.YELLOW}[!] No specific attack paths were synthesized from the findings.{C.END}")
 
-    total_exploit_count = sum(1 for f in display_findings if f.get("source_tool") in ["searchsploit_mapper", "github_exploit_mapper"])
-    filtered_list = filter_prioritized_findings(display_findings, args.max_vulns)
+    if getattr(args, "validate_credentials", False):
+        _run_credential_validations(display_paths)
 
-    print(f"\n{_rule_line('-', C.YELLOW)}")
-    print(f"{C.BOLD}{C.YELLOW}Total Findings: {len(filtered_list)}{C.END} "
-          f"{C.YELLOW}(Public Exploits limited to --max-vulns, total discovered: {total_exploit_count}){C.END}")
-    print(_rule_line('-', C.YELLOW))
+    if not getattr(args, "hide_findings", False):
+        total_exploit_count = sum(
+            1 for f in display_findings
+            if f.get("source_tool") in ["searchsploit_mapper", "github_exploit_mapper"]
+        )
+        filtered_list = filter_prioritized_findings(display_findings, args.max_vulns)
 
-    filtered_list.sort(key=lambda x: x.get("attributes", {}).get("score", 0), reverse=True)
+        print(f"\n{_rule_line('-', C.YELLOW)}")
+        print(f"{C.BOLD}{C.YELLOW}Total Findings: {len(filtered_list)}{C.END} "
+              f"{C.YELLOW}(Public Exploits limited to --max-vulns, total discovered: {total_exploit_count}){C.END}")
+        print(_rule_line('-', C.YELLOW))
 
-    for i, p_finding in enumerate(filtered_list):
-        score = p_finding.get("attributes", {}).get("score", "N/A")
-        display_name, _ = format_finding_display(p_finding.get('name'), p_finding.get('entity_type'))
-        display_type = _finding_type_token(p_finding.get('entity_type'))
-        print(f"\n{C.BOLD}{C.CYAN}[{i+1:03d}]{C.END} {_score_token(score)} {display_type} {display_name}")
-        print(f"      {_label('Host:', 6)}{p_finding.get('host')}   {_label('Port:', 6)}{p_finding.get('port')}")
-        _print_finding_discovery(p_finding, args)
-        attributes = p_finding.get("attributes", {})
-        if attributes.get("metasploit_module"):
-            print(f"      {C.BOLD}Metasploit Module:{C.END} {attributes['metasploit_module']}")
-            if getattr(args, 'oscp', False):
-                print(f"      {C.YELLOW}[OSCP] Metasploit is limited to one target on the exam.{C.END}")
-        if attributes.get("url"):
-            print(f"      {C.BOLD}URL:{C.END} {attributes['url']}")
+        filtered_list.sort(key=lambda x: x.get("attributes", {}).get("score", 0), reverse=True)
+
+        for i, p_finding in enumerate(filtered_list):
+            score = p_finding.get("attributes", {}).get("score", "N/A")
+            finding_name = p_finding.get("name")
+            attributes = p_finding.get("attributes", {})
+            if (p_finding.get("source_tool") == "manual_input"
+                    and p_finding.get("entity_type") == "credential"
+                    and attributes.get("username") and attributes.get("password")):
+                finding_name = f"{attributes['username']}:{attributes['password']}"
+            display_name, _ = format_finding_display(finding_name, p_finding.get('entity_type'))
+            display_type = _finding_type_token(p_finding.get('entity_type'))
+            print(f"\n{C.BOLD}{C.CYAN}[{i+1:03d}]{C.END} {_score_token(score)} {display_type} {display_name}")
+            print(f"      {_label('Host:', 6)}{p_finding.get('host')}   {_label('Port:', 6)}{p_finding.get('port')}")
+            _print_finding_discovery(p_finding, args)
+            if attributes.get("metasploit_module"):
+                print(f"      {C.BOLD}Metasploit Module:{C.END} {attributes['metasploit_module']}")
+                if getattr(args, 'oscp', False):
+                    print(f"      {C.YELLOW}[OSCP] Metasploit is limited to one target on the exam.{C.END}")
+            if attributes.get("url"):
+                print(f"      {C.BOLD}URL:{C.END} {attributes['url']}")
 
     return suggested_paths
 
@@ -1408,6 +1627,9 @@ def main():
     scan_p.add_argument('--no-color', action='store_true', help='Disable ANSI colour output.')
     scan_p.add_argument('--oscp', action='store_true', help='OSCP exam profile: strip prohibited-tool commands (sqlmap, nuclei) from suggestions and flag the Metasploit one-target limit.')
     scan_p.add_argument('--show-all', action='store_true', help='Display every synthesized attack path instead of the grouped triage view.')
+    scan_p.add_argument('--hide-discovery', action='store_true', help='Hide discovery tool and command provenance from findings and attack paths.')
+    scan_p.add_argument('--hide-findings', action='store_true', help='Hide the prioritized findings list (attack paths are still displayed).')
+    scan_p.add_argument('--validate-credentials', action='store_true', help='Actively test resolved Credential Reuse login actions sequentially (may trigger lockouts or alerts).')
     scan_p.add_argument('--top', type=int, default=DEFAULT_TRIAGE_TOP, help=f'Max grouped attack-path leads to display in triage view (default: {DEFAULT_TRIAGE_TOP}; 0 = all).')
     scan_p.add_argument('--min-likelihood', choices=sorted(LIKELIHOOD_RANK.keys()), default='low', help='Only display attack paths at or above this triage likelihood (default: low).')
 
@@ -1439,6 +1661,9 @@ def main():
     gg.add_argument("--no-color", action="store_true", help="Disable ANSI colour output.")
     gg.add_argument("--oscp", action="store_true", help="OSCP exam profile: strip prohibited-tool commands (sqlmap, nuclei) from suggestions and flag the Metasploit one-target limit.")
     gg.add_argument("--show-all", action="store_true", help="Display every synthesized attack path instead of the grouped triage view.")
+    gg.add_argument("--hide-discovery", action="store_true", help="Hide discovery tool and command provenance from findings and attack paths.")
+    gg.add_argument("--hide-findings", action="store_true", help="Hide the prioritized findings list (attack paths are still displayed).")
+    gg.add_argument("--validate-credentials", action="store_true", help="Actively test resolved Credential Reuse login actions sequentially (may trigger lockouts or alerts).")
     gg.add_argument("--top", type=int, default=DEFAULT_TRIAGE_TOP, help=f"Max grouped attack-path leads to display in triage view (default: {DEFAULT_TRIAGE_TOP}; 0 = all).")
     gg.add_argument("--min-likelihood", choices=sorted(LIKELIHOOD_RANK.keys()), default="low", help="Only display attack paths at or above this triage likelihood (default: low).")
 

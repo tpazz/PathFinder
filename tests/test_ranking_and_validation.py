@@ -10,16 +10,19 @@ import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from main.attack_path_synthesizer import AttackPathSynthesizer, _finding_confidence_penalty
 from main.pathfinder import (
     _attach_discovery_provenance,
     _deduplicate_provenance,
+    _credential_validation_actions,
     _display_results,
     _gobuster_extract_target,
     _group_attack_paths,
     _load_provenance_manifest,
     _path_likelihood,
+    _run_credential_validations,
 )
 
 
@@ -258,6 +261,92 @@ class TriageDisplayTests(unittest.TestCase):
         self.assertIn("nmap", text)
         self.assertIn("nmap -sV 10.0.0.5", text)
 
+    def test_hide_discovery_applies_to_grouped_triage(self):
+        finding = _finding("service", "ssh", host="10.0.0.5", score=50)
+        finding["attributes"]["discovery_provenance"] = [
+            {"tool": "nmap", "command": "producer-command --secret"}
+        ]
+        paths = []
+        for user in ("alice", "bob"):
+            path = self._path("Credential Reuse on Login Service", host="10.0.0.5")
+            path["matched_findings"] = [{"trigger_id": 1, "finding": finding}]
+            path["suggestion"]["commands"] = [f"suggested-command -u {user}"]
+            paths.append(path)
+
+        class Synth:
+            def generate_attack_paths(self, _findings):
+                return paths
+
+        args = SimpleNamespace(verbose=0, max_vulns=10, oscp=False,
+                               show_all=False, top=20, min_likelihood="low",
+                               hide_discovery=True)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            _display_results(args, Synth(), [finding])
+        text = out.getvalue()
+        self.assertNotIn("Discovery Provenance", text)
+        self.assertNotIn("producer-command --secret", text)
+        self.assertIn("suggested-command -u alice", text)
+
+    def test_hide_discovery_applies_to_full_paths(self):
+        finding = _finding("service", "ssh", host="10.0.0.5", score=50)
+        finding["attributes"]["discovery_provenance"] = [
+            {"tool": "nmap", "command": "producer-command --secret"}
+        ]
+        path = self._path("SSH follow-up", host="10.0.0.5")
+        path["matched_findings"] = [{"trigger_id": 1, "finding": finding}]
+
+        class Synth:
+            def generate_attack_paths(self, _findings):
+                return [path]
+
+        args = SimpleNamespace(verbose=0, max_vulns=10, oscp=False,
+                               show_all=True, top=20, min_likelihood="low",
+                               hide_discovery=True)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            _display_results(args, Synth(), [finding])
+        text = out.getvalue()
+        self.assertIn("ATTACK PATH #1", text)
+        self.assertNotIn("Discovery Provenance", text)
+        self.assertNotIn("producer-command --secret", text)
+
+    def test_hide_findings_keeps_attack_paths(self):
+        finding = _finding("service", "finding-only-marker", host="10.0.0.5", score=50)
+        path = self._path("Visible attack path", host="10.0.0.5")
+
+        class Synth:
+            def generate_attack_paths(self, _findings):
+                return [path]
+
+        args = SimpleNamespace(verbose=0, max_vulns=10, oscp=False,
+                               show_all=True, top=20, min_likelihood="low",
+                               hide_findings=True)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            returned = _display_results(args, Synth(), [finding])
+        text = out.getvalue()
+        self.assertEqual(returned, [path])
+        self.assertIn("Visible attack path", text)
+        self.assertNotIn("Total Findings", text)
+        self.assertNotIn("finding-only-marker", text)
+
+    def test_manual_username_password_is_displayed_as_pair(self):
+        finding = _finding("credential", "alice", host="MANUALLY_ADDED", score=100)
+        finding["source_tool"] = "manual_input"
+        finding["attributes"].update({"username": "alice", "password": "Secret123!"})
+
+        class Synth:
+            def generate_attack_paths(self, _findings):
+                return []
+
+        args = SimpleNamespace(verbose=0, max_vulns=10, oscp=False,
+                               show_all=False, top=20, min_likelihood="low")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            _display_results(args, Synth(), [finding])
+        self.assertIn("alice:Secret123!", out.getvalue())
+
 
 class ProvenanceManifestTests(unittest.TestCase):
     def test_commands_are_preserved_verbatim_without_redaction(self):
@@ -288,6 +377,86 @@ class ProvenanceManifestTests(unittest.TestCase):
         self.assertEqual(provenance["tool"], "kerbrute")
         self.assertEqual(provenance["status"], "done")
         self.assertIn("userenum", provenance["command"])
+
+
+class CredentialValidationTests(unittest.TestCase):
+    @staticmethod
+    def _path(username, password, service, host, port):
+        credential = {
+            "host": "MANUALLY_ADDED", "port": None, "source_tool": "manual_input",
+            "entity_type": "credential", "name": username, "version": None,
+            "attributes": {"username": username, "password": password},
+        }
+        login_service = {
+            "host": host, "port": port, "source_tool": "nmap",
+            "entity_type": "service", "name": service, "version": None,
+            "attributes": {},
+        }
+        return {
+            "name": "Credential Reuse on Login Service", "host": host,
+            "matched_findings": [
+                {"trigger_id": 1, "finding": credential},
+                {"trigger_id": 2, "finding": login_service},
+            ],
+        }
+
+    @patch("main.pathfinder.shutil.which", return_value="/usr/bin/nxc")
+    def test_builds_one_structured_action_per_resolved_pair(self, _which):
+        path = self._path("alice", "Secret!", "microsoft-ds", "10.0.0.5", 1445)
+        actions = _credential_validation_actions([path, path])
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]["protocol"], "smb")
+        self.assertEqual(
+            actions[0]["argv"],
+            ["nxc", "smb", "10.0.0.5", "--port", "1445", "-u", "alice", "-p", "Secret!"],
+        )
+
+    @patch("main.pathfinder.shutil.which", return_value="/usr/bin/nxc")
+    def test_incomplete_credential_is_not_attempted(self, _which):
+        path = self._path("alice", None, "ssh", "10.0.0.5", 22)
+        self.assertEqual(_credential_validation_actions([path]), [])
+
+    @patch("main.pathfinder.shutil.which", return_value="/usr/bin/nxc")
+    def test_ntlm_hash_is_used_only_for_supported_login_protocols(self, _which):
+        smb = self._path("alice", None, "smb", "10.0.0.5", 445)
+        smb["matched_findings"][0]["finding"]["attributes"].update({
+            "hash": "31d6cfe0d16ae931b73c59d7e0c089c0", "hash_type": "NTLM",
+        })
+        ssh = self._path("alice", None, "ssh", "10.0.0.6", 22)
+        ssh["matched_findings"][0]["finding"]["attributes"].update({
+            "hash": "31d6cfe0d16ae931b73c59d7e0c089c0", "hash_type": "NTLM",
+        })
+        actions = _credential_validation_actions([smb, ssh])
+        self.assertEqual(len(actions), 1)
+        self.assertIn("-H", actions[0]["argv"])
+
+    @patch("main.pathfinder.shutil.which", return_value="/usr/bin/nxc")
+    @patch("main.pathfinder.subprocess.run")
+    def test_success_is_obvious_and_does_not_stop_later_attempts(self, run, _which):
+        run.side_effect = [
+            SimpleNamespace(
+                stdout="SMB 10.0.0.5 445 HOST [+] alice:Secret! (Pwn3d!)\n",
+                stderr="", returncode=0,
+            ),
+            SimpleNamespace(
+                stdout="SSH 10.0.0.6 22 HOST [-] bob:Wrong!\n",
+                stderr="", returncode=0,
+            ),
+        ]
+        paths = [
+            self._path("alice", "Secret!", "smb", "10.0.0.5", 445),
+            self._path("bob", "Wrong!", "ssh", "10.0.0.6", 22),
+        ]
+        out = io.StringIO()
+        with redirect_stdout(out):
+            results = _run_credential_validations(paths)
+        text = out.getvalue()
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual([result["status"] for result in results], ["SUCCESS", "rejected"])
+        self.assertIn("Credential Validation Plan", text)
+        self.assertIn("Credential Validation Stage", text)
+        self.assertIn("VALID LOGIN: alice:Secret! -> smb://10.0.0.5:445", text)
+        self.assertIn("1 successful", text)
 
 
 class RegexValidationTests(_SynthMixin, unittest.TestCase):

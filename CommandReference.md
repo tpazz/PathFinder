@@ -101,7 +101,8 @@ python3 -m main.pathfinder scan loot/     # no --target-host needed; hosts come 
 producer tool and command. PathFinder joins that metadata automatically and
 shows it on findings and attack paths; no additional flag is required. Commands
 are pentest loot and are intentionally displayed and saved verbatim, including
-credentials supplied by the operator.
+credentials supplied by the operator. Use `--hide-discovery` when that provenance
+should be omitted from terminal output.
 
 ---
 
@@ -466,11 +467,21 @@ python3 -m main.pathfinder -i findings.json
 ## Credential Management
 
 PathFinder maintains a persistent manual identity/secret store. Confirmed
-username+password/hash credentials are automatically tested against discovered
-login services by the attack path synthesizer. Username-only entries become
+username+password/hash credentials are automatically correlated with discovered
+login services by the attack path synthesizer when building suggested attack
+paths. Username-only entries become
 `user` findings, and password-only entries become lower-confidence
 `password_candidate` findings that only combine with enumerated users or
 common-default account contexts for manual, lockout-aware checks.
+
+Passing `--validate-credentials` changes this from analysis to active login
+validation. PathFinder prints the complete execution plan, then runs each
+resolved `Credential Reuse on Login Service` action sequentially using NetExec
+(`nxc`/`netexec`) or CrackMapExec. It makes one attempt per complete
+credential/service pair, reports valid logins immediately, continues through the
+remaining actions, and performs no post-login commands. Hash-only validation is
+limited to SMB and WinRM. Use this only when authentication testing is explicitly
+authorised; even single attempts can trigger lockouts, MFA prompts, or alerts.
 
 ```bash
 # Add a found credential, username, or password candidate (interactive wizard)
@@ -507,6 +518,15 @@ python3 -m main.pathfinder scan loot/ --top 0
 
 # Fall back to the old exhaustive attack-path listing
 python3 -m main.pathfinder scan loot/ --show-all
+
+# Hide discovery provenance while retaining findings and attack paths
+python3 -m main.pathfinder scan loot/ --hide-discovery
+
+# Hide the prioritized findings list while retaining attack paths
+python3 -m main.pathfinder scan loot/ --hide-findings
+
+# Actively validate complete credentials against resolved login services
+python3 -m main.pathfinder scan loot/ --validate-credentials
 
 # Teach PathFinder a new attack path rule (interactive)
 python3 -m main.pathfinder --learn

@@ -67,6 +67,9 @@ certipy, one-shot-enum AI surface JSON, and the AI loot collector JSON.
 - `--top N`: show the top grouped leads (`20` by default, `0` for all).
 - `--min-likelihood low|medium|high`: hide lower-confidence leads.
 - `--show-all`: print every generated attack path instead of grouped triage.
+- `--hide-discovery`: hide discovery tools and producer commands from findings and attack paths.
+- `--hide-findings`: hide the prioritized findings list while retaining attack paths.
+- `--validate-credentials`: actively execute resolved credential-reuse login checks, one at a time. This is disabled by default and may trigger lockouts or security alerts.
 - `--max-vulns N`: cap public exploit findings displayed (`10` by default).
 - `--offline`: disable GitHub and Searchsploit enrichment.
 - `--skip-github` / `--skip-searchsploit`: disable one enrichment source.
