@@ -42,6 +42,7 @@ class NewParserTests(unittest.TestCase):
         admin = next(f for f in findings if f["name"] == "/admin")
         self.assertEqual(admin["port"], 80)
         self.assertTrue(admin["attributes"]["is_directory_guess"])
+        self.assertEqual(admin["attributes"]["discovery_command"], payload["commandline"])
         self.assertFalse(next(f for f in findings if f["name"] == "/index.html")["attributes"]["is_directory_guess"])
 
     def test_ffuf_emits_sqlmap_candidate_for_parameterized_url(self):
@@ -58,6 +59,7 @@ class NewParserTests(unittest.TestCase):
         candidate = next(f for f in findings if f["entity_type"] == "web_parameterized_url")
         self.assertEqual(candidate["attributes"]["url"], "http://10.10.10.10/item.php?id=1")
         self.assertEqual(candidate["attributes"]["parameters"], ["id"])
+        self.assertEqual(candidate["attributes"]["discovery_command"], payload["commandline"])
 
     def test_gobuster_and_nikto_emit_sqlmap_candidates_for_parameterized_urls(self):
         gobuster_findings = parse_gobuster_output(

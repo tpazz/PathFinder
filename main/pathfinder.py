@@ -52,6 +52,7 @@ def _oscp_process_commands(commands):
 
 LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s - %(message)s"
 logger = logging.getLogger("pathfinder")
+PROVENANCE_MANIFEST = "_pathfinder_provenance.json"
 
 
 def configure_logging(verbosity):
@@ -62,6 +63,67 @@ def configure_logging(verbosity):
     elif verbosity >= 2:
         level = logging.DEBUG
     logging.basicConfig(level=level, format=LOG_FORMAT)
+
+
+def _normalise_provenance_path(path):
+    """Return a stable, loot-root-relative key for provenance joins."""
+    return str(path or "").replace("\\", "/").lstrip("./").lower()
+
+
+def _load_provenance_manifest(loot_dir):
+    """Load one-shot-enum's command-to-loot mapping, if present."""
+    manifest_path = os.path.join(loot_dir, PROVENANCE_MANIFEST)
+    try:
+        with open(manifest_path, "r", encoding="utf-8-sig") as handle:
+            payload = json.load(handle)
+    except FileNotFoundError:
+        return {}
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"{C.BOLD}{C.YELLOW}[!] Could not load discovery provenance from "
+              f"'{manifest_path}': {exc}{C.END}")
+        return {}
+
+    records = payload.get("records", []) if isinstance(payload, dict) else []
+    by_file = {}
+    for record in records:
+        if not isinstance(record, dict) or not record.get("output_file"):
+            continue
+        by_file[_normalise_provenance_path(record["output_file"])] = record
+    return by_file
+
+
+def _attach_discovery_provenance(finding, source_file=None, manifest_record=None):
+    """Attach a normalized provenance record without changing finding identity."""
+    attrs = finding.setdefault("attributes", {})
+    if source_file:
+        attrs["source_file"] = source_file
+
+    record = manifest_record or {}
+    provenance = {
+        "tool": record.get("tool") or attrs.get("discovery_tool") or finding.get("source_tool"),
+        "command": record.get("command") or attrs.get("discovery_command"),
+    }
+    effective_source = source_file or attrs.get("source_file")
+    if effective_source:
+        provenance["source_file"] = effective_source
+    if record.get("status"):
+        provenance["status"] = record["status"]
+    if record.get("parser"):
+        provenance["parser"] = record["parser"]
+
+    existing = attrs.get("discovery_provenance")
+    if not isinstance(existing, list):
+        existing = []
+    identity = (
+        provenance.get("tool"), provenance.get("command"),
+        provenance.get("source_file"), provenance.get("status"),
+    )
+    if identity not in {
+        (p.get("tool"), p.get("command"), p.get("source_file"), p.get("status"))
+        for p in existing if isinstance(p, dict)
+    }:
+        existing.append(provenance)
+    attrs["discovery_provenance"] = existing
 
 
 def print_banner():
@@ -210,6 +272,26 @@ def _merge_provenance(kept, duplicate):
     if len(files) > 1:
         kept_attrs["source_files"] = files
 
+    provenance = kept_attrs.get("discovery_provenance")
+    if not isinstance(provenance, list):
+        provenance = []
+    identities = {
+        (p.get("tool"), p.get("command"), p.get("source_file"), p.get("status"))
+        for p in provenance if isinstance(p, dict)
+    }
+    for record in dup_attrs.get("discovery_provenance") or []:
+        if not isinstance(record, dict):
+            continue
+        identity = (
+            record.get("tool"), record.get("command"),
+            record.get("source_file"), record.get("status"),
+        )
+        if identity not in identities:
+            provenance.append(record)
+            identities.add(identity)
+    if provenance:
+        kept_attrs["discovery_provenance"] = provenance
+
 
 def _merge_credential(kept, duplicate):
     """Merge a duplicate credential into the kept one: fill in any missing secret
@@ -218,7 +300,8 @@ def _merge_credential(kept, duplicate):
     kept_attrs = kept.setdefault("attributes", {})
     dup_attrs = duplicate.get("attributes") or {}
     for field, value in dup_attrs.items():
-        if field in ("score", "source_file", "corroborating_sources", "source_files"):
+        if field in ("score", "source_file", "corroborating_sources", "source_files",
+                     "discovery_provenance"):
             continue
         if value in (None, "") or kept_attrs.get(field) not in (None, ""):
             continue
@@ -384,6 +467,8 @@ def parse_new_data_files(args, target_host):
             print(f"[*] Parsing {spec.key}: {file_path}")
         findings_from_parser = spec.run(file_path, ctx)
         validated_findings = validate_parser_output(spec.key, findings_from_parser)
+        for finding in validated_findings:
+            _attach_discovery_provenance(finding, source_file=str(file_path))
         findings.extend(validated_findings)
         logger.info("Parser %s produced %s validated findings", spec.key, len(validated_findings))
         if args.verbose > 0:
@@ -833,9 +918,188 @@ def _group_attack_paths(paths):
     return groups
 
 
+def _redact_discovery_command(command):
+    """Redact common explicit secret forms while preserving useful CLI context."""
+    if not command:
+        return None
+    redacted = str(command)
+    redacted = re.sub(
+        r"(?i)(--(?:password|passwd|token|api[-_]?key|secret)(?:=|\s+))([^\s]+)",
+        r"\1<redacted>", redacted,
+    )
+    redacted = re.sub(r"(?i)(authorization:\s*bearer\s+)([^\s]+)",
+                      r"\1<redacted>", redacted)
+    return redacted
+
+
+def _finding_discovery_provenance(finding):
+    attrs = finding.get("attributes") or {}
+    records = attrs.get("discovery_provenance")
+    if isinstance(records, list) and records:
+        return [record for record in records if isinstance(record, dict)]
+    return [{
+        "tool": attrs.get("discovery_tool") or finding.get("source_tool"),
+        "command": attrs.get("discovery_command"),
+        "source_file": attrs.get("source_file"),
+    }]
+
+
+def _deduplicate_provenance(records):
+    unique = []
+    seen = set()
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        normalized = {
+            "tool": record.get("tool") or "unknown",
+            "command": _redact_discovery_command(record.get("command")),
+            "source_file": record.get("source_file"),
+            "status": record.get("status"),
+        }
+        key = tuple(normalized.get(field) for field in
+                    ("tool", "command", "source_file", "status"))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(normalized)
+    return unique
+
+
+def _path_discovery_provenance(path):
+    records = []
+    for matched in path.get("matched_findings") or []:
+        finding = matched.get("finding") if isinstance(matched, dict) else None
+        if isinstance(finding, dict):
+            records.extend(_finding_discovery_provenance(finding))
+    return _deduplicate_provenance(records)
+
+
+def _print_discovery_provenance(records, args, indent="  "):
+    records = _deduplicate_provenance(records)
+    if not records:
+        return
+    print(f"\n{indent}{C.BOLD}{C.GREEN}[+]{C.END} {C.BOLD}Discovery Provenance:{C.END}")
+    for record in records:
+        command = record.get("command") or "not recorded"
+        print(f"{indent}    {C.GREEN}-{C.END} Tool: {record['tool']}")
+        print(f"{indent}      Command: {command}")
+        if getattr(args, "verbose", 0) > 0:
+            if record.get("source_file"):
+                print(f"{indent}      Source: {record['source_file']}")
+            if record.get("status"):
+                print(f"{indent}      Status: {record['status']}")
+
+
+def _print_finding_discovery(finding, args):
+    records = _deduplicate_provenance(_finding_discovery_provenance(finding))
+    for index, record in enumerate(records):
+        label = "Discovery:" if index == 0 else "Corroborated:"
+        print(f"      {_label(label, 14)}{record['tool']}")
+        print(f"      {_label('Command:', 14)}{record.get('command') or 'not recorded'}")
+        if getattr(args, "verbose", 0) > 0:
+            if record.get("source_file"):
+                print(f"      {_label('Source:', 14)}{record['source_file']}")
+            if record.get("status"):
+                print(f"      {_label('Status:', 14)}{record['status']}")
+
+
+_ACTION_ENTITY_TYPES = {
+    "service", "web_content", "share", "nfs_export", "ai_service",
+    "software_product", "vulnerability", "misconfiguration", "database",
+}
+MAX_GROUP_ACTION_BUCKETS = 8
+MAX_GROUP_INPUTS = 8
+MAX_GROUP_COMMANDS = 8
+
+
+def _matched_finding_records(path):
+    return [record for record in (path.get("matched_findings") or [])
+            if isinstance(record, dict) and isinstance(record.get("finding"), dict)]
+
+
+def _action_record(path):
+    records = _matched_finding_records(path)
+    for record in reversed(records):
+        if record["finding"].get("entity_type") in _ACTION_ENTITY_TYPES:
+            return record
+    return records[-1] if records else None
+
+
+def _action_label(path, record):
+    if not record:
+        return str(path.get("host") or "GLOBAL")
+    finding = record["finding"]
+    host = finding.get("host") or path.get("host") or "GLOBAL"
+    port = finding.get("port")
+    target = f"{host}:{port}" if port is not None else str(host)
+    return f"{finding.get('name')} ({finding.get('entity_type')}) @ {target}"
+
+
+def _variant_inputs(path, action):
+    values = []
+    for record in _matched_finding_records(path):
+        if record is action:
+            continue
+        finding = record["finding"]
+        value = f"{finding.get('name')} ({finding.get('entity_type')})"
+        if value not in values:
+            values.append(value)
+    return values
+
+
+def _group_action_buckets(paths):
+    buckets = {}
+    for path in paths:
+        action = _action_record(path)
+        label = _action_label(path, action)
+        bucket = buckets.setdefault(label, {"label": label, "paths": [], "inputs": []})
+        bucket["paths"].append(path)
+        for value in _variant_inputs(path, action):
+            if value not in bucket["inputs"]:
+                bucket["inputs"].append(value)
+    return list(buckets.values())
+
+
+def _print_grouped_resolved_actions(group, args):
+    buckets = _group_action_buckets(group["paths"])
+    print(f"\n  {C.BOLD}{C.GREEN}[+]{C.END} {C.BOLD}Resolved Actions:{C.END}")
+    for bucket in buckets[:MAX_GROUP_ACTION_BUCKETS]:
+        paths = bucket["paths"]
+        print(f"      {C.GREEN}-{C.END} {bucket['label']} "
+              f"({len(paths)} resolved variant(s))")
+        inputs = bucket["inputs"]
+        if inputs:
+            shown = inputs[:MAX_GROUP_INPUTS]
+            suffix = f" (+{len(inputs) - len(shown)} more)" if len(inputs) > len(shown) else ""
+            print(f"        Inputs: {', '.join(shown)}{suffix}")
+
+        commands = []
+        for path in paths:
+            for command in (path.get("suggestion") or {}).get("commands") or []:
+                if command not in commands:
+                    commands.append(command)
+        if commands:
+            uses_msf = False
+            if getattr(args, "oscp", False):
+                commands, uses_msf = _oscp_process_commands(commands)
+            print("        Resolved commands:")
+            for command in commands[:MAX_GROUP_COMMANDS]:
+                print(f"          {C.GREEN}-{C.END} {command}")
+            if len(commands) > MAX_GROUP_COMMANDS:
+                print(f"          {C.YELLOW}[!] {len(commands) - MAX_GROUP_COMMANDS} more resolved "
+                      "command(s); use --show-all for every variant.")
+            if uses_msf:
+                print(f"          {C.YELLOW}[OSCP] Metasploit/Meterpreter is limited to ONE target "
+                      f"on the exam.{C.END}")
+    if len(buckets) > MAX_GROUP_ACTION_BUCKETS:
+        print(f"      {C.YELLOW}[!] {len(buckets) - MAX_GROUP_ACTION_BUCKETS} more action bucket(s); "
+              "use --show-all for every variant.")
+
+
 def _print_path_details(path, args):
     suggestion = path.get("suggestion") or {}
     print(f"\n  {C.BOLD}{C.GREEN}[+]{C.END} {C.BOLD}Description:{C.END}\n      {suggestion.get('description', '')}")
+    _print_discovery_provenance(_path_discovery_provenance(path), args)
     if getattr(args, 'verbose', 0) > 0:
         print(f"\n  {C.BOLD}{C.GREEN}[+]{C.END} {C.BOLD}Rationale:{C.END}\n      {suggestion.get('rationale', '')}")
     if suggestion.get('commands'):
@@ -891,7 +1155,44 @@ def _print_attack_path_group(group, args, index):
     print(f"{_label('Targets:')} {group['targets']}")
     print(f"{_label('Grouped hits:')} {group['count']} underlying path(s)")
     print(_rule_line())
-    _print_path_details(path, args)
+    if group["count"] == 1:
+        _print_path_details(path, args)
+        return
+
+    suggestion = path.get("suggestion") or {}
+    _print_grouped_resolved_actions(group, args)
+    provenance = []
+    for grouped_path in group["paths"]:
+        provenance.extend(_path_discovery_provenance(grouped_path))
+    _print_discovery_provenance(provenance, args)
+    if getattr(args, "verbose", 0) > 0:
+        print(f"\n  {C.BOLD}{C.GREEN}[+]{C.END} {C.BOLD}Rationale:{C.END}\n"
+              f"      {suggestion.get('rationale', '')}")
+    if suggestion.get("injection_examples"):
+        print(f"\n  {C.BOLD}{C.GREEN}[+]{C.END} {C.BOLD}Prompt-injection examples:{C.END}")
+        for example in suggestion["injection_examples"]:
+            print(f"      {C.GREEN}-{C.END} {example}")
+    if path.get("atlas"):
+        print(f"\n  {C.BOLD}{C.GREEN}[+]{C.END} {C.BOLD}MITRE ATLAS:{C.END}")
+        for tag in path["atlas"]:
+            print(f"      {C.GREEN}-{C.END} {tag}")
+    if suggestion.get("references"):
+        print(f"\n  {C.BOLD}{C.GREEN}[+]{C.END} {C.BOLD}References:{C.END}")
+        for ref in suggestion["references"]:
+            print(f"      {C.GREEN}-{C.END} {ref}")
+    if getattr(args, "verbose", 0) > 0:
+        evidence = []
+        for grouped_path in group["paths"]:
+            for item in grouped_path.get("evidence") or []:
+                if item not in evidence:
+                    evidence.append(item)
+        if evidence:
+            print(f"\n  {C.BOLD}{C.GREEN}[+]{C.END} {C.BOLD}Matched Evidence:{C.END}")
+            for item in evidence[:MAX_GROUP_INPUTS]:
+                print(f"      {C.GREEN}-{C.END} {item}")
+            if len(evidence) > MAX_GROUP_INPUTS:
+                print(f"      {C.YELLOW}[!] {len(evidence) - MAX_GROUP_INPUTS} more evidence item(s); "
+                      "use --show-all for every variant.")
 
 
 def _display_results(args, synthesizer, prioritized_findings):
@@ -942,6 +1243,7 @@ def _display_results(args, synthesizer, prioritized_findings):
         display_type = _finding_type_token(p_finding.get('entity_type'))
         print(f"\n{C.BOLD}{C.CYAN}[{i+1:03d}]{C.END} {_score_token(score)} {display_type} {display_name}")
         print(f"      {_label('Host:', 6)}{p_finding.get('host')}   {_label('Port:', 6)}{p_finding.get('port')}")
+        _print_finding_discovery(p_finding, args)
         attributes = p_finding.get("attributes", {})
         if attributes.get("metasploit_module"):
             print(f"      {C.BOLD}Metasploit Module:{C.END} {attributes['metasploit_module']}")
@@ -961,6 +1263,7 @@ def run_scan_mode(args):
     """Handles the 'scan' subcommand: auto-detects all tool output files in a directory."""
     synthesizer = AttackPathSynthesizer()
     loot_dir = os.path.abspath(args.loot_dir)
+    provenance_by_file = _load_provenance_manifest(loot_dir)
 
     print(f"\n{C.BOLD}{C.CYAN}[*] Scanning loot directory: {loot_dir}{C.END}")
 
@@ -1048,10 +1351,13 @@ def run_scan_mode(args):
                             gobuster_port=gb_port, gobuster_mode=gb_mode)
         raw = spec.run(path, ctx)
         validated = validate_parser_output(key, raw)
-        # Record provenance: which file each finding came from.
+        # Record provenance: which file, tool, and exact producer command each
+        # finding came from. Legacy/manual loot remains valid with command=None.
         rel = os.path.relpath(path, loot_dir)
+        manifest_record = provenance_by_file.get(_normalise_provenance_path(rel))
         for finding in validated:
-            finding.setdefault('attributes', {})['source_file'] = rel
+            _attach_discovery_provenance(finding, source_file=rel,
+                                         manifest_record=manifest_record)
         all_raw_findings.extend(validated)
         host_tag = f" [{host}]" if host else ""
         print(f"    {C.GREEN}[+]{C.END} {key:<25} -> {len(validated)} findings  ({rel}){host_tag}")

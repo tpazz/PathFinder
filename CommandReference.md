@@ -96,7 +96,10 @@ python3 -m main.pathfinder scan loot/     # no --target-host needed; hosts come 
 ```
 
 `one-shot-enum --pathfinder-suggest`/`--pathfinder` produces exactly this layout automatically
-(including each host's `nmap.xml`), so the two tools line up end to end.
+(including each host's `nmap.xml`). Live `--pathfinder` runs also write
+`loot/_pathfinder_provenance.json`, which maps each loot file to the exact
+producer tool and command. PathFinder joins that metadata automatically and
+shows it on findings and attack paths; no additional flag is required.
 
 ---
 

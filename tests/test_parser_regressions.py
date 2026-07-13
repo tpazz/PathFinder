@@ -1,3 +1,4 @@
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -27,6 +28,19 @@ class ParserRegressionTests(unittest.TestCase):
         self.assertEqual(software["name"], "OpenSSH")
         self.assertEqual(software["version"], "8.2p1")
         self.assertEqual(vulnerability["name"], "CVE-2020-15778")
+
+    def test_nmap_parser_preserves_xml_commandline(self):
+        content = (FIXTURES / "nmap_sample.xml").read_text(encoding="utf-8")
+        content = content.replace("<nmaprun>", '<nmaprun args="nmap -sC -sV 10.10.10.10">', 1)
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".xml", delete=False,
+                                         encoding="utf-8") as handle:
+            handle.write(content)
+            path = Path(handle.name)
+        self.addCleanup(lambda: path.unlink(missing_ok=True))
+        findings = parse_nmap_xml(str(path))
+        self.assertTrue(findings)
+        self.assertTrue(all(f["attributes"]["discovery_command"] ==
+                            "nmap -sC -sV 10.10.10.10" for f in findings))
 
     def test_gobuster_parser_extracts_web_content_findings(self):
         findings = parse_gobuster_output(str(FIXTURES / "gobuster_sample.txt"), "10.10.10.10", 80, "dir")

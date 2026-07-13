@@ -192,4 +192,8 @@ def parse_nmap_xml(xml_file_path):
                         "version": None,
                         "attributes": attributes,
                     })
+    commandline = root.get("args")
+    if commandline:
+        for finding in findings:
+            finding.setdefault("attributes", {})["discovery_command"] = commandline
     return findings

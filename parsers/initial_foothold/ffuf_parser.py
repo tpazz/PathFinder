@@ -58,6 +58,7 @@ def parse_ffuf_json(json_file_path):
     if not isinstance(data, dict):
         return findings
 
+    commandline = data.get("commandline") if isinstance(data.get("commandline"), str) else None
     seen = set()
     for result in data.get("results", []):
         if not isinstance(result, dict):
@@ -91,6 +92,8 @@ def parse_ffuf_json(json_file_path):
         seen.add(identifier)
 
         attributes = {"status_code": status_code, "fuzz_input": result.get("input")}
+        if commandline:
+            attributes["discovery_command"] = commandline
         if size is not None:
             attributes["size_bytes"] = size
         if redirect_url:
@@ -108,6 +111,8 @@ def parse_ffuf_json(json_file_path):
         })
         param_finding = parameterized_url_finding(host, port, "ffuf", result.get("url"), path)
         if param_finding:
+            if commandline:
+                param_finding.setdefault("attributes", {})["discovery_command"] = commandline
             findings.append(param_finding)
 
     return findings

@@ -13,9 +13,11 @@ from types import SimpleNamespace
 
 from main.attack_path_synthesizer import AttackPathSynthesizer, _finding_confidence_penalty
 from main.pathfinder import (
+    _attach_discovery_provenance,
     _display_results,
     _gobuster_extract_target,
     _group_attack_paths,
+    _load_provenance_manifest,
     _path_likelihood,
 )
 
@@ -121,6 +123,17 @@ class RankingTests(_SynthMixin, unittest.TestCase):
         paths = synth.generate_attack_paths([_finding("vulnerability", "x")])
         self.assertEqual(paths[0]["effective_priority"], paths[0]["priority"])
 
+    def test_synthesized_path_keeps_structured_trigger_findings(self):
+        synth = self._synth([_one_trigger_rule("R", 88, "vulnerability", "x")])
+        finding = _finding("vulnerability", "x", discovery_command="nmap -sV H")
+        path = synth.generate_attack_paths([finding])[0]
+        self.assertEqual(path["matched_findings"][0]["trigger_id"], 1)
+        self.assertEqual(path["matched_findings"][0]["finding"]["name"], "x")
+        self.assertEqual(
+            path["matched_findings"][0]["finding"]["attributes"]["discovery_command"],
+            "nmap -sV H",
+        )
+
 
 class TriageDisplayTests(unittest.TestCase):
     def _path(self, name, host="H", priority=80, effective_priority=None, evidence_score=0):
@@ -177,6 +190,98 @@ class TriageDisplayTests(unittest.TestCase):
         self.assertIn("Grouped hits: 2 underlying path(s)", text)
         self.assertIn("Use --show-all", text)
         self.assertIn("additional grouped lead(s) hidden by --top 1", text)
+
+    def test_grouped_triage_renders_all_action_buckets_and_provenance(self):
+        def finding(entity_type, name, host, port, tool, command):
+            return {
+                "host": host, "port": port, "source_tool": tool,
+                "entity_type": entity_type, "name": name, "version": None,
+                "attributes": {"discovery_provenance": [{"tool": tool, "command": command}]},
+            }
+
+        def path(user, service, port):
+            user_finding = finding("user", user, "DC", None, "kerbrute", "kerbrute userenum ...")
+            service_finding = finding("service", service, "10.0.0.5", port, "nmap", "nmap -sV 10.0.0.5")
+            return {
+                "name": "Password Spray Discovered Users Against Services",
+                "priority": 83, "effective_priority": 83, "evidence_score": 0,
+                "host": "10.0.0.5", "atlas": [],
+                "suggestion": {
+                    "description": f"Try {user} on {service}", "rationale": "r",
+                    "commands": [f"nxc {service} 10.0.0.5 -u {user} -p Password1"],
+                    "references": [],
+                },
+                "evidence": [f"Trigger 1: {user} (user)", f"Trigger 2: {service} (service)"],
+                "matched_findings": [
+                    {"trigger_id": 1, "finding": user_finding},
+                    {"trigger_id": 2, "finding": service_finding},
+                ],
+            }
+
+        paths = [path("alice", "ssh", 22), path("bob", "ssh", 22), path("alice", "smb", 445)]
+
+        class Synth:
+            def generate_attack_paths(self, _findings):
+                return paths
+
+        args = SimpleNamespace(verbose=0, max_vulns=10, oscp=False,
+                               show_all=False, top=20, min_likelihood="low")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            _display_results(args, Synth(), [])
+        text = out.getvalue()
+        self.assertIn("Resolved Actions:", text)
+        self.assertIn("ssh (service) @ 10.0.0.5:22 (2 resolved variant(s))", text)
+        self.assertIn("smb (service) @ 10.0.0.5:445 (1 resolved variant(s))", text)
+        self.assertIn("alice (user)", text)
+        self.assertIn("bob (user)", text)
+        self.assertIn("Tool: kerbrute", text)
+        self.assertIn("Command: kerbrute userenum ...", text)
+
+    def test_default_findings_display_includes_discovery_tool_and_command(self):
+        finding = _finding("service", "ssh", host="10.0.0.5", score=50)
+        finding["attributes"]["discovery_provenance"] = [
+            {"tool": "nmap", "command": "nmap -sV 10.0.0.5"}
+        ]
+
+        class Synth:
+            def generate_attack_paths(self, _findings):
+                return []
+
+        args = SimpleNamespace(verbose=0, max_vulns=10, oscp=False,
+                               show_all=False, top=20, min_likelihood="low")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            _display_results(args, Synth(), [finding])
+        text = out.getvalue()
+        self.assertIn("nmap", text)
+        self.assertIn("nmap -sV 10.0.0.5", text)
+
+
+class ProvenanceManifestTests(unittest.TestCase):
+    def test_manifest_joins_command_to_finding(self):
+        with tempfile.TemporaryDirectory() as directory:
+            payload = {
+                "schema_version": 1,
+                "records": [{
+                    "tool": "kerbrute", "parser": "kerbrute_txt",
+                    "output_file": "10.0.0.5/kerbrute.txt",
+                    "command": "kerbrute userenum -d corp.local users.txt",
+                    "status": "done",
+                }],
+            }
+            Path(directory, "_pathfinder_provenance.json").write_text(
+                json.dumps(payload), encoding="utf-8"
+            )
+            records = _load_provenance_manifest(directory)
+            finding = _finding("user", "alice")
+            _attach_discovery_provenance(
+                finding, "10.0.0.5\\kerbrute.txt", records["10.0.0.5/kerbrute.txt"]
+            )
+        provenance = finding["attributes"]["discovery_provenance"][0]
+        self.assertEqual(provenance["tool"], "kerbrute")
+        self.assertEqual(provenance["status"], "done")
+        self.assertIn("userenum", provenance["command"])
 
 
 class RegexValidationTests(_SynthMixin, unittest.TestCase):

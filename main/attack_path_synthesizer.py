@@ -446,7 +446,18 @@ class AttackPathSynthesizer:
                     "host": host,
                     "suggestion": suggestion,
                     "atlas": ATLAS_TAGS.get(rule['name'], []),
-                    "evidence": [f"Trigger {trigger.get('id', i+1)}: {f.get('name')} ({f.get('entity_type')})" for i, (trigger, f) in enumerate(zip(triggers, combination))]
+                    "evidence": [f"Trigger {trigger.get('id', i+1)}: {f.get('name')} ({f.get('entity_type')})" for i, (trigger, f) in enumerate(zip(triggers, combination))],
+                    # Keep the normalized trigger findings alongside the compact
+                    # evidence strings. Grouped triage needs this structure to
+                    # aggregate every resolved variant and its provenance instead
+                    # of rendering an arbitrary first match from the group.
+                    "matched_findings": [
+                        {
+                            "trigger_id": trigger.get("id", i + 1),
+                            "finding": deepcopy(finding),
+                        }
+                        for i, (trigger, finding) in enumerate(zip(triggers, combination))
+                    ],
                 })
                 host_path_counts[host] = host_path_counts.get(host, 0) + 1
 

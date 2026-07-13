@@ -48,7 +48,12 @@ certipy, one-shot-enum AI surface JSON, and the AI loot collector JSON.
 
 - Auto-detects loot files in `scan` mode.
 - Synthesises attack paths from a 97-rule engine.
-- Groups repeated findings by default so multi-host output stays readable.
+- Groups repeated paths by rule and actionable target, showing compact resolved
+  inputs and commands instead of an arbitrary first match.
+- Shows the discovery tool and producer command on findings and attack paths by
+  default. Native command metadata (for example Nmap XML/ffuf JSON) and the
+  one-shot-enum provenance manifest provide exact commands when available;
+  legacy loot is labelled `not recorded`.
 - Correlates credentials, usernames, hashes, shares, web paths, AD findings, and
   AI/LLM surfaces across hosts.
 - Maps software/version findings to Searchsploit and GitHub exploit leads.
