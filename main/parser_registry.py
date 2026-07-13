@@ -29,6 +29,7 @@ from parsers.initial_foothold.snmp_parser import parse_snmp_output
 from parsers.initial_foothold.sqlmap_parser import parse_sqlmap_log
 from parsers.initial_foothold.whatweb_parser import parse_whatweb_json
 from parsers.initial_foothold.wpscan_parser import parse_wpscan_json
+from parsers.initial_foothold.webpage_identity_parser import parse_webpage_html
 from parsers.post_exploitation.ai_loot_parser import parse_ai_loot_json
 from parsers.privilege_escalation.linpeas_parser import parse_linpeas
 from parsers.privilege_escalation.winpeas_parser import parse_winpeas
@@ -67,6 +68,8 @@ PARSER_SPECS = [
                False, lambda p, ctx: parse_nuclei_jsonl(p)),
     ParserSpec("wpscan_json", "--wpscan-json", "Path to wpscan JSON output file (--format json).",
                False, lambda p, ctx: parse_wpscan_json(p)),
+    ParserSpec("webpage_html", "--webpage-html", "Path to a saved webpage body for username-candidate extraction.",
+               True, lambda p, ctx: parse_webpage_html(p, ctx.target_host)),
     ParserSpec("llm_enum_json", "--llm-enum-json", "Path to one-shot-enum LLM/AI enumeration JSON.",
                False, lambda p, ctx: parse_llm_enum_json(p)),
     ParserSpec("ai_loot_json", "--ai-loot-json", "Path to PathFinder AI post-exploitation loot collector JSON.",

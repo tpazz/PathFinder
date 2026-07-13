@@ -7,6 +7,15 @@ from parsers.initial_foothold.gobuster_parser import parse_gobuster_output
 
 
 class ScanAutodetectTests(unittest.TestCase):
+    def test_sniff_detects_saved_webpage_html(self):
+        content = "<!doctype html><html><body>Service account: ts_svc</body></html>"
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".html", delete=False, encoding="utf-8") as tmp:
+            tmp.write(content)
+            tmp_path = tmp.name
+
+        self.addCleanup(lambda: Path(tmp_path).unlink(missing_ok=True))
+        self.assertEqual(_sniff_file_type(tmp_path), "webpage_html")
+
     def test_sniff_detects_sqlmap_with_ansi(self):
         content = (
             "\x1b[36m[INFO]\x1b[0m testing 'http://10.10.10.10/item.php?id=1'\n"

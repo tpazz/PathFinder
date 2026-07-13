@@ -74,7 +74,7 @@ class NewRuleTests(unittest.TestCase):
 
     def test_hash_credential_reuse_emits_pth_command(self):
         """A hash-only credential (e.g. from secretsdump) reused against SMB should
-        produce a usable pass-the-hash command, not just a password command."""
+        retain a compact pass-the-hash command template."""
         findings = [
             _f("10.10.10.10", 445, "nmap", "service", "microsoft-ds", score=10),
             _f("10.10.10.10", None, "secretsdump", "credential", "Administrator",
@@ -86,7 +86,8 @@ class NewRuleTests(unittest.TestCase):
         self.assertGreaterEqual(len(reuse), 1)
         commands = " ".join(reuse[0]["suggestion"]["commands"])
         self.assertIn("-H", commands)
-        self.assertIn("31d6cfe0d16ae931b73c59d7e0c089c0", commands)
+        self.assertIn("<NTLM_HASH>", commands)
+        self.assertNotIn("31d6cfe0d16ae931b73c59d7e0c089c0", commands)
 
 
 class NewServiceParserRuleTests(unittest.TestCase):

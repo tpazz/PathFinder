@@ -546,7 +546,12 @@ def _sniff_file_type_details(path):
     if stripped.startswith('<'):
         if '<nmaprun' in sanitized_head or 'nmaprun' in sanitized_head[:300]:
             return 'nmap_xml', 'matched nmap XML signature'
+        if (os.path.splitext(path)[1].lower() in {'.html', '.htm'}
+                or re.search(r'(?i)<!doctype\s+html|<html(?:\s|>)|<body(?:\s|>)', sanitized_head)):
+            return 'webpage_html', 'matched saved webpage HTML signature'
         return None, 'XML-like content but no supported XML parser signature'
+    if os.path.splitext(path)[1].lower() in {'.html', '.htm'}:
+        return 'webpage_html', 'matched saved webpage file extension'
 
     # JSON formats. Be careful not to misclassify plain-text logs that start
     # with bracketed tokens like [INFO], [*], or [+].
@@ -1067,6 +1072,71 @@ def _group_action_buckets(paths):
     return list(buckets.values())
 
 
+_COMPACT_LOGIN_RULES = {
+    "Credential Reuse on Login Service",
+    "Password Spray Discovered Users Against Services",
+}
+
+
+def _print_compact_login_bucket(bucket, rule_name):
+    usernames = []
+    candidates = []
+    credentials = []
+    secret_kinds = set()
+    service = None
+    for path in bucket["paths"]:
+        for record in _matched_finding_records(path):
+            finding = record["finding"]
+            entity_type = finding.get("entity_type")
+            attrs = finding.get("attributes") or {}
+            if entity_type == "service":
+                service = service or finding
+            elif entity_type == "user" and finding.get("name") not in usernames:
+                usernames.append(finding["name"])
+            elif entity_type == "username_candidate" and finding.get("name") not in candidates:
+                candidates.append(finding["name"])
+            elif entity_type == "credential":
+                username = attrs.get("username") or finding.get("name")
+                if attrs.get("password"):
+                    label = f"{username}:{attrs['password']}"
+                    secret_kinds.add("password")
+                elif _usable_ntlm_hash(attrs):
+                    label = f"{username}:{_usable_ntlm_hash(attrs)}"
+                    secret_kinds.add("hash")
+                else:
+                    label = str(username)
+                if label not in credentials:
+                    credentials.append(label)
+
+    def print_values(label, values):
+        if not values:
+            return
+        shown = values[:MAX_GROUP_INPUTS]
+        suffix = f" (+{len(values) - len(shown)} more)" if len(values) > len(shown) else ""
+        print(f"        {label}: {', '.join(shown)}{suffix}")
+
+    print_values("Credentials", credentials)
+    print_values("Confirmed usernames", usernames)
+    print_values("Potential usernames (manual triage)", candidates)
+
+    if not service:
+        return
+    service_name = str(service.get("name") or "").lower()
+    protocol = _LOGIN_PROTOCOLS.get(service_name, "<PROTOCOL>")
+    host = service.get("host") or "<TARGET>"
+    port = service.get("port")
+    base = f"nxc {protocol} {host}"
+    if port and port != _LOGIN_DEFAULT_PORTS.get(protocol):
+        base += f" --port {port}"
+    print("        Core command:")
+    if rule_name == "Credential Reuse on Login Service" and secret_kinds == {"hash"}:
+        print(f"          {C.GREEN}-{C.END} {base} -u '<USERNAME>' -H '<NTLM_HASH>'")
+    else:
+        print(f"          {C.GREEN}-{C.END} {base} -u '<USERNAME>' -p '<PASSWORD>'")
+        if rule_name == "Credential Reuse on Login Service" and "hash" in secret_kinds:
+            print(f"          {C.GREEN}-{C.END} {base} -u '<USERNAME>' -H '<NTLM_HASH>'")
+
+
 def _print_grouped_resolved_actions(group, args):
     buckets = _group_action_buckets(group["paths"])
     print(f"\n  {C.BOLD}{C.GREEN}[+]{C.END} {C.BOLD}Resolved Actions:{C.END}")
@@ -1074,6 +1144,9 @@ def _print_grouped_resolved_actions(group, args):
         paths = bucket["paths"]
         print(f"      {C.GREEN}-{C.END} {bucket['label']} "
               f"({len(paths)} resolved variant(s))")
+        if group.get("name") in _COMPACT_LOGIN_RULES:
+            _print_compact_login_bucket(bucket, group["name"])
+            continue
         inputs = bucket["inputs"]
         if inputs:
             shown = inputs[:MAX_GROUP_INPUTS]
@@ -1452,6 +1525,14 @@ def _display_results(args, synthesizer, prioritized_findings):
             print(f"\n{C.BOLD}{C.CYAN}[{i+1:03d}]{C.END} {_score_token(score)} {display_type} {display_name}")
             print(f"      {_label('Host:', 6)}{p_finding.get('host')}   {_label('Port:', 6)}{p_finding.get('port')}")
             _print_finding_discovery(p_finding, args)
+            if p_finding.get("entity_type") == "username_candidate":
+                print(f"      {_label('Triage:', 14)}Potential username only; validate manually")
+                if attributes.get("confidence"):
+                    print(f"      {_label('Confidence:', 14)}{attributes['confidence']}")
+                if attributes.get("extraction_reason"):
+                    print(f"      {_label('Reason:', 14)}{attributes['extraction_reason']}")
+                if attributes.get("evidence"):
+                    print(f"      {_label('Evidence:', 14)}{attributes['evidence']}")
             if attributes.get("metasploit_module"):
                 print(f"      {C.BOLD}Metasploit Module:{C.END} {attributes['metasploit_module']}")
                 if getattr(args, 'oscp', False):

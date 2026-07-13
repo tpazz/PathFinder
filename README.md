@@ -29,6 +29,7 @@ PathFinder understands per-host loot folders automatically:
 loot/
   10.10.10.10/
     nmap.xml
+    webpage_http_80.html
     ffuf_80.json
     nikto_80.json
   10.10.10.20/
@@ -38,7 +39,7 @@ loot/
 
 ## What It Parses
 
-PathFinder supports Nmap, Gobuster, ffuf, Nikto, WhatWeb, nuclei, WPScan,
+PathFinder supports Nmap, saved webpage HTML, Gobuster, ffuf, Nikto, WhatWeb, nuclei, WPScan,
 enum4linux-ng, smbmap, NetExec/CrackMapExec, SNMP, NFS/showmount, Redis, rsync,
 SMTP user enum, SQLMap logs, LinPEAS, WinPEAS, SharpHound, ldapdomaindump,
 Kerbrute, GetNPUsers, GetUserSPNs, secretsdump, john/hashcat `.pot` files,
@@ -47,7 +48,10 @@ certipy, one-shot-enum AI surface JSON, and the AI loot collector JSON.
 ## Core Features
 
 - Auto-detects loot files in `scan` mode.
-- Synthesises attack paths from a 97-rule engine.
+- Extracts potential usernames from saved webpage text by default. These remain
+  `username_candidate` findings requiring manual validation and are never
+  promoted to confirmed users automatically.
+- Synthesises attack paths from a 98-rule engine.
 - Groups repeated paths by rule and actionable target, showing compact resolved
   inputs and commands instead of an arbitrary first match.
 - Shows the discovery tool and producer command on findings and attack paths by
@@ -57,6 +61,8 @@ certipy, one-shot-enum AI surface JSON, and the AI loot collector JSON.
   including operator-supplied credentials.
 - Correlates credentials, usernames, hashes, shares, web paths, AD findings, and
   AI/LLM surfaces across hosts.
+- Compacts grouped credential-reuse and password-spray leads into input lists
+  plus one `<USERNAME>`/`<PASSWORD>` core command per login service.
 - Maps software/version findings to Searchsploit and GitHub exploit leads.
 - Supports an OSCP profile with `--oscp` for manual-safe suggestions around
   restricted tools.

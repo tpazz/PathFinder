@@ -203,8 +203,10 @@ class TriageDisplayTests(unittest.TestCase):
                 "attributes": {"discovery_provenance": [{"tool": tool, "command": command}]},
             }
 
-        def path(user, service, port):
-            user_finding = finding("user", user, "DC", None, "kerbrute", "kerbrute userenum ...")
+        def path(user, service, port, entity_type="user"):
+            tool = "webpage_identity_extractor" if entity_type == "username_candidate" else "kerbrute"
+            command = "curl http://target/" if entity_type == "username_candidate" else "kerbrute userenum ..."
+            user_finding = finding(entity_type, user, "DC", None, tool, command)
             service_finding = finding("service", service, "10.0.0.5", port, "nmap", "nmap -sV 10.0.0.5")
             return {
                 "name": "Password Spray Discovered Users Against Services",
@@ -215,14 +217,18 @@ class TriageDisplayTests(unittest.TestCase):
                     "commands": [f"nxc {service} 10.0.0.5 -u {user} -p Password1"],
                     "references": [],
                 },
-                "evidence": [f"Trigger 1: {user} (user)", f"Trigger 2: {service} (service)"],
+                "evidence": [f"Trigger 1: {user} ({entity_type})", f"Trigger 2: {service} (service)"],
                 "matched_findings": [
                     {"trigger_id": 1, "finding": user_finding},
                     {"trigger_id": 2, "finding": service_finding},
                 ],
             }
 
-        paths = [path("alice", "ssh", 22), path("bob", "ssh", 22), path("alice", "smb", 445)]
+        paths = [
+            path("alice", "ssh", 22), path("bob", "ssh", 22),
+            path("ts_svc", "ssh", 22, "username_candidate"),
+            path("alice", "smb", 445),
+        ]
 
         class Synth:
             def generate_attack_paths(self, _findings):
@@ -235,12 +241,15 @@ class TriageDisplayTests(unittest.TestCase):
             _display_results(args, Synth(), [])
         text = out.getvalue()
         self.assertIn("Resolved Actions:", text)
-        self.assertIn("ssh (service) @ 10.0.0.5:22 (2 resolved variant(s))", text)
+        self.assertIn("ssh (service) @ 10.0.0.5:22 (3 resolved variant(s))", text)
         self.assertIn("smb (service) @ 10.0.0.5:445 (1 resolved variant(s))", text)
-        self.assertIn("alice (user)", text)
-        self.assertIn("bob (user)", text)
         self.assertIn("Tool: kerbrute", text)
         self.assertIn("Command: kerbrute userenum ...", text)
+        self.assertIn("Confirmed usernames: alice, bob", text)
+        self.assertIn("Potential usernames (manual triage): ts_svc", text)
+        self.assertIn("Core command:", text)
+        self.assertIn("nxc ssh 10.0.0.5 -u '<USERNAME>' -p '<PASSWORD>'", text)
+        self.assertNotIn("nxc ssh 10.0.0.5 -u alice -p Password1", text)
 
     def test_default_findings_display_includes_discovery_tool_and_command(self):
         finding = _finding("service", "ssh", host="10.0.0.5", score=50)
@@ -260,6 +269,43 @@ class TriageDisplayTests(unittest.TestCase):
         text = out.getvalue()
         self.assertIn("nmap", text)
         self.assertIn("nmap -sV 10.0.0.5", text)
+
+    def test_grouped_credential_reuse_lists_pairs_and_one_placeholder_command(self):
+        service = {
+            "host": "10.0.0.5", "port": 22, "source_tool": "nmap",
+            "entity_type": "service", "name": "ssh", "version": None,
+            "attributes": {},
+        }
+        paths = []
+        for username, password in (("alice", "Secret1!"), ("bob", "Secret2!")):
+            credential = {
+                "host": "MANUALLY_ADDED", "port": None, "source_tool": "manual_input",
+                "entity_type": "credential", "name": username, "version": None,
+                "attributes": {"username": username, "password": password},
+            }
+            path = self._path("Credential Reuse on Login Service", host="10.0.0.5", priority=98)
+            path["matched_findings"] = [
+                {"trigger_id": 1, "finding": credential},
+                {"trigger_id": 2, "finding": service},
+            ]
+            path["suggestion"]["commands"] = [
+                f"nxc ssh 10.0.0.5 -u '{username}' -p '{password}'"
+            ]
+            paths.append(path)
+
+        class Synth:
+            def generate_attack_paths(self, _findings):
+                return paths
+
+        args = SimpleNamespace(verbose=0, max_vulns=10, oscp=False,
+                               show_all=False, top=20, min_likelihood="low")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            _display_results(args, Synth(), [])
+        text = out.getvalue()
+        self.assertIn("Credentials: alice:Secret1!, bob:Secret2!", text)
+        self.assertEqual(text.count("nxc ssh 10.0.0.5 -u '<USERNAME>' -p '<PASSWORD>'"), 1)
+        self.assertNotIn("-u 'alice' -p 'Secret1!'", text)
 
     def test_hide_discovery_applies_to_grouped_triage(self):
         finding = _finding("service", "ssh", host="10.0.0.5", score=50)
@@ -286,7 +332,7 @@ class TriageDisplayTests(unittest.TestCase):
         text = out.getvalue()
         self.assertNotIn("Discovery Provenance", text)
         self.assertNotIn("producer-command --secret", text)
-        self.assertIn("suggested-command -u alice", text)
+        self.assertIn("nxc ssh 10.0.0.5 -u '<USERNAME>' -p '<PASSWORD>'", text)
 
     def test_hide_discovery_applies_to_full_paths(self):
         finding = _finding("service", "ssh", host="10.0.0.5", score=50)

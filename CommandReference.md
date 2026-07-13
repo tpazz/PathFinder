@@ -46,6 +46,7 @@ python3 -m main.pathfinder scan loot/ --show-all
 | Detected Content | Parser Used |
 |---|---|
 | XML with `<nmaprun` | Nmap |
+| Saved HTML (`.html`/`.htm` or HTML document signature) | Webpage username-candidate extractor |
 | JSON with `"vulnerabilities"` + `"msg"` | Nikto |
 | JSON with `"plugins"` | WhatWeb |
 | JSON with `"results"` + `"commandline"` | ffuf |
@@ -70,7 +71,7 @@ python3 -m main.pathfinder scan loot/ --show-all
 | Directory with `users.json` + `domains.json` | SharpHound |
 | Directory with `domain_users.tsv` | ldapdomaindump |
 
-> **Note:** For host-dependent parsers (LinPEAS, WinPEAS, Gobuster, SNMP, Kerbrute, enum4linux) in a *flat* loot dir, the target host is inferred from the nmap XML or Gobuster header — pass `--target-host` if those are absent. In a **per-host** loot layout (below) the host comes from the directory name, so no `--target-host` is needed.
+> **Note:** For host-dependent parsers (saved webpage HTML, LinPEAS, WinPEAS, Gobuster, SNMP, Kerbrute, enum4linux) in a *flat* loot dir, the target host is inferred from the nmap XML or Gobuster header — pass `--target-host` if those are absent. In a **per-host** loot layout (below) the host comes from the directory name, so no `--target-host` is needed.
 
 ### Multi-host engagements
 
@@ -156,6 +157,19 @@ nikto -h http://TARGET_HOST:PORT -o nikto.json -Format json
 
 ```bash
 python3 -m main.pathfinder --nikto-json nikto.json
+```
+
+#### 3b. Saved webpage identity extraction
+
+PathFinder scans saved HTML text and comments for labelled identities, email
+local-parts, and service-account patterns such as `svc_backup` or `ts_svc`.
+Every match remains a `username_candidate` with its evidence and source URL; it
+is shown under `Password Spray Discovered Users Against Services` for manual
+triage but never becomes a confirmed `user` automatically.
+
+```bash
+curl -ksSL http://TARGET_HOST:PORT/ -o webpage_http_PORT.html
+python3 -m main.pathfinder --webpage-html webpage_http_PORT.html --target-host TARGET_HOST
 ```
 
 #### 4. WhatWeb

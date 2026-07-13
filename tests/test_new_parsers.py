@@ -15,6 +15,7 @@ from parsers.initial_foothold.nuclei_parser import parse_nuclei_jsonl
 from parsers.initial_foothold.smbmap_parser import parse_smbmap_output
 from parsers.initial_foothold.web_url_helpers import parameterized_url_finding
 from parsers.initial_foothold.wpscan_parser import parse_wpscan_json
+from parsers.initial_foothold.webpage_identity_parser import parse_webpage_html
 
 
 class NewParserTests(unittest.TestCase):
@@ -44,6 +45,27 @@ class NewParserTests(unittest.TestCase):
         self.assertTrue(admin["attributes"]["is_directory_guess"])
         self.assertEqual(admin["attributes"]["discovery_command"], payload["commandline"])
         self.assertFalse(next(f for f in findings if f["name"] == "/index.html")["attributes"]["is_directory_guess"])
+
+    def test_webpage_extracts_candidates_without_promoting_them_to_users(self):
+        page = """
+        <html><body>
+          <p>Terminal Services account: ts_svc</p>
+          <p>Contact jane.doe@example.test for access.</p>
+          <script>const fake = 'ignored_svc';</script>
+        </body></html>
+        """
+        path = self._write(page, "_webpage_http_8080.html")
+        findings = parse_webpage_html(path, "10.0.0.5")
+        validate_findings(findings)
+        names = {finding["name"] for finding in findings}
+        self.assertIn("ts_svc", names)
+        self.assertIn("jane.doe", names)
+        self.assertNotIn("ignored_svc", names)
+        self.assertTrue(all(finding["entity_type"] == "username_candidate" for finding in findings))
+        candidate = next(finding for finding in findings if finding["name"] == "ts_svc")
+        self.assertEqual(candidate["port"], 8080)
+        self.assertEqual(candidate["attributes"]["confidence"], "high")
+        self.assertTrue(candidate["attributes"]["requires_manual_validation"])
 
     def test_ffuf_emits_sqlmap_candidate_for_parameterized_url(self):
         payload = {

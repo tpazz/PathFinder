@@ -116,6 +116,20 @@ class ManualIdentityInputTests(unittest.TestCase):
         self.assertIn("Password Candidate + Web Login - Manual Default-User Check", names)
         self.assertNotIn("Credential Reuse on Web Login Page", names)
 
+    def test_web_username_candidate_gets_manual_spray_lead_but_is_not_a_user(self):
+        candidate = _finding(
+            "web", 80, "username_candidate", "ts_svc",
+            candidate_only=True, requires_manual_validation=True, confidence="high",
+        )
+        findings = [candidate, _finding("server", 22, "service", "ssh")]
+        paths = AttackPathSynthesizer(RULES_FILE).generate_attack_paths(findings)
+        spray = [p for p in paths if p["name"] == "Password Spray Discovered Users Against Services"]
+        self.assertEqual(len(spray), 1)
+        self.assertIn("Manually triage", spray[0]["suggestion"]["description"])
+        self.assertIn("<USERNAME>", spray[0]["suggestion"]["commands"][0])
+        self.assertEqual(candidate["entity_type"], "username_candidate")
+        self.assertFalse(any("Discovered User with Weak Password Policy" in p["name"] for p in paths))
+
 
 if __name__ == "__main__":
     unittest.main()

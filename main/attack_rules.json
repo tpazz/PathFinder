@@ -11,10 +11,8 @@
             "description": "Credential for '{trigger.1.name}' can be tested against '{trigger.2.name}' on {trigger.2.host}:{trigger.2.port}.",
             "rationale": "Credential reuse is the highest-yield attack in OSCP labs. Always spray found credentials against every login service.",
             "commands": [
-                "crackmapexec {trigger.2.name} {trigger.2.host} -u '{trigger.1.name}' -p '{trigger.1.attributes.password}'",
-                "For SSH: ssh {trigger.1.name}@{trigger.2.host}",
-                "For WinRM: evil-winrm -i {trigger.2.host} -u '{trigger.1.name}' -p '{trigger.1.attributes.password}'",
-                "If hash available ('{trigger.1.attributes.hash}'): crackmapexec smb {trigger.2.host} -u '{trigger.1.name}' -H '{trigger.1.attributes.hash}'"
+                "nxc <PROTOCOL> <TARGET> -u '<USERNAME>' -p '<PASSWORD>'",
+                "nxc smb <TARGET> -u '<USERNAME>' -H '<NTLM_HASH>'  # hash-only credentials"
             ]
         }
     },
@@ -493,9 +491,23 @@
             "description": "User '{trigger.1.name}' discovered. Try password spraying against '{trigger.2.name}' on {trigger.2.host}:{trigger.2.port}.",
             "rationale": "Discovered usernames should be sprayed against all login services with common passwords and username-as-password variations.",
             "commands": [
-                "crackmapexec {trigger.2.name} {trigger.2.host} -u '{trigger.1.name}' -p '{trigger.1.name}' (username as password)",
-                "crackmapexec {trigger.2.name} {trigger.2.host} -u '{trigger.1.name}' -p Password1,Welcome1,{trigger.1.name}123",
-                "hydra -l '{trigger.1.name}' -P /usr/share/wordlists/rockyou.txt {trigger.2.host} {trigger.2.name} -t 4"
+                "nxc <PROTOCOL> <TARGET> -u '<USERNAME>' -p '<PASSWORD>'"
+            ]
+        }
+    },
+    {
+        "name": "Password Spray Discovered Users Against Services",
+        "priority": 72,
+        "host_scope": "any_host",
+        "triggers": [
+            { "id": 1, "entity_type": "username_candidate", "name_match": { "type": "regex", "value": ".*" } },
+            { "id": 2, "entity_type": "service", "name_match": { "type": "regex", "value": "(ssh|ftp|rdp|ms-wbt-server|winrm|smb|microsoft-ds)" } }
+        ],
+        "suggestion": {
+            "description": "Potential username '{trigger.1.name}' was extracted from webpage content. Manually triage it before attempting a password spray against '{trigger.2.name}' on {trigger.2.host}:{trigger.2.port}.",
+            "rationale": "Webpage identity extraction is heuristic. The candidate is shown as a manual lead and is deliberately not promoted to a confirmed user.",
+            "commands": [
+                "nxc <PROTOCOL> <TARGET> -u '<USERNAME>' -p '<PASSWORD>'"
             ]
         }
     },
