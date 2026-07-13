@@ -86,7 +86,8 @@ certipy, one-shot-enum AI surface JSON, and the AI loot collector JSON.
 - `--hide-discovery`: hide discovery tools and producer commands from findings and attack paths.
 - `--hide-findings`: hide the prioritized findings list while retaining attack paths.
 - `--validate-credentials`: actively execute resolved credential-reuse login checks, one at a time. This is disabled by default and may trigger lockouts or security alerts.
-- `--max-vulns N`: cap public exploit findings displayed (`10` by default).
+- `--max-vulns N`: cap EDB and GitHub exploit findings displayed (`5` per
+  source by default).
 - `--offline`: disable GitHub and Searchsploit enrichment.
 - `--skip-github` / `--skip-searchsploit`: disable one enrichment source.
 - `--target-host HOST`: provide host context for flat loot folders.

@@ -545,7 +545,7 @@ python3 -m main.pathfinder scan loot/ --validate-credentials
 # Teach PathFinder a new attack path rule (interactive)
 python3 -m main.pathfinder --learn
 
-# Increase the number of public exploits shown (default: 10 per source)
+# Increase the number of public exploits shown (default: 5 per source)
 python3 -m main.pathfinder scan loot/ --max-vulns 25
 
 # Disable ANSI colour (also auto-disabled when output is piped/redirected)

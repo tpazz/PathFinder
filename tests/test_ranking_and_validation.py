@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 from main.attack_path_synthesizer import AttackPathSynthesizer, _finding_confidence_penalty
 from main.pathfinder import (
+    DEFAULT_MAX_VULNS,
     _attach_discovery_provenance,
     _deduplicate_provenance,
     _credential_validation_actions,
@@ -24,6 +25,7 @@ from main.pathfinder import (
     _load_provenance_manifest,
     _path_likelihood,
     _run_credential_validations,
+    filter_prioritized_findings,
     format_finding_display,
 )
 from parsers.ansi import C, set_color_enabled
@@ -173,6 +175,19 @@ class TriageDisplayTests(unittest.TestCase):
         self.assertIn("10.0.0.1", groups[0]["targets"])
         self.assertIn("10.0.0.2", groups[0]["targets"])
 
+    def test_default_public_exploit_cap_is_five_per_source(self):
+        findings = []
+        for source in ("searchsploit_mapper", "github_exploit_mapper"):
+            for index in range(7):
+                findings.append({
+                    "source_tool": source,
+                    "attributes": {"score": index},
+                })
+        filtered = filter_prioritized_findings(findings, DEFAULT_MAX_VULNS)
+        self.assertEqual(DEFAULT_MAX_VULNS, 5)
+        self.assertEqual(sum(f["source_tool"] == "searchsploit_mapper" for f in filtered), 5)
+        self.assertEqual(sum(f["source_tool"] == "github_exploit_mapper" for f in filtered), 5)
+
     def test_display_defaults_to_grouped_top_triage(self):
         class Synth:
             def generate_attack_paths(self, _findings):
@@ -266,6 +281,74 @@ class TriageDisplayTests(unittest.TestCase):
         self.assertIn("Core command:", text)
         self.assertIn("nxc ssh 10.0.0.5 -u '<USERNAME>' -p '<PASSWORD>'", text)
         self.assertNotIn("nxc ssh 10.0.0.5 -u alice -p Password1", text)
+
+    def test_grouped_exploit_paths_use_compact_command_templates(self):
+        def exploit_path(rule_name, source, name, url=None, stars=None):
+            attrs = {
+                "related_software_product": "Apache httpd",
+                "related_software_version": "2.4.49",
+            }
+            if url:
+                attrs["url"] = url
+            if stars is not None:
+                attrs["stars"] = stars
+            finding = {
+                "host": "10.0.0.5", "port": 80, "source_tool": source,
+                "entity_type": "vulnerability", "name": name, "version": None,
+                "attributes": attrs,
+            }
+            resolved_command = (
+                f"git clone {url}" if source == "github_exploit_mapper"
+                else "searchsploit 'Apache httpd 2.4.49'"
+            )
+            return {
+                "name": rule_name, "priority": 90, "effective_priority": 90,
+                "evidence_score": 0, "host": "10.0.0.5", "atlas": [],
+                "suggestion": {
+                    "description": name, "rationale": "r",
+                    "commands": [resolved_command], "references": [],
+                },
+                "evidence": [f"Trigger 1: {name} (vulnerability)"],
+                "matched_findings": [{"trigger_id": 1, "finding": finding}],
+            }
+
+        cases = [
+            (
+                "Known Vulnerable Software with Public Exploit",
+                [
+                    exploit_path("Known Vulnerable Software with Public Exploit", "searchsploit_mapper", "EDB-ID:50383 - Path Traversal"),
+                    exploit_path("Known Vulnerable Software with Public Exploit", "searchsploit_mapper", "EDB-ID:50406 - RCE"),
+                ],
+                "searchsploit '<SOFTWARE> <VERSION>'",
+                "searchsploit 'Apache httpd 2.4.49'",
+            ),
+            (
+                "Known Vulnerable Software with GitHub Exploit",
+                [
+                    exploit_path("Known Vulnerable Software with GitHub Exploit", "github_exploit_mapper", "GitHub Exploit: example/poc-one", "https://github.com/example/poc-one", 20),
+                    exploit_path("Known Vulnerable Software with GitHub Exploit", "github_exploit_mapper", "GitHub Exploit: example/poc-two", "https://github.com/example/poc-two", 10),
+                ],
+                "git clone <GITHUB_URL>",
+                "git clone https://github.com/example/poc-one",
+            ),
+        ]
+
+        for rule_name, paths, template, resolved_command in cases:
+            with self.subTest(rule=rule_name):
+                class Synth:
+                    def generate_attack_paths(self, _findings):
+                        return paths
+
+                args = SimpleNamespace(verbose=0, max_vulns=5, oscp=False,
+                                       show_all=False, top=20, min_likelihood="low")
+                out = io.StringIO()
+                with redirect_stdout(out):
+                    _display_results(args, Synth(), [])
+                text = out.getvalue()
+                self.assertIn("Apache httpd 2.4.49 @ 10.0.0.5:80 (2 exploit lead(s))", text)
+                self.assertIn("Core command templates:", text)
+                self.assertIn(template, text)
+                self.assertNotIn(resolved_command, text)
 
     def test_grouped_username_candidates_have_dedicated_manual_review_section(self):
         paths = []

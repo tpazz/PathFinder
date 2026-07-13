@@ -865,6 +865,7 @@ LIKELIHOOD_LABELS = {
     "low": "Manual validation / lower confidence",
 }
 DEFAULT_TRIAGE_TOP = 20
+DEFAULT_MAX_VULNS = 5
 
 
 def _path_text(path):
@@ -1113,6 +1114,10 @@ _COMPACT_LOGIN_RULES = {
     "Credential Reuse on Login Service",
     "Password Spray Discovered Users Against Services",
 }
+_COMPACT_EXPLOIT_RULES = {
+    "Known Vulnerable Software with Public Exploit",
+    "Known Vulnerable Software with GitHub Exploit",
+}
 
 
 def _print_compact_login_bucket(bucket, rule_name):
@@ -1174,6 +1179,63 @@ def _print_compact_login_bucket(bucket, rule_name):
             print(f"          {C.GREEN}-{C.END} {base} -u '<USERNAME>' -H '<NTLM_HASH>'")
 
 
+def _print_compact_exploit_group(group, args):
+    """Render exploit leads as resolved inputs plus reusable command templates."""
+    buckets = {}
+    for path in group["paths"]:
+        for record in _matched_finding_records(path):
+            finding = record["finding"]
+            if finding.get("source_tool") not in {"searchsploit_mapper", "github_exploit_mapper"}:
+                continue
+            attrs = finding.get("attributes") or {}
+            product = attrs.get("related_software_product") or "<SOFTWARE>"
+            version = attrs.get("related_software_version") or "<VERSION>"
+            host = finding.get("host") or path.get("host") or "<TARGET>"
+            port = finding.get("port")
+            key = (product, version, host, port)
+            bucket = buckets.setdefault(key, {"leads": []})
+            lead = (finding.get("name"), attrs.get("url"), attrs.get("stars"))
+            if lead not in bucket["leads"]:
+                bucket["leads"].append(lead)
+
+    print(f"\n  {C.BOLD}{C.GREEN}[+]{C.END} {C.BOLD}Resolved Actions:{C.END}")
+    for (product, version, host, port), bucket in list(buckets.items())[:MAX_GROUP_ACTION_BUCKETS]:
+        target = f"{host}:{port}" if port is not None else str(host)
+        leads = bucket["leads"]
+        print(f"      {C.GREEN}-{C.END} {product} {version} @ {target} "
+              f"({len(leads)} exploit lead(s))")
+        print("        Exploit leads:")
+        for name, url, stars in leads[:MAX_GROUP_INPUTS]:
+            context = f" [{stars} stars]" if stars is not None else ""
+            print(f"          {C.GREEN}-{C.END} {name}{context}")
+            if url:
+                print(f"            Repository: {url}")
+        if len(leads) > MAX_GROUP_INPUTS:
+            print(f"          {C.YELLOW}[!] {len(leads) - MAX_GROUP_INPUTS} more exploit lead(s); "
+                  "use --show-all for every lead.")
+
+    print("      Core command templates:")
+    if group.get("name") == "Known Vulnerable Software with Public Exploit":
+        commands = [
+            "searchsploit '<SOFTWARE> <VERSION>'",
+            "searchsploit -m <EDB-ID>",
+            "Review <EXPLOIT_FILE>, configure <TARGET>:<PORT>, and execute",
+        ]
+    else:
+        commands = [
+            "git clone <GITHUB_URL>",
+            "Review README.md for usage instructions",
+            "Configure <TARGET>:<PORT> and execute",
+        ]
+    if getattr(args, "oscp", False):
+        commands, _uses_msf = _oscp_process_commands(commands)
+    for command in commands:
+        print(f"        {C.GREEN}-{C.END} {command}")
+    if len(buckets) > MAX_GROUP_ACTION_BUCKETS:
+        print(f"      {C.YELLOW}[!] {len(buckets) - MAX_GROUP_ACTION_BUCKETS} more software target(s); "
+              "use --show-all for every target.")
+
+
 def _print_grouped_resolved_actions(group, args):
     if group.get("name") == "Username Candidates for Manual Review":
         candidates = []
@@ -1200,6 +1262,10 @@ def _print_grouped_resolved_actions(group, args):
         if len(candidates) > MAX_GROUP_INPUTS:
             print(f"      {C.YELLOW}[!] {len(candidates) - MAX_GROUP_INPUTS} more candidate(s); "
                   "use --show-all for every candidate.")
+        return
+
+    if group.get("name") in _COMPACT_EXPLOIT_RULES:
+        _print_compact_exploit_group(group, args)
         return
 
     buckets = _group_action_buckets(group["paths"])
@@ -1774,7 +1840,7 @@ def main():
     scan_p.add_argument('--target-host', help='Target host IP or domain (inferred from nmap XML if omitted).')
     scan_p.add_argument('-o', '--output-json', help='Save prioritized findings to a JSON file.')
     scan_p.add_argument('-v', '--verbose', action='count', default=0, help='Verbosity level (-v, -vv).')
-    scan_p.add_argument('--max-vulns', type=int, default=10, help='Max EDB/GitHub exploits to display (default: 10).')
+    scan_p.add_argument('--max-vulns', type=int, default=DEFAULT_MAX_VULNS, help=f'Max EDB/GitHub exploits to display (default: {DEFAULT_MAX_VULNS}).')
     scan_p.add_argument('--offline', action='store_true', help='Disable all external enrichment lookups.')
     scan_p.add_argument('--skip-github', action='store_true', help='Skip GitHub exploit enrichment.')
     scan_p.add_argument('--skip-searchsploit', action='store_true', help='Skip Searchsploit enrichment.')
@@ -1808,7 +1874,7 @@ def main():
 
     gg = main_parser.add_argument_group('General Arguments')
     gg.add_argument("-v", "--verbose", action="count", default=0, help="Verbosity level (-v, -vv).")
-    gg.add_argument("--max-vulns", type=int, default=10, help="Max number of EDB/GitHub exploits to display (default: 10).")
+    gg.add_argument("--max-vulns", type=int, default=DEFAULT_MAX_VULNS, help=f"Max number of EDB/GitHub exploits to display (default: {DEFAULT_MAX_VULNS}).")
     gg.add_argument("--offline", action="store_true", help="Disable external enrichment lookups (GitHub + Searchsploit).")
     gg.add_argument("--skip-github", action="store_true", help="Skip GitHub exploit repository enrichment.")
     gg.add_argument("--skip-searchsploit", action="store_true", help="Skip Searchsploit enrichment.")
