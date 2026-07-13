@@ -186,6 +186,23 @@
         }
     },
     {
+        "name": "Parameterized POST Form - SQLi Triage Candidate",
+        "priority": 72,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "web_parameterized_request", "name_match": { "type": "regex", "value": ".*" } }
+        ],
+        "suggestion": {
+            "description": "POST form discovered on {trigger.1.host}:{trigger.1.port}: {trigger.1.attributes.url} with fields {trigger.1.attributes.parameters}",
+            "rationale": "A same-target HTML form with named POST fields is a concrete manual SQLi triage candidate. Placeholder values may need adjustment, and authentication or anti-CSRF handling may be required.",
+            "commands": [
+                "sqlmap -u '{trigger.1.attributes.url}' --data='{trigger.1.attributes.data}' --batch --smart --level=1 --risk=1",
+                "Parameters observed: {trigger.1.attributes.parameters}"
+            ],
+            "references": ["https://github.com/sqlmapproject/sqlmap/wiki/Usage"]
+        }
+    },
+    {
         "name": "SQL Injection to OS Shell",
         "priority": 96,
         "host_scope": "same_host",
@@ -431,6 +448,10 @@
         "host_scope": "same_host",
         "triggers": [
             { "id": 1, "entity_type": "service", "name_match": { "type": "regex", "value": "(smb|microsoft-ds|netbios-ssn)" } }
+        ],
+        "suppress_if_host_has": [
+            { "entity_type": "share" },
+            { "source_tool_regex": "^(enum4linux-ng|smbmap|netexec|crackmapexec|nxc)$" }
         ],
         "suggestion": {
             "description": "SMB on {trigger.1.host}:{trigger.1.port}. Enumerate shares, users, and check for null session.",

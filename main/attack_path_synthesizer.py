@@ -199,6 +199,21 @@ class AttackPathSynthesizer:
         if rule_scope not in VALID_HOST_SCOPES:
             return False, f"Rule has invalid host_scope '{rule_scope}'"
 
+        suppress_conditions = rule.get("suppress_if_host_has", [])
+        if not isinstance(suppress_conditions, list):
+            return False, "Rule 'suppress_if_host_has' must be a list"
+        for condition in suppress_conditions:
+            if not isinstance(condition, dict):
+                return False, "Each suppress_if_host_has condition must be an object"
+            if not any(condition.get(key) for key in ("entity_type", "source_tool_regex", "name_regex")):
+                return False, "A suppress_if_host_has condition must specify a matcher"
+            for key in ("source_tool_regex", "name_regex"):
+                if condition.get(key):
+                    try:
+                        re.compile(condition[key])
+                    except (re.error, TypeError) as exc:
+                        return False, f"Invalid {key} in suppress_if_host_has: {exc}"
+
         placeholders = self._extract_placeholders(rule.get("suggestion"))
         for placeholder in placeholders:
             parts = placeholder.strip('{}').split('.')
@@ -365,6 +380,30 @@ class AttackPathSynthesizer:
             return host_specific_findings[0].get('host')
         return "GLOBAL"
 
+    @staticmethod
+    def _rule_suppressed_for_host(rule, host, findings):
+        """Suppress a fallback lead when richer evidence already exists on its host."""
+        conditions = rule.get("suppress_if_host_has") or []
+        for condition in conditions:
+            if not isinstance(condition, dict):
+                continue
+            entity_type = condition.get("entity_type")
+            source_pattern = condition.get("source_tool_regex")
+            name_pattern = condition.get("name_regex")
+            for finding in findings:
+                if finding.get("host") != host:
+                    continue
+                if entity_type and finding.get("entity_type") != entity_type:
+                    continue
+                if source_pattern and not re.search(source_pattern, finding.get("source_tool") or "",
+                                                    re.IGNORECASE):
+                    continue
+                if name_pattern and not re.search(name_pattern, finding.get("name") or "",
+                                                  re.IGNORECASE):
+                    continue
+                return True
+        return False
+
     def generate_attack_paths(self, prioritized_findings):
         """
         Analyzes findings against rules to generate suggested attack paths,
@@ -406,6 +445,8 @@ class AttackPathSynthesizer:
                     continue
 
                 host = self._target_host_for_combination(combination)
+                if self._rule_suppressed_for_host(rule, host, prioritized_findings):
+                    continue
                 if host_path_counts.get(host, 0) >= MAX_PATHS_PER_RULE:
                     capped_hosts.add(host)
                     continue

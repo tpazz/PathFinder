@@ -67,6 +67,103 @@ class NewParserTests(unittest.TestCase):
         self.assertEqual(candidate["attributes"]["confidence"], "high")
         self.assertTrue(candidate["attributes"]["requires_manual_validation"])
 
+    def test_webpage_extracts_every_identity_from_labelled_table_column(self):
+        page = """
+        <table>
+          <tr><th>Date</th><th>Activity</th><th>User</th></tr>
+          <tr><td>2026-03-12</td><td>Publication indexed</td><td>r.chen</td></tr>
+          <tr><td>2026-03-08</td><td>Dataset updated</td><td>m.silva</td></tr>
+          <tr><td>2026-03-05</td><td>Benchmark added</td><td>j.park</td></tr>
+          <tr><td>2026-03-01</td><td>Pipeline updated</td><td>ts_svc</td></tr>
+        </table>
+        """
+        findings = parse_webpage_html(
+            self._write(page, "_webpage_http_8080_dashboard.html"), "192.168.129.14",
+        )
+        validate_findings(findings)
+
+        candidates = {f["name"]: f for f in findings if f["entity_type"] == "username_candidate"}
+        self.assertEqual(set(candidates), {"r.chen", "m.silva", "j.park", "ts_svc"})
+        self.assertTrue(all(f["attributes"]["confidence"] == "high" for f in candidates.values()))
+        self.assertTrue(all("table column labelled user" in f["attributes"]["extraction_reason"]
+                            for name, f in candidates.items() if name != "ts_svc"))
+        self.assertTrue(all(f["attributes"]["requires_manual_validation"]
+                            for f in candidates.values()))
+
+    def test_ffuf_stored_response_resolves_the_discovered_page_url(self):
+        with tempfile.TemporaryDirectory() as directory:
+            host_dir = Path(directory) / "192.168.129.14"
+            body_dir = host_dir / "ffuf_pages_http_8080"
+            body_dir.mkdir(parents=True)
+            body = body_dir / "a1b2c3"
+            body.write_text(
+                "<table><tr><th>User</th></tr><tr><td>r.chen</td></tr></table>",
+                encoding="utf-8",
+            )
+            (host_dir / "ffuf_8080.json").write_text(json.dumps({
+                "results": [{
+                    "status": 200,
+                    "url": "http://192.168.129.14:8080/dashboard",
+                    "resultfile": "ffuf_pages_http_8080/a1b2c3",
+                }],
+            }), encoding="utf-8")
+
+            findings = parse_webpage_html(str(body), "192.168.129.14")
+
+        candidate = next(f for f in findings if f["name"] == "r.chen")
+        self.assertEqual(candidate["port"], 8080)
+        self.assertEqual(candidate["attributes"]["url"],
+                         "http://192.168.129.14:8080/dashboard")
+
+    def test_webpage_extracts_same_target_parameter_candidates(self):
+        page = """
+        <html><body>
+          <a href="/items.php?id=4&amp;sort=name">Item</a>
+          <a href="https://external.test/item.php?id=9">External</a>
+          <a href="/?utm_source=lab">Tracked home</a>
+          <script>
+            fetch('/api/item?id=7');
+            fetch('?view=compact#client-only');
+            const staticAsset = '/assets/app.js?v=2';
+          </script>
+          <form method="get" action="/search">
+            <input name="q" value="test">
+            <input name="page">
+          </form>
+          <form method="post" action="/login">
+            <input name="username">
+            <input name="password" type="password">
+            <input name="csrf" type="hidden" value="token">
+            <input name="submit" type="submit" value="Login">
+          </form>
+        </body></html>
+        """
+        path = self._write(page, "_webpage_http_8080.html")
+        findings = parse_webpage_html(path, "10.0.0.5")
+        validate_findings(findings)
+
+        get_candidates = [f for f in findings if f["entity_type"] == "web_parameterized_url"]
+        urls = {f["attributes"]["url"] for f in get_candidates}
+        self.assertIn("http://10.0.0.5:8080/items.php?id=4&sort=name", urls)
+        self.assertIn("http://10.0.0.5:8080/api/item?id=7", urls)
+        self.assertIn("http://10.0.0.5:8080/?view=compact", urls)
+        self.assertIn("http://10.0.0.5:8080/search?q=test&page=1", urls)
+        self.assertFalse(any("external.test" in url for url in urls))
+        self.assertFalse(any("app.js" in url for url in urls))
+        self.assertFalse(any("utm_source" in url for url in urls))
+        self.assertTrue(all(f["attributes"]["candidate_only"] for f in get_candidates))
+        self.assertTrue(all(f["attributes"]["source_page"] == "http://10.0.0.5:8080"
+                            for f in get_candidates))
+
+        posts = [f for f in findings if f["entity_type"] == "web_parameterized_request"]
+        self.assertEqual(len(posts), 1)
+        post = posts[0]
+        self.assertEqual(post["attributes"]["url"], "http://10.0.0.5:8080/login")
+        self.assertEqual(post["attributes"]["method"], "POST")
+        self.assertEqual(post["attributes"]["data"], "username=1&password=1&csrf=token")
+        self.assertEqual(post["attributes"]["parameters"], ["csrf", "password", "username"])
+        self.assertTrue(post["attributes"]["requires_manual_validation"])
+
     def test_ffuf_emits_sqlmap_candidate_for_parameterized_url(self):
         payload = {
             "commandline": "ffuf -u http://10.10.10.10/FUZZ -w wl",

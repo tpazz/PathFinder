@@ -2,7 +2,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from main.pathfinder import _gobuster_extract_target, _sniff_file_type, auto_detect_loot
+from main.pathfinder import (
+    _gobuster_extract_target,
+    _inherited_ffuf_provenance,
+    _sniff_file_type,
+    auto_detect_loot,
+)
 from parsers.initial_foothold.gobuster_parser import parse_gobuster_output
 
 
@@ -15,6 +20,31 @@ class ScanAutodetectTests(unittest.TestCase):
 
         self.addCleanup(lambda: Path(tmp_path).unlink(missing_ok=True))
         self.assertEqual(_sniff_file_type(tmp_path), "webpage_html")
+
+    def test_auto_detect_finds_ffuf_stored_response_below_host_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            loot = Path(directory)
+            body_dir = loot / "192.168.129.14" / "ffuf_pages_http_8080"
+            body_dir.mkdir(parents=True)
+            body = body_dir / "a1b2c3"
+            body.write_text("<!doctype html><html><body>User: r.chen</body></html>",
+                            encoding="utf-8")
+
+            detections = auto_detect_loot(str(loot))
+
+        matches = [d for d in detections if d["key"] == "webpage_html"]
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0]["host"], "192.168.129.14")
+
+    def test_ffuf_body_inherits_json_provenance(self):
+        record = {"tool": "ffuf", "command": "ffuf -u http://target/FUZZ"}
+        provenance = {"192.168.129.14/ffuf_8080.json": record}
+
+        inherited = _inherited_ffuf_provenance(
+            "192.168.129.14/ffuf_pages_http_8080/a1b2c3", provenance,
+        )
+
+        self.assertIs(inherited, record)
 
     def test_sniff_detects_sqlmap_with_ansi(self):
         content = (

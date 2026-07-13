@@ -72,6 +72,38 @@ class NewRuleTests(unittest.TestCase):
         self.assertEqual(len(triage), 1)
         self.assertIn("sqlmap -u 'http://10.10.10.10/item.php?id=1'", triage[0]["suggestion"]["commands"][0])
 
+    def test_parameterized_post_form_fires_sqlmap_triage_candidate(self):
+        findings = [_f("10.10.10.10", 80, "webpage_parameter_extractor",
+                       "web_parameterized_request", "POST http://10.10.10.10/login",
+                       url="http://10.10.10.10/login", method="POST",
+                       data="username=1&password=1", parameters=["password", "username"], score=45)]
+        paths = _synth().generate_attack_paths(findings)
+        triage = [p for p in paths if p["name"] == "Parameterized POST Form - SQLi Triage Candidate"]
+        self.assertEqual(len(triage), 1)
+        self.assertIn("--data='username=1&password=1'", triage[0]["suggestion"]["commands"][0])
+
+    def test_smb_service_enum_fallback_fires_with_service_only(self):
+        findings = [_f("10.10.10.10", 445, "nmap", "service", "microsoft-ds", score=10)]
+        paths = _synth().generate_attack_paths(findings)
+        self.assertIn("SMB Service - Enumerate Shares and Users", _names(paths))
+
+    def test_smb_service_enum_fallback_is_suppressed_after_share_discovery(self):
+        findings = [
+            _f("10.10.10.10", 445, "nmap", "service", "microsoft-ds", score=10),
+            _f("10.10.10.10", 445, "smbmap", "share", "backups", permissions="READ"),
+        ]
+        paths = _synth().generate_attack_paths(findings)
+        self.assertNotIn("SMB Service - Enumerate Shares and Users", _names(paths))
+        self.assertIn("SMB Share Accessible - Enumerate for Sensitive Files", _names(paths))
+
+    def test_smb_service_enum_fallback_is_suppressed_after_user_enumeration(self):
+        findings = [
+            _f("10.10.10.10", 445, "nmap", "service", "microsoft-ds", score=10),
+            _f("10.10.10.10", 445, "enum4linux-ng", "user", "alice"),
+        ]
+        paths = _synth().generate_attack_paths(findings)
+        self.assertNotIn("SMB Service - Enumerate Shares and Users", _names(paths))
+
     def test_hash_credential_reuse_emits_pth_command(self):
         """A hash-only credential (e.g. from secretsdump) reused against SMB should
         retain a compact pass-the-hash command template."""

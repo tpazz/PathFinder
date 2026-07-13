@@ -18,12 +18,15 @@ from main.pathfinder import (
     _deduplicate_provenance,
     _credential_validation_actions,
     _display_results,
+    _finding_type_token,
     _gobuster_extract_target,
     _group_attack_paths,
     _load_provenance_manifest,
     _path_likelihood,
     _run_credential_validations,
+    format_finding_display,
 )
+from parsers.ansi import C, set_color_enabled
 
 
 def _finding(entity_type, name, host="H", **attrs):
@@ -193,7 +196,22 @@ class TriageDisplayTests(unittest.TestCase):
         self.assertIn("TRIAGE ATTACK PATH #1", text)
         self.assertIn("Grouped hits: 2 underlying path(s)", text)
         self.assertIn("Use --show-all", text)
+        self.assertIn("\n\n[*] Triage view:", text)
         self.assertIn("additional grouped lead(s) hidden by --top 1", text)
+
+    def test_non_exploit_names_are_bold_but_vulnerability_type_is_not(self):
+        previous = C.enabled
+        set_color_enabled(True)
+        try:
+            display_name, _display_type = format_finding_display("sql_injection_found", "vulnerability")
+            vulnerability_type = _finding_type_token("vulnerability")
+            self.assertTrue(display_name.startswith(C.BOLD))
+            self.assertNotIn(C.BOLD, vulnerability_type)
+
+            exploit_name, _ = format_finding_display("EDB-ID: 12345", "vulnerability")
+            self.assertIn(f"{C.BOLD}{C.RED}EDB-ID", exploit_name)
+        finally:
+            set_color_enabled(previous)
 
     def test_grouped_triage_renders_all_action_buckets_and_provenance(self):
         def finding(entity_type, name, host, port, tool, command):

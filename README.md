@@ -51,7 +51,14 @@ certipy, one-shot-enum AI surface JSON, and the AI loot collector JSON.
 - Extracts potential usernames from saved webpage text by default. These remain
   `username_candidate` findings requiring manual validation and are never
   promoted to confirmed users automatically.
-- Synthesises attack paths from a 98-rule engine.
+- When one-shot-enum stores ffuf matched responses, recursively ingests those
+  discovered pages and maps each response back to its original URL and ffuf
+  discovery command.
+- Extracts concrete, same-target query URLs and named GET/POST forms from saved
+  pages as manual SQLMap triage candidates. It also recognises query URLs in
+  JavaScript literals while excluding external targets, static assets, and
+  tracking-only parameters.
+- Synthesises attack paths from a 99-rule engine.
 - Groups repeated paths by rule and actionable target, showing compact resolved
   inputs and commands instead of an arbitrary first match.
 - Shows the discovery tool and producer command on findings and attack paths by

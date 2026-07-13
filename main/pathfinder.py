@@ -149,12 +149,15 @@ def print_banner():
 def format_finding_display(name, entity_type):
     """Applies color formatting to the name and entity_type of a finding."""
     display_name = name
+    is_public_exploit = "EDB-ID" in display_name or "GitHub Exploit" in display_name
     if "EDB-ID" in display_name: display_name = display_name.replace("EDB-ID", f"{C.BOLD}{C.RED}EDB-ID{C.END}")
     if "GitHub Exploit" in display_name: display_name = display_name.replace("GitHub Exploit", f"{C.BOLD}{C.GREEN}GitHub Exploit{C.END}")
+    if not is_public_exploit:
+        display_name = f"{C.BOLD}{display_name}{C.END}"
     if entity_type == "privilege_escalation": display_type = f"({C.BOLD}{C.RED}{entity_type}{C.END})"
     elif entity_type == "web_content": display_type = f"({C.LIGHT_BLUE}{entity_type}{C.END})"
     elif entity_type == "misconfiguration": display_type = f"({C.YELLOW}{entity_type}{C.END})"
-    elif entity_type == "vulnerability" and "sql" in name: display_type = f"({C.BOLD}{C.RED}{entity_type}{C.END})"
+    elif entity_type == "vulnerability": display_type = f"({C.RED}{entity_type}{C.END})"
     else: display_type = f"({C.YELLOW}{entity_type}{C.END})"
     return display_name, display_type
 
@@ -194,7 +197,7 @@ def _finding_type_token(entity_type):
         weight = ""
     elif entity_type == "vulnerability":
         colour = C.RED
-        weight = C.BOLD
+        weight = ""
     else:
         colour = C.YELLOW
         weight = ""
@@ -785,13 +788,34 @@ def auto_detect_loot(directory, verbose=0):
         host = entry.name
         _detect_dir_based_parsers(entry.path, host, detections, dir_parser_paths, verbose)
         try:
-            host_files = [e for e in os.scandir(entry.path) if e.is_file()]
+            for root, dirs, files in os.walk(entry.path):
+                # Helper output and directory-parser payloads should not be
+                # reinterpreted as loose files. ffuf response-body directories
+                # intentionally remain visible here.
+                dirs[:] = [name for name in dirs if not name.startswith(("_", "."))]
+                if root in dir_parser_paths:
+                    dirs[:] = []
+                    continue
+                for filename in files:
+                    path = os.path.join(root, filename)
+                    label = os.path.relpath(path, directory)
+                    _sniff_and_record(path, label, host, detections, verbose)
         except (PermissionError, FileNotFoundError):
             continue
-        for f in host_files:
-            _sniff_and_record(f.path, f"{host}/{f.name}", host, detections, verbose)
 
     return detections
+
+
+def _inherited_ffuf_provenance(relative_path, provenance_by_file):
+    """Use the producer record for ffuf JSON when parsing a stored -od body."""
+    parts = re.split(r"[\\/]", str(relative_path))
+    for index, part in enumerate(parts):
+        match = re.fullmatch(r"ffuf_pages_(?:https?)_(\d{1,5})", part, re.IGNORECASE)
+        if not match:
+            continue
+        ffuf_json = "/".join(parts[:index] + [f"ffuf_{match.group(1)}.json"])
+        return provenance_by_file.get(_normalise_provenance_path(ffuf_json))
+    return None
 
 
 # ── Shared output pipeline ─────────────────────────────────────────────────────
@@ -1483,7 +1507,7 @@ def _display_results(args, synthesizer, prioritized_findings):
             groups = _group_attack_paths(display_paths)
             top = getattr(args, 'top', DEFAULT_TRIAGE_TOP)
             shown_groups = groups if not top or top <= 0 else groups[:top]
-            print(f"{C.BOLD}{C.CYAN}[*] Triage view: showing {len(shown_groups)} grouped lead(s) "
+            print(f"\n{C.BOLD}{C.CYAN}[*] Triage view: showing {len(shown_groups)} grouped lead(s) "
                   f"from {len(display_paths)} path(s). Use --show-all for the exhaustive list.{C.END}")
             if min_likelihood != "low":
                 print(f"{C.BOLD}{C.CYAN}[*] Minimum likelihood filter: {min_likelihood}.{C.END}")
@@ -1539,6 +1563,14 @@ def _display_results(args, synthesizer, prioritized_findings):
                     print(f"      {C.YELLOW}[OSCP] Metasploit is limited to one target on the exam.{C.END}")
             if attributes.get("url"):
                 print(f"      {C.BOLD}URL:{C.END} {attributes['url']}")
+            if p_finding.get("entity_type") in {"web_parameterized_url", "web_parameterized_request"}:
+                print(f"      {_label('Triage:', 14)}Potential injection surface only; validate manually")
+                if attributes.get("method"):
+                    print(f"      {_label('Method:', 14)}{attributes['method']}")
+                if attributes.get("parameters"):
+                    print(f"      {_label('Parameters:', 14)}{', '.join(attributes['parameters'])}")
+                if attributes.get("data"):
+                    print(f"      {_label('Form data:', 14)}{attributes['data']}")
 
     return suggested_paths
 
@@ -1643,6 +1675,8 @@ def run_scan_mode(args):
         # finding came from. Legacy/manual loot remains valid with command=None.
         rel = os.path.relpath(path, loot_dir)
         manifest_record = provenance_by_file.get(_normalise_provenance_path(rel))
+        if manifest_record is None and key == "webpage_html":
+            manifest_record = _inherited_ffuf_provenance(rel, provenance_by_file)
         for finding in validated:
             _attach_discovery_provenance(finding, source_file=rel,
                                          manifest_record=manifest_record)

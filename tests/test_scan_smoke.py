@@ -1,3 +1,4 @@
+import json
 import shutil
 import subprocess
 import sys
@@ -59,6 +60,53 @@ class ScanSmokeTests(unittest.TestCase):
             for key in ["ffuf_json", "nuclei_jsonl", "wpscan_json", "netexec_log",
                         "smbmap_txt", "secretsdump_txt", "getuserspns_hashes", "certipy_json"]:
                 self.assertIn(key, result.stdout)
+
+    def test_scan_cli_extracts_dashboard_users_from_ffuf_stored_body(self):
+        command = (
+            "ffuf -u http://192.168.129.14:8080/FUZZ -w words.txt -of json "
+            "-o loot/192.168.129.14/ffuf_8080.json "
+            "-od loot/192.168.129.14/ffuf_pages_http_8080"
+        )
+        dashboard = """
+        <!doctype html><html><body><table>
+          <tr><th>Date</th><th>Activity</th><th>User</th></tr>
+          <tr><td>2026-03-12</td><td>Publication</td><td>r.chen</td></tr>
+          <tr><td>2026-03-08</td><td>Dataset</td><td>m.silva</td></tr>
+          <tr><td>2026-03-05</td><td>Benchmark</td><td>j.park</td></tr>
+          <tr><td>2026-03-01</td><td>Pipeline</td><td>ts_svc</td></tr>
+        </table></body></html>
+        """
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            loot = Path(tmp_dir)
+            host_dir = loot / "192.168.129.14"
+            body_dir = host_dir / "ffuf_pages_http_8080"
+            body_dir.mkdir(parents=True)
+            (body_dir / "a1b2c3").write_text(dashboard, encoding="utf-8")
+            (host_dir / "ffuf_8080.json").write_text(json.dumps({
+                "commandline": command,
+                "results": [{
+                    "input": {"FUZZ": "dashboard"}, "status": 200,
+                    "length": len(dashboard), "url": "http://192.168.129.14:8080/dashboard",
+                    "host": "192.168.129.14:8080",
+                    "resultfile": "ffuf_pages_http_8080/a1b2c3",
+                }],
+            }), encoding="utf-8")
+            (loot / "_pathfinder_provenance.json").write_text(json.dumps({
+                "schema_version": 1,
+                "records": [{
+                    "host": "192.168.129.14", "tool": "ffuf", "parser": "ffuf_json",
+                    "output_file": "192.168.129.14/ffuf_8080.json",
+                    "command": command, "status": "done",
+                }],
+            }), encoding="utf-8")
+
+            result = self._run_scan(loot, "--no-color")
+
+        self.assertEqual(result.returncode, 0, result.stdout + "\n" + result.stderr)
+        for username in ("r.chen", "m.silva", "j.park", "ts_svc"):
+            self.assertIn(username, result.stdout)
+        self.assertIn("http://192.168.129.14:8080/dashboard", result.stdout)
+        self.assertIn(command, result.stdout)
 
     def test_scan_cli_vv_ingests_every_file_and_reports_reasons(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
