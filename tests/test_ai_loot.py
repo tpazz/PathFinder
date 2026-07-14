@@ -47,7 +47,7 @@ class AiLootCollectorTests(unittest.TestCase):
         (app / "adapter_config.json").write_text("{}", encoding="utf-8")
         return app
 
-    def test_collector_outputs_redacted_ai_loot_json(self):
+    def test_collector_preserves_discovered_values_by_default(self):
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             app = self._fixture_tree(root)
@@ -63,14 +63,15 @@ class AiLootCollectorTests(unittest.TestCase):
             self.assertEqual(proc.returncode, 0, proc.stderr)
             payload = json.loads(out.read_text(encoding="utf-8"))
             self.assertEqual(payload["type"], "ai_post_exploitation_loot")
-            self.assertTrue(payload["options"]["secret_values_redacted"])
+            self.assertFalse(payload["options"]["secret_values_redacted"])
             secret = payload["findings"]["secrets"][0]
-            self.assertTrue(secret["value"]["redacted"])
-            self.assertNotIn("sk-supersecret", json.dumps(payload))
+            self.assertEqual(secret["value"]["value"], "sk-supersecret")
+            self.assertIn("sk-supersecret", json.dumps(payload))
             self.assertEqual(payload["stats"]["files_skipped_due_to_errors"], 0)
             self.assertGreaterEqual(len(payload["findings"]["vector_stores"]), 1)
             self.assertGreaterEqual(len(payload["findings"]["mcp_tools"]), 1)
             self.assertGreaterEqual(len(payload["findings"]["unsafe_loaders"]), 1)
+            self.assertEqual(_sniff_file_type(str(out)), "ai_loot_json")
 
     def test_parser_and_rules_consume_collector_output(self):
         with tempfile.TemporaryDirectory() as d:
@@ -112,11 +113,33 @@ class AiLootCollectorTests(unittest.TestCase):
             self.assertTrue(findings)
             self.assertEqual({f["host"] for f in findings}, {"192.0.2.10"})
 
-    def test_snippet_scrubber_redacts_token_shapes_without_secret_key_name(self):
-        cleaned = clean_snippet("custom_token: sk-supersecretvalue and access=AKIA1234567890ABCDEF")
+    def test_snippets_preserve_values_by_default_and_support_opt_in_redaction(self):
+        line = "custom_token: sk-supersecretvalue and access=AKIA1234567890ABCDEF"
+        self.assertEqual(clean_snippet(line), line)
+        cleaned = clean_snippet(line, redact_secret_values=True)
         self.assertNotIn("sk-supersecretvalue", cleaned)
         self.assertNotIn("AKIA1234567890ABCDEF", cleaned)
         self.assertIn("<redacted-token>", cleaned)
+
+    def test_collector_can_redact_values_when_explicitly_requested(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            app = self._fixture_tree(root)
+            out = root / "ai_loot.json"
+
+            proc = subprocess.run(
+                [sys.executable, str(COLLECTOR), str(app),
+                 "--redact-secret-values", "-o", str(out)],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            payload = json.loads(out.read_text(encoding="utf-8"))
+            self.assertTrue(payload["options"]["secret_values_redacted"])
+            self.assertNotIn("sk-supersecret", json.dumps(payload))
+            self.assertTrue(payload["findings"]["secrets"][0]["value"]["redacted"])
 
     def test_collector_survives_bad_json_file(self):
         with tempfile.TemporaryDirectory() as d:

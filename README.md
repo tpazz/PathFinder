@@ -86,8 +86,8 @@ certipy, one-shot-enum AI surface JSON, and the AI loot collector JSON.
 - `--hide-discovery`: hide discovery tools and producer commands from findings and attack paths.
 - `--hide-findings`: hide the prioritized findings list while retaining attack paths.
 - `--validate-credentials`: actively execute resolved credential-reuse login checks, one at a time. This is disabled by default and may trigger lockouts or security alerts.
-- `--max-vulns N`: cap EDB and GitHub exploit findings displayed (`5` per
-  source by default).
+- `--max-vulns N`: cap EDB and GitHub exploit findings and attack-path inputs
+  (`5` per source, per IP by default).
 - `--offline`: disable GitHub and Searchsploit enrichment.
 - `--skip-github` / `--skip-searchsploit`: disable one enrichment source.
 - `--target-host HOST`: provide host context for flat loot folders.
@@ -102,6 +102,16 @@ After an authorised foothold on an AI/RAG/model host, run:
 python3 tools/ai_loot_collector.py . -o ai_loot.json
 ```
 
+On a 64-bit Windows target without Python, copy and run the standalone collector:
+
+```powershell
+.\pathfinder-ai-loot-collector.exe . -o ai_loot.json
+```
+
+The executable produces the same `ai_post_exploitation_loot` JSON accepted by
+`--ai-loot-json` and `scan`. Maintainers can rebuild it on Windows with
+`tools\build_ai_loot_collector.ps1` after installing PyInstaller.
+
 Move `ai_loot.json` into the host loot folder or pass it directly:
 
 ```bash
@@ -109,7 +119,9 @@ python3 -m main.pathfinder --ai-loot-json ai_loot.json -o findings.json
 python3 -m main.pathfinder scan loot/
 ```
 
-The collector is read-only and redacts secret values by default.
+The collector is read-only and preserves discovered values by default for lab
+use. Add `--redact-secret-values` only when you explicitly need a sanitized
+report. The legacy `--include-secret-values` flag remains accepted.
 
 ## Output Example
 

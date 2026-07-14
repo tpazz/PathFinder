@@ -6,7 +6,8 @@ local application/config paths for AI-specific evidence and writes structured
 JSON that PathFinder can parse with --ai-loot-json or scan-mode autodetection.
 
 The collector does not invoke tools, call model/agent endpoints, mutate files,
-or attempt exploitation. Secret values are redacted by default.
+or attempt exploitation. Discovered values are preserved by default for lab use;
+redaction is available as an explicit option.
 """
 
 from __future__ import annotations
@@ -147,8 +148,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-files", type=int, default=50000, help="Maximum files to inspect")
     parser.add_argument("--max-file-kb", type=int, default=512,
                         help="Maximum text/config file size to read")
-    parser.add_argument("--include-secret-values", action="store_true",
-                        help="Include raw secret values instead of redacting them")
+    privacy = parser.add_mutually_exclusive_group()
+    privacy.add_argument("--include-secret-values", action="store_true",
+                         help="Preserve raw values (default; retained for compatibility)")
+    privacy.add_argument("--redact-secret-values", action="store_true",
+                         help="Redact secret values and sensitive evidence snippets")
     return parser.parse_args()
 
 
@@ -176,11 +180,11 @@ def sha256_short(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8", errors="ignore")).hexdigest()[:16]
 
 
-def redact_value(value: str | None, include_secret_values: bool) -> dict[str, Any]:
+def redact_value(value: str | None, redact_secret_values: bool) -> dict[str, Any]:
     value = (value or "").strip().strip("\"'")
     if not value:
         return {"present": False}
-    if include_secret_values:
+    if not redact_secret_values:
         return {"present": True, "value": value}
     return {
         "present": True,
@@ -200,8 +204,10 @@ def source_record(path: Path, line: int | None = None, snippet: str | None = Non
     return record
 
 
-def clean_snippet(line: str) -> str:
+def clean_snippet(line: str, redact_secret_values: bool = False) -> str:
     line = line.strip()
+    if not redact_secret_values:
+        return line[:500]
     for match in SECRET_NAME_RE.finditer(line):
         key = match.group(1)
         line = line.replace(match.group(0), f"{key}=<redacted>")
@@ -343,24 +349,24 @@ def inspect_json_structure(path: Path, text: str, out: dict[str, list[dict[str, 
 
 
 def inspect_text_file(path: Path, text: str, out: dict[str, list[dict[str, Any]]],
-                      include_secret_values: bool) -> None:
+                      redact_secret_values: bool) -> None:
     lower_name = path.name.lower()
     inspect_json_structure(path, text, out)
 
     if any(token in lower_name for token in ("prompt", "system", "instruction", "template")):
         first_line = text.splitlines()[0] if text.splitlines() else ""
         out["prompt_templates"].append({
-            **source_record(path, snippet=clean_snippet(first_line)),
+            **source_record(path, snippet=clean_snippet(first_line, redact_secret_values)),
             "reason": "prompt-like filename",
         })
 
     for line_number, line in enumerate(text.splitlines(), 1):
-        cleaned = clean_snippet(line)
+        cleaned = clean_snippet(line, redact_secret_values)
         for match in SECRET_NAME_RE.finditer(line):
             out["secrets"].append({
                 **source_record(path, line_number, cleaned),
                 "name": match.group(1).upper(),
-                "value": redact_value(match.group(2), include_secret_values),
+                "value": redact_value(match.group(2), redact_secret_values),
             })
 
         for engine, pattern in VECTOR_PATTERNS:
@@ -467,7 +473,7 @@ def main() -> int:
             text = load_text(path, max_bytes)
             if text is None:
                 continue
-            inspect_text_file(path, text, findings, args.include_secret_values)
+            inspect_text_file(path, text, findings, args.redact_secret_values)
         except Exception:
             skipped_errors += 1
             continue
@@ -485,7 +491,7 @@ def main() -> int:
         "options": {
             "max_files": args.max_files,
             "max_file_kb": args.max_file_kb,
-            "secret_values_redacted": not args.include_secret_values,
+            "secret_values_redacted": args.redact_secret_values,
         },
         "stats": {
             "files_seen": len(files),
@@ -496,7 +502,10 @@ def main() -> int:
     }
 
     out_path = Path(args.out)
-    out_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    # Preserve insertion order so the tool/type/schema signature remains near
+    # the start of large reports and scan-mode auto-detection can identify it
+    # without loading the entire JSON document.
+    out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     print(f"[+] Wrote {out_path} ({len(files)} files seen)")
     return 0
 

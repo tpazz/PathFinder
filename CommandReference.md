@@ -241,7 +241,7 @@ python3 -m main.pathfinder --llm-enum-json loot/10.10.10.10/llm_enum_11434.json
 
 After an authorised foothold on a host running AI/RAG/model services, run the
 read-only collector from the target-side project/app directory. It gathers
-redacted provider/vector/MLflow/object-store/notebook secret references,
+provider/vector/MLflow/object-store/notebook secret values and references,
 RAG/vector config, MCP/agent manifests, prompt templates, model artifacts, and
 unsafe loader signals into JSON.
 
@@ -252,6 +252,24 @@ python3 tools/ai_loot_collector.py . -o ai_loot.json
 python3 tools/ai_loot_collector.py /opt/app /srv/rag --common-roots -o ai_loot.json
 ```
 
+For a 64-bit Windows host without Python, transfer the standalone executable and
+run it from PowerShell or CMD:
+
+```powershell
+.\pathfinder-ai-loot-collector.exe C:\path\to\app -o ai_loot.json
+
+# Optionally include common Windows application/configuration roots
+.\pathfinder-ai-loot-collector.exe C:\path\to\app --common-roots -o ai_loot.json
+```
+
+The `.exe` uses the same flags and emits the same schema as the Python collector.
+To rebuild it on a Windows development machine:
+
+```powershell
+python -m pip install pyinstaller
+.\tools\build_ai_loot_collector.ps1
+```
+
 Transfer `ai_loot.json` back to the attack host and either pass it directly or
 drop it into the host's loot directory for scan-mode autodetection.
 
@@ -260,8 +278,10 @@ python3 -m main.pathfinder --ai-loot-json ai_loot.json
 python3 -m main.pathfinder scan loot/
 ```
 
-Secret values are redacted by default. Use `--include-secret-values` only when
-you intentionally need raw values preserved in the collector output.
+Discovered values and evidence snippets are preserved by default. Use
+`--redact-secret-values` only when you explicitly need a sanitized report. The
+legacy `--include-secret-values` flag remains accepted for compatibility and is
+equivalent to the default behaviour.
 
 #### 5. enum4linux-ng
 
@@ -545,7 +565,7 @@ python3 -m main.pathfinder scan loot/ --validate-credentials
 # Teach PathFinder a new attack path rule (interactive)
 python3 -m main.pathfinder --learn
 
-# Increase the number of public exploits shown (default: 5 per source)
+# Increase the number of public exploits shown (default: 5 per source, per IP)
 python3 -m main.pathfinder scan loot/ --max-vulns 25
 
 # Disable ANSI colour (also auto-disabled when output is piped/redirected)

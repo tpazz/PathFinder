@@ -175,18 +175,56 @@ class TriageDisplayTests(unittest.TestCase):
         self.assertIn("10.0.0.1", groups[0]["targets"])
         self.assertIn("10.0.0.2", groups[0]["targets"])
 
-    def test_default_public_exploit_cap_is_five_per_source(self):
+    def test_default_public_exploit_cap_is_five_per_source_per_ip(self):
+        findings = []
+        for source in ("searchsploit_mapper", "github_exploit_mapper"):
+            for host in ("10.0.0.1", "10.0.0.2"):
+                for index in range(7):
+                    findings.append({
+                        "host": host,
+                        "source_tool": source,
+                        "name": f"{source}-{host}-{index}",
+                        "attributes": {"score": index},
+                    })
+        filtered = filter_prioritized_findings(findings, DEFAULT_MAX_VULNS)
+        self.assertEqual(DEFAULT_MAX_VULNS, 5)
+        for source in ("searchsploit_mapper", "github_exploit_mapper"):
+            for host in ("10.0.0.1", "10.0.0.2"):
+                retained = [
+                    f for f in filtered
+                    if f["source_tool"] == source and f["host"] == host
+                ]
+                self.assertEqual(len(retained), 5)
+                self.assertEqual({f["attributes"]["score"] for f in retained}, {2, 3, 4, 5, 6})
+
+    def test_attack_path_synthesis_uses_the_same_limited_exploit_set(self):
         findings = []
         for source in ("searchsploit_mapper", "github_exploit_mapper"):
             for index in range(7):
                 findings.append({
-                    "source_tool": source,
-                    "attributes": {"score": index},
+                    "host": "10.0.0.1", "port": 80, "source_tool": source,
+                    "entity_type": "vulnerability", "name": f"exploit-{index}",
+                    "version": None, "attributes": {"score": index},
                 })
-        filtered = filter_prioritized_findings(findings, DEFAULT_MAX_VULNS)
-        self.assertEqual(DEFAULT_MAX_VULNS, 5)
-        self.assertEqual(sum(f["source_tool"] == "searchsploit_mapper" for f in filtered), 5)
-        self.assertEqual(sum(f["source_tool"] == "github_exploit_mapper" for f in filtered), 5)
+
+        class CapturingSynth:
+            received = None
+
+            def generate_attack_paths(self, received):
+                self.received = received
+                return []
+
+        synth = CapturingSynth()
+        args = SimpleNamespace(
+            verbose=0, max_vulns=5, oscp=False, show_all=False, top=20,
+            min_likelihood="low", hide_findings=True, validate_credentials=False,
+        )
+        with redirect_stdout(io.StringIO()):
+            _display_results(args, synth, findings)
+
+        self.assertEqual(len(synth.received), 10)
+        self.assertEqual(sum(f["source_tool"] == "searchsploit_mapper" for f in synth.received), 5)
+        self.assertEqual(sum(f["source_tool"] == "github_exploit_mapper" for f in synth.received), 5)
 
     def test_display_defaults_to_grouped_top_triage(self):
         class Synth:

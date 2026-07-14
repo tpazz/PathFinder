@@ -205,16 +205,24 @@ def _finding_type_token(entity_type):
 
 
 def filter_prioritized_findings(findings, max_vulns):
-    """Filters the list of prioritized findings to limit the number of EDB/GitHub results."""
-    edb, github, other = [], [], []
+    """Keep the highest-scoring EDB/GitHub results per source and target host."""
+    exploit_buckets, other = {}, []
     for f in findings:
         source = f.get("source_tool")
-        if source == "searchsploit_mapper": edb.append(f)
-        elif source == "github_exploit_mapper": github.append(f)
-        else: other.append(f)
-    edb.sort(key=lambda x: x.get("attributes", {}).get("score", 0), reverse=True)
-    github.sort(key=lambda x: x.get("attributes", {}).get("score", 0), reverse=True)
-    return other + edb[:max_vulns] + github[:max_vulns]
+        if source in {"searchsploit_mapper", "github_exploit_mapper"}:
+            key = (source, f.get("host"))
+            exploit_buckets.setdefault(key, []).append(f)
+        else:
+            other.append(f)
+
+    selected = []
+    for source in ("searchsploit_mapper", "github_exploit_mapper"):
+        for (bucket_source, _host), bucket in exploit_buckets.items():
+            if bucket_source != source:
+                continue
+            bucket.sort(key=lambda x: x.get("attributes", {}).get("score", 0), reverse=True)
+            selected.extend(bucket[:max_vulns])
+    return other + selected
 
 
 # Credential secret material. When the same identity appears twice (e.g. once with
@@ -1596,9 +1604,12 @@ def _print_attack_path_group(group, args, index):
 def _display_results(args, synthesizer, prioritized_findings):
     """Runs the synthesizer and prints attack paths + findings list."""
     print(f"\n{C.BOLD}{C.CYAN}[*] Running Attack Path Synthesizer...{C.END}")
-    suggested_paths = synthesizer.generate_attack_paths(prioritized_findings)
+    max_vulns = getattr(args, "max_vulns", DEFAULT_MAX_VULNS)
+    display_findings = filter_prioritized_findings(prioritized_findings, max_vulns)
+    # Use the same bounded exploit set for synthesis and the findings list so
+    # grouped paths cannot contain exploit leads hidden by --max-vulns.
+    suggested_paths = synthesizer.generate_attack_paths(display_findings)
     display_paths = suggested_paths
-    display_findings = prioritized_findings
     min_likelihood = getattr(args, 'min_likelihood', 'low')
     display_paths = [p for p in display_paths if _passes_min_likelihood(p, min_likelihood)]
 
@@ -1630,14 +1641,15 @@ def _display_results(args, synthesizer, prioritized_findings):
 
     if not getattr(args, "hide_findings", False):
         total_exploit_count = sum(
-            1 for f in display_findings
+            1 for f in prioritized_findings
             if f.get("source_tool") in ["searchsploit_mapper", "github_exploit_mapper"]
         )
-        filtered_list = filter_prioritized_findings(display_findings, args.max_vulns)
+        filtered_list = list(display_findings)
 
         print(f"\n{_rule_line('-', C.YELLOW)}")
         print(f"{C.BOLD}{C.YELLOW}Total Findings: {len(filtered_list)}{C.END} "
-              f"{C.YELLOW}(Public Exploits limited to --max-vulns, total discovered: {total_exploit_count}){C.END}")
+              f"{C.YELLOW}(Public Exploits limited per source/IP by --max-vulns, "
+              f"total discovered: {total_exploit_count}){C.END}")
         print(_rule_line('-', C.YELLOW))
 
         filtered_list.sort(key=lambda x: x.get("attributes", {}).get("score", 0), reverse=True)
