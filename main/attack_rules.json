@@ -742,6 +742,61 @@
         }
     },
     {
+        "name": "Readable Shadow File - Offline Password Cracking",
+        "priority": 90,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "readable_shadow_file" } }
+        ],
+        "suggestion": {
+            "description": "The current user can read /etc/shadow on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "Readable password hashes can be cracked offline and reused for local escalation or lateral movement.",
+            "commands": [
+                "Copy the captured /etc/shadow evidence into shadow.txt",
+                "unshadow passwd.txt shadow.txt > unshadowed.txt",
+                "john --wordlist=/usr/share/wordlists/rockyou.txt unshadowed.txt",
+                "hashcat -m 1800 shadow.txt /usr/share/wordlists/rockyou.txt"
+            ],
+            "references": ["OSCP-Prep/3_LinuxPrivilegeEscalation.md#password-authentication"]
+        }
+    },
+    {
+        "name": "Post-Foothold Credential Material - Review and Reuse",
+        "priority": 86,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "credential_material_found" } }
+        ],
+        "suggestion": {
+            "description": "Credential-like material was recovered locally on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "Shell histories, configuration files, registry values, and application logs frequently disclose reusable credentials after foothold.",
+            "commands": [
+                "Review evidence and source path: {trigger.1.attributes.path}",
+                "Identify the username, service, and scope associated with each recovered value",
+                "Add validated username/password pairs with --add-cred, then regenerate credential-reuse paths"
+            ],
+            "references": ["OSCP-Prep/Methodology.md#44-credential-harvesting-and-reuse"]
+        }
+    },
+    {
+        "name": "Readable Private Key - Validate Account Access",
+        "priority": 90,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "private_key_found" } }
+        ],
+        "suggestion": {
+            "description": "A readable private key was recovered on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "User SSH keys commonly enable access as another local user or reuse on another host.",
+            "commands": [
+                "Save the captured key evidence to id_key and run: chmod 600 id_key",
+                "Derive the public key/fingerprint: ssh-keygen -y -f id_key",
+                "Validate manually: ssh -i id_key <USER>@<TARGET>"
+            ],
+            "references": ["OSCP-Prep/3_LinuxPrivilegeEscalation.md#credentials"]
+        }
+    },
+    {
         "name": "LXD Group Membership - Container Escape to Root",
         "priority": 93,
         "host_scope": "same_host",
@@ -943,6 +998,60 @@
                 "Place hijack.dll in the writable search path with the expected DLL name",
                 "Restart the service or wait for the application to load the DLL"
             ]
+        }
+    },
+    {
+        "name": "Writable Scheduled Task Action - Binary Hijacking",
+        "priority": 90,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "writable_scheduled_task_binary" } }
+        ],
+        "suggestion": {
+            "description": "A scheduled task on {trigger.1.host} executes a writable action: {trigger.1.attributes.description}",
+            "rationale": "Replacing a task action that executes as a more privileged principal yields code execution when the task runs.",
+            "commands": [
+                "schtasks /query /fo LIST /v (confirm task principal and schedule)",
+                "icacls '<TASK_BINARY>' (confirm effective write access)",
+                "Back up the original action, replace it with the required payload, and wait for or manually trigger the task if permitted"
+            ],
+            "references": ["OSCP-Prep/2_WindowsPrivilegeEscalation.md#scheduled-tasks"]
+        }
+    },
+    {
+        "name": "Writable Autorun or Startup Location - Privileged Logon Execution",
+        "priority": 84,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "regex", "value": "(writable_autorun_binary|writable_startup_directory)" } }
+        ],
+        "suggestion": {
+            "description": "A writable autorun/startup execution location was found on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "A payload placed in a privileged user's autorun or all-users Startup path executes when that user logs on.",
+            "commands": [
+                "Confirm permissions with icacls '<PATH>'",
+                "Confirm which user triggers the autorun or Startup entry",
+                "Back up existing content before placing a controlled engagement payload"
+            ],
+            "references": ["OSCP-Prep/2_WindowsPrivilegeEscalation.md#autoruns", "OSCP-Prep/2_WindowsPrivilegeEscalation.md#startup-apps"]
+        }
+    },
+    {
+        "name": "Dangerous Windows Token Privilege - Manual Abuse Review",
+        "priority": 93,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "regex", "value": "(seassignprimarytokenprivilege_enabled|sedebugprivilege_enabled)" } }
+        ],
+        "suggestion": {
+            "description": "A dangerous enabled token privilege was found on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "SeAssignPrimaryToken and SeDebug can permit privileged token/process abuse, depending on OS and process context.",
+            "commands": [
+                "whoami /priv (confirm the privilege is enabled)",
+                "tasklist /v (identify privileged processes and current integrity context)",
+                "Select an OS-compatible token abuse technique and validate with whoami /all"
+            ],
+            "references": ["OSCP-Prep/2_WindowsPrivilegeEscalation.md#kernel-exploits"]
         }
     },
     {

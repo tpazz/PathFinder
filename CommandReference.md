@@ -67,6 +67,7 @@ python3 -m main.pathfinder scan loot/ --show-all
 | Text with `Found: subdomain` | Gobuster (vhost mode) |
 | Text with `WinPEAS` / `SeImpersonatePrivilege` | WinPEAS |
 | Text with `linpeas` / `╔══` | LinPEAS |
+| JSON with `"type":"pathfinder_manual_privesc_loot"` | PathFinder manual Linux/Windows privilege-escalation collector |
 | Text with `[INFO]` + `sqlmap` + `vulnerable` | SQLMap |
 | Directory with `users.json` + `domains.json` | SharpHound |
 | Directory with `domain_users.tsv` | ldapdomaindump |
@@ -384,6 +385,58 @@ winpeas.exe > winpeas.txt
 
 ```bash
 python3 -m main.pathfinder --winpeas-txt winpeas.txt --target-host TARGET_IP
+```
+
+#### 9a. Manual privilege-escalation collector
+
+When LinPEAS/WinPEAS cannot be transferred, use the collector based on the
+manual checks in `OSCP-Prep/3_LinuxPrivilegeEscalation.md`,
+`OSCP-Prep/2_WindowsPrivilegeEscalation.md`, and the privilege-escalation section
+of `OSCP-Prep/Methodology.md`.
+
+Linux:
+
+```bash
+python3 tools/manual_privesc_collector.py -o manual_privesc_loot.json
+
+# Prioritize application/config roots during the bounded credential search
+python3 tools/manual_privesc_collector.py /opt/app /var/www /srv \
+  -o manual_privesc_loot.json
+```
+
+Windows (standalone AMD64 binary; Python is not required):
+
+```powershell
+.\pathfinder-manual-privesc-collector.exe -o manual_privesc_loot.json
+
+# Prioritize known application directories
+.\pathfinder-manual-privesc-collector.exe C:\inetpub\wwwroot C:\Apps `
+  -o manual_privesc_loot.json
+```
+
+The collectors preserve raw sensitive values and evidence. They run read-only
+identity/system/network, Linux sudo/SUID/SGID/capability/cron/NFS/container,
+Windows token/service/task/autorun/installer/registry, and bounded
+history/key/config credential checks. Their only intended write is the report.
+
+Ingest directly:
+
+```bash
+python3 -m main.pathfinder \
+  -i findings.json \
+  --manual-privesc-json manual_privesc_loot.json \
+  --target-host TARGET_IP \
+  -o findings-post.json
+```
+
+Or put the report at `loot/TARGET_IP/manual_privesc_loot.json` and rerun
+`python3 -m main.pathfinder scan loot/`.
+
+Build the Windows executable on a Windows development machine:
+
+```powershell
+python -m pip install pyinstaller
+.\tools\build_manual_privesc_collector.ps1
 ```
 
 ---

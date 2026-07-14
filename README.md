@@ -43,7 +43,8 @@ PathFinder supports Nmap, saved webpage HTML, Gobuster, ffuf, Nikto, WhatWeb, nu
 enum4linux-ng, smbmap, NetExec/CrackMapExec, SNMP, NFS/showmount, Redis, rsync,
 SMTP user enum, SQLMap logs, LinPEAS, WinPEAS, SharpHound, ldapdomaindump,
 Kerbrute, GetNPUsers, GetUserSPNs, secretsdump, john/hashcat `.pot` files,
-certipy, one-shot-enum AI surface JSON, and the AI loot collector JSON.
+certipy, one-shot-enum AI surface JSON, the AI loot collector JSON, and the
+PathFinder manual Linux/Windows privilege-escalation collector JSON.
 
 ## Core Features
 
@@ -122,6 +123,41 @@ python3 -m main.pathfinder scan loot/
 The collector is read-only and preserves discovered values by default for lab
 use. Add `--redact-secret-values` only when you explicitly need a sanitized
 report. The legacy `--include-secret-values` flag remains accepted.
+
+## Manual Privilege-Escalation Collector
+
+When PEAS is unavailable, the PEN-200-notes-driven collector automates the
+manual post-foothold checks while preserving raw command output and sensitive
+evidence. On Linux:
+
+```bash
+python3 tools/manual_privesc_collector.py -o manual_privesc_loot.json
+```
+
+On 64-bit Windows without Python:
+
+```powershell
+.\tools\pathfinder-manual-privesc-collector.exe -o manual_privesc_loot.json
+```
+
+Additional paths can be supplied to prioritize credential/config searches:
+
+```bash
+python3 tools/manual_privesc_collector.py /opt/app /var/www -o manual_privesc_loot.json
+```
+
+Feed the report directly into PathFinder or place it beneath `loot/<IP>/`:
+
+```bash
+python3 -m main.pathfinder --manual-privesc-json manual_privesc_loot.json \
+  --target-host TARGET_IP -o findings-post.json
+python3 -m main.pathfinder scan loot/ -o findings-post.json
+```
+
+The collector is read-only apart from writing its report. It does not redact
+captured environment variables, histories, keys, registry results, configuration
+lines, or command output. Maintainers can rebuild the Windows binary with
+`tools\build_manual_privesc_collector.ps1` after installing PyInstaller.
 
 ## Output Example
 

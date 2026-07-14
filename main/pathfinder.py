@@ -583,6 +583,10 @@ def _sniff_file_type_details(path):
         if '"type": "ai_post_exploitation_loot"' in sanitized_head or '"type":"ai_post_exploitation_loot"' in sanitized_head \
                 or '"tool": "pathfinder-ai-loot-collector"' in sanitized_head:
             return 'ai_loot_json', 'matched PathFinder AI post-exploitation loot signature'
+        if ('"type": "pathfinder_manual_privesc_loot"' in sanitized_head
+                or '"type":"pathfinder_manual_privesc_loot"' in sanitized_head
+                or '"tool": "pathfinder-manual-privesc-collector"' in sanitized_head):
+            return 'manual_privesc_json', 'matched PathFinder manual privilege-escalation loot signature'
         # one-shot-enum LLM/AI enumeration output (self-identifying).
         if '"ai_surfaces"' in sanitized_head or '"type": "llm_enum"' in sanitized_head or '"type":"llm_enum"' in sanitized_head:
             return 'llm_enum_json', 'matched one-shot-enum LLM enum signature'
