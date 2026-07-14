@@ -95,28 +95,28 @@ PathFinder manual Linux/Windows privilege-escalation collector JSON.
 - `--oscp`: strip restricted-tool commands from suggestions and flag exam caveats.
 - `--no-color`: disable ANSI colour output.
 
-## AI Loot Collector
+## AI-PEAS
 
 After an authorised foothold on an AI/RAG/model host, run:
 
 ```bash
-python3 tools/ai_loot_collector.py . -o ai_loot.json
+python3 tools/ai-peas.py . -o ai_loot.json
 ```
 
 On a 64-bit Windows target without Python, copy and run the standalone collector:
 
 ```powershell
-.\pathfinder-ai-loot-collector.exe . -o ai_loot.json
+.\tools\ai-peas.exe . -o ai_loot.json
 ```
 
 The executable produces the same `ai_post_exploitation_loot` JSON accepted by
-`--ai-loot-json` and `scan`. Maintainers can rebuild it on Windows with
-`tools\build_ai_loot_collector.ps1` after installing PyInstaller.
+`--ai-peas-json` and `scan`. Maintainers can rebuild it on Windows with
+`tools\build_ai-peas.ps1` after installing PyInstaller.
 
 Move `ai_loot.json` into the host loot folder or pass it directly:
 
 ```bash
-python3 -m main.pathfinder --ai-loot-json ai_loot.json -o findings.json
+python3 -m main.pathfinder --ai-peas-json ai_loot.json -o findings.json
 python3 -m main.pathfinder scan loot/
 ```
 
@@ -124,26 +124,26 @@ The collector is read-only and preserves discovered values by default for lab
 use. Add `--redact-secret-values` only when you explicitly need a sanitized
 report. The legacy `--include-secret-values` flag remains accepted.
 
-## Manual Privilege-Escalation Collector
+## Mini-PEAS
 
 When PEAS is unavailable, the PEN-200-notes-driven collector automates the
 manual post-foothold checks while preserving raw command output and sensitive
 evidence. On Linux:
 
 ```bash
-python3 tools/manual_privesc_collector.py -o manual_privesc_loot.json
+python3 tools/mini-peas.py -o manual_privesc_loot.json
 ```
 
 On 64-bit Windows without Python:
 
 ```powershell
-.\tools\pathfinder-manual-privesc-collector.exe -o manual_privesc_loot.json
+.\tools\mini-peas.exe -o manual_privesc_loot.json
 ```
 
 Additional paths can be supplied to prioritize credential/config searches:
 
 ```bash
-python3 tools/manual_privesc_collector.py /opt/app /var/www -o manual_privesc_loot.json
+python3 tools/mini-peas.py /opt/app /var/www -o manual_privesc_loot.json
 ```
 
 On both platforms the collector also performs a bounded targeted Git-loot pass:
@@ -155,7 +155,7 @@ secret-bearing configuration diffs. Use
 Feed the report directly into PathFinder or place it beneath `loot/<IP>/`:
 
 ```bash
-python3 -m main.pathfinder --manual-privesc-json manual_privesc_loot.json \
+python3 -m main.pathfinder --mini-peas-json manual_privesc_loot.json \
   --target-host TARGET_IP -o findings-post.json
 python3 -m main.pathfinder scan loot/ -o findings-post.json
 ```
@@ -165,8 +165,11 @@ captured environment variables, histories, keys, registry results, configuration
 lines, or command output. Checks, completion status, durations, and promoted
 findings are printed progressively while collection runs. When ingested,
 PathFinder displays the underlying check command in finding and attack-path
-discovery provenance. Maintainers can rebuild the Windows binary with
-`tools\build_manual_privesc_collector.ps1` after installing PyInstaller.
+discovery provenance. Distinct local files, Git artifacts, binaries, services,
+and tasks remain separate findings. Credential-material hits are summarized in
+one compact grouped triage path with source paths and a reusable review template;
+use `--show-all` for every underlying path. Maintainers can rebuild the Windows binary with
+`tools\build_mini-peas.ps1` after installing PyInstaller.
 
 ## Output Example
 

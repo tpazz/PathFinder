@@ -1,4 +1,5 @@
 import json
+import importlib.util
 import subprocess
 import sys
 import tempfile
@@ -9,12 +10,13 @@ from main.attack_path_synthesizer import AttackPathSynthesizer
 from main.finding_schema import validate_findings
 from main.pathfinder import _sniff_file_type
 from parsers.post_exploitation.ai_loot_parser import parse_ai_loot_json
-from tools.ai_loot_collector import clean_snippet
-
-
 ROOT = Path(__file__).parent.parent
-COLLECTOR = ROOT / "tools" / "ai_loot_collector.py"
+COLLECTOR = ROOT / "tools" / "ai-peas.py"
 RULES_FILE = str(ROOT / "main" / "attack_rules.json")
+_SPEC = importlib.util.spec_from_file_location("pathfinder_ai_peas", COLLECTOR)
+_AI_PEAS = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_AI_PEAS)
+clean_snippet = _AI_PEAS.clean_snippet
 
 
 class AiLootCollectorTests(unittest.TestCase):

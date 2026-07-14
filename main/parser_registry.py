@@ -51,7 +51,11 @@ class ParserContext:
 # help:         argparse help text
 # host_required: skip in scan mode (and warn in manual mode) when no target host is known
 # run:          callable(path, ParserContext) -> list[finding]
-ParserSpec = namedtuple("ParserSpec", ["key", "flag", "help", "host_required", "run"])
+# aliases:      accepted legacy flags hidden from --help
+ParserSpec = namedtuple(
+    "ParserSpec", ["key", "flag", "help", "host_required", "run", "aliases"],
+    defaults=[()],
+)
 
 
 PARSER_SPECS = [
@@ -73,11 +77,13 @@ PARSER_SPECS = [
                True, lambda p, ctx: parse_webpage_html(p, ctx.target_host)),
     ParserSpec("llm_enum_json", "--llm-enum-json", "Path to one-shot-enum LLM/AI enumeration JSON.",
                False, lambda p, ctx: parse_llm_enum_json(p)),
-    ParserSpec("ai_loot_json", "--ai-loot-json", "Path to PathFinder AI post-exploitation loot collector JSON.",
-               False, lambda p, ctx: parse_ai_loot_json(p, ctx.target_host)),
-    ParserSpec("manual_privesc_json", "--manual-privesc-json",
-               "Path to PathFinder manual Linux/Windows privilege-escalation collector JSON.",
-               False, lambda p, ctx: parse_manual_privesc_json(p, ctx.target_host)),
+    ParserSpec("ai_loot_json", "--ai-peas-json", "Path to AI-PEAS post-exploitation loot JSON.",
+               False, lambda p, ctx: parse_ai_loot_json(p, ctx.target_host),
+               ("--ai-loot-json",)),
+    ParserSpec("manual_privesc_json", "--mini-peas-json",
+               "Path to Mini-PEAS Linux/Windows privilege-escalation JSON.",
+               False, lambda p, ctx: parse_manual_privesc_json(p, ctx.target_host),
+               ("--manual-privesc-json",)),
     ParserSpec("enum4linux_json", "--enum4linux-json", "Path to enum4linux-ng JSON output file.",
                True, lambda p, ctx: parse_enum4linux_json(p, ctx.target_host)),
     ParserSpec("smbmap_txt", "--smbmap-txt", "Path to smbmap text output file.",

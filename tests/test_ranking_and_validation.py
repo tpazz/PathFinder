@@ -18,6 +18,7 @@ from main.pathfinder import (
     _attach_discovery_provenance,
     _deduplicate_provenance,
     _credential_validation_actions,
+    deduplicate_findings,
     _display_results,
     _finding_type_token,
     _gobuster_extract_target,
@@ -69,6 +70,22 @@ class ConfidencePenaltyTests(unittest.TestCase):
 
 
 class RankingTests(_SynthMixin, unittest.TestCase):
+    def test_manual_privesc_dedup_preserves_distinct_paths_and_exactly_merges_reimports(self):
+        def finding(path, evidence):
+            item = _finding("privilege_escalation", "credential_material_found", host="10.0.0.5",
+                            path=path, material_type="file-content", evidence=evidence)
+            item["source_tool"] = "mini-peas"
+            return item
+
+        first = finding("/opt/app/.env", "PASSWORD=One")
+        second = finding("/srv/api/config.yml", "PASSWORD=Two")
+        duplicate = json.loads(json.dumps(first))
+        deduplicated = deduplicate_findings([first, second, duplicate])
+
+        self.assertEqual(len(deduplicated), 2)
+        self.assertEqual({item["attributes"]["path"] for item in deduplicated},
+                         {"/opt/app/.env", "/srv/api/config.yml"})
+
     def test_confirmed_outranks_higher_priority_low_confidence(self):
         # Mirrors the real case: a low-confidence LinPEAS keyword guess (priority 95)
         # must not sit above a confirmed exploit (priority 85).
@@ -483,6 +500,55 @@ class TriageDisplayTests(unittest.TestCase):
         self.assertIn("Credentials: alice:Secret1!, bob:Secret2!", text)
         self.assertEqual(text.count("nxc ssh 10.0.0.5 -u '<USERNAME>' -p '<PASSWORD>'"), 1)
         self.assertNotIn("-u 'alice' -p 'Secret1!'", text)
+
+    def test_grouped_credential_material_lists_sources_and_one_review_template(self):
+        paths = []
+        sources = (
+            ("/opt/app/.env", "file-content"),
+            ("/srv/api/config.yml", "file-content"),
+            ("/opt/app", "git-stash-content"),
+        )
+        for index, (source, material) in enumerate(sources):
+            finding = {
+                "host": "10.0.0.5", "port": None,
+                "source_tool": "mini-peas",
+                "entity_type": "privilege_escalation",
+                "name": "credential_material_found", "version": None,
+                "attributes": {
+                    "path": source, "material_type": material,
+                    "description": f"Credential material in {source}",
+                    "evidence": f"PASSWORD=Secret{index}",
+                    "discovery_provenance": [{
+                        "tool": "mini-peas",
+                        "command": f"collector-check-{index}",
+                    }],
+                },
+            }
+            path = self._path("Post-Foothold Credential Material - Review and Reuse",
+                              host="10.0.0.5", priority=86)
+            path["matched_findings"] = [{"trigger_id": 1, "finding": finding}]
+            path["suggestion"]["commands"] = [f"Review evidence and source path: {source}"]
+            paths.append(path)
+
+        class Synth:
+            def generate_attack_paths(self, _findings):
+                return paths
+
+        args = SimpleNamespace(verbose=0, max_vulns=5, oscp=False,
+                               show_all=False, top=20, min_likelihood="low")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            _display_results(args, Synth(), [])
+        text = out.getvalue()
+
+        self.assertIn("Grouped hits: 3 underlying path(s)", text)
+        self.assertIn("Recovered Credential-Material Leads:", text)
+        self.assertIn("/opt/app/.env [file-content]", text)
+        self.assertIn("/srv/api/config.yml [file-content]", text)
+        self.assertIn("/opt/app [git-stash-content]", text)
+        self.assertEqual(text.count("Core review template:"), 1)
+        self.assertEqual(text.count("python3 -m main.pathfinder -i <FINDINGS_JSON> --add-cred"), 1)
+        self.assertNotIn("Resolved commands:", text)
 
     def test_hide_discovery_applies_to_grouped_triage(self):
         finding = _finding("service", "ssh", host="10.0.0.5", score=50)

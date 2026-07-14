@@ -261,6 +261,22 @@ def _dedup_key(finding):
         attrs = finding.get("attributes") or {}
         secret = str(attrs.get("password") or finding.get("name") or "")
         return ("password_candidate", finding.get("host"), secret)
+    if (entity_type == "privilege_escalation"
+            and finding.get("source_tool") in {"mini-peas", "manual-privesc-collector"}):
+        attrs = finding.get("attributes") or {}
+        # A collector can legitimately emit many findings with the same rule
+        # name on one host (separate credential files, SUID binaries, tasks,
+        # services, Git artifacts, and so on). Preserve those distinct leads,
+        # while still collapsing an exact re-import of the same evidence.
+        discriminator = tuple(attrs.get(field) for field in (
+            "path", "material_type", "service", "task", "privilege",
+            "registry_key", "stash",
+        ))
+        evidence = json.dumps(attrs.get("evidence"), sort_keys=True, default=str)
+        return (
+            "manual_privilege_escalation", finding.get("host"), finding.get("port"),
+            finding.get("name"), discriminator, evidence,
+        )
     return (finding.get("host"), finding.get("port"), finding.get("name"), entity_type)
 
 
@@ -580,11 +596,14 @@ def _sniff_file_type_details(path):
     # JSON formats. Be careful not to misclassify plain-text logs that start
     # with bracketed tokens like [INFO], [*], or [+].
     if stripped.startswith('{') or re.match(r'^\[\s*[{"]', stripped):
-        if '"type": "ai_post_exploitation_loot"' in sanitized_head or '"type":"ai_post_exploitation_loot"' in sanitized_head \
-                or '"tool": "pathfinder-ai-loot-collector"' in sanitized_head:
+        if ('"type": "ai_post_exploitation_loot"' in sanitized_head
+                or '"type":"ai_post_exploitation_loot"' in sanitized_head
+                or '"tool": "ai-peas"' in sanitized_head
+                or '"tool": "pathfinder-ai-loot-collector"' in sanitized_head):
             return 'ai_loot_json', 'matched PathFinder AI post-exploitation loot signature'
         if ('"type": "pathfinder_manual_privesc_loot"' in sanitized_head
                 or '"type":"pathfinder_manual_privesc_loot"' in sanitized_head
+                or '"tool": "mini-peas"' in sanitized_head
                 or '"tool": "pathfinder-manual-privesc-collector"' in sanitized_head):
             return 'manual_privesc_json', 'matched PathFinder manual privilege-escalation loot signature'
         # one-shot-enum LLM/AI enumeration output (self-identifying).
@@ -1021,14 +1040,15 @@ def _path_discovery_provenance(path):
     return _deduplicate_provenance(records)
 
 
-def _print_discovery_provenance(records, args, indent="  "):
+def _print_discovery_provenance(records, args, indent="  ", limit=None):
     if getattr(args, "hide_discovery", False):
         return
     records = _deduplicate_provenance(records)
     if not records:
         return
     print(f"\n{indent}{C.BOLD}{C.GREEN}[+]{C.END} {C.BOLD}Discovery Provenance:{C.END}")
-    for record in records:
+    shown = records[:limit] if isinstance(limit, int) and limit > 0 else records
+    for record in shown:
         command = record.get("command") or "not recorded"
         print(f"{indent}    {C.GREEN}-{C.END} Tool: {record['tool']}")
         print(f"{indent}      Command: {command}")
@@ -1037,6 +1057,9 @@ def _print_discovery_provenance(records, args, indent="  "):
                 print(f"{indent}      Source: {record['source_file']}")
             if record.get("status"):
                 print(f"{indent}      Status: {record['status']}")
+    if len(shown) < len(records):
+        print(f"{indent}    {C.YELLOW}[!] {len(records) - len(shown)} more discovery command(s); "
+              "use --show-all for each underlying path.")
 
 
 def _print_finding_discovery(finding, args):
@@ -1130,6 +1153,7 @@ _COMPACT_EXPLOIT_RULES = {
     "Known Vulnerable Software with Public Exploit",
     "Known Vulnerable Software with GitHub Exploit",
 }
+_COMPACT_CREDENTIAL_MATERIAL_RULE = "Post-Foothold Credential Material - Review and Reuse"
 
 
 def _print_compact_login_bucket(bucket, rule_name):
@@ -1248,6 +1272,56 @@ def _print_compact_exploit_group(group, args):
               "use --show-all for every target.")
 
 
+def _print_compact_credential_material_group(group):
+    """List distinct recovered sources once and keep the workflow templated."""
+    by_host = {}
+    seen = set()
+    for path in group["paths"]:
+        for record in _matched_finding_records(path):
+            finding = record["finding"]
+            if finding.get("name") != "credential_material_found":
+                continue
+            attrs = finding.get("attributes") or {}
+            host = finding.get("host") or path.get("host") or "GLOBAL"
+            source = attrs.get("path") or attrs.get("registry_key") or attrs.get("source_file")
+            source = source or attrs.get("description") or "source not recorded"
+            material = attrs.get("material_type") or "credential material"
+            stash = attrs.get("stash")
+            item = (str(host), str(source), str(material), str(stash) if stash else None)
+            if item in seen:
+                continue
+            seen.add(item)
+            by_host.setdefault(str(host), []).append(item[1:])
+
+    print(f"\n  {C.BOLD}{C.GREEN}[+]{C.END} {C.BOLD}Recovered Credential-Material Leads:{C.END}")
+    remaining = MAX_GROUP_INPUTS
+    hidden = 0
+    for host, entries in by_host.items():
+        print(f"      {C.GREEN}-{C.END} {host} ({len(entries)} finding(s))")
+        for source, material, stash in entries:
+            if remaining <= 0:
+                hidden += 1
+                continue
+            context = f" [{material}]"
+            if stash:
+                context += f" [{stash}]"
+            print(f"          {C.GREEN}-{C.END} {source}{context}")
+            remaining -= 1
+    if hidden:
+        print(f"      {C.YELLOW}[!] {hidden} more credential-material source(s); "
+              "use --show-all for every underlying path.")
+
+    print("      Core review template:")
+    commands = [
+        "Review the unredacted evidence from <SOURCE_PATH>",
+        "Resolve <USERNAME>, <PASSWORD_OR_TOKEN>, <SERVICE>, and <SCOPE>",
+        "python3 -m main.pathfinder -i <FINDINGS_JSON> --add-cred",
+        "Regenerate paths and review Credential Reuse on Login Service",
+    ]
+    for command in commands:
+        print(f"        {C.GREEN}-{C.END} {command}")
+
+
 def _print_grouped_resolved_actions(group, args):
     if group.get("name") == "Username Candidates for Manual Review":
         candidates = []
@@ -1278,6 +1352,10 @@ def _print_grouped_resolved_actions(group, args):
 
     if group.get("name") in _COMPACT_EXPLOIT_RULES:
         _print_compact_exploit_group(group, args)
+        return
+
+    if group.get("name") == _COMPACT_CREDENTIAL_MATERIAL_RULE:
+        _print_compact_credential_material_group(group)
         return
 
     buckets = _group_action_buckets(group["paths"])
@@ -1574,7 +1652,9 @@ def _print_attack_path_group(group, args, index):
     provenance = []
     for grouped_path in group["paths"]:
         provenance.extend(_path_discovery_provenance(grouped_path))
-    _print_discovery_provenance(provenance, args)
+    provenance_limit = (MAX_GROUP_COMMANDS
+                        if group.get("name") == _COMPACT_CREDENTIAL_MATERIAL_RULE else None)
+    _print_discovery_provenance(provenance, args, limit=provenance_limit)
     if getattr(args, "verbose", 0) > 0:
         print(f"\n  {C.BOLD}{C.GREEN}[+]{C.END} {C.BOLD}Rationale:{C.END}\n"
               f"      {suggestion.get('rationale', '')}")
@@ -1679,6 +1759,13 @@ def _display_results(args, synthesizer, prioritized_findings):
                     print(f"      {_label('Reason:', 14)}{attributes['extraction_reason']}")
                 if attributes.get("evidence"):
                     print(f"      {_label('Evidence:', 14)}{attributes['evidence']}")
+            if (p_finding.get("source_tool") in {"mini-peas", "manual-privesc-collector"}
+                    and p_finding.get("name") == "credential_material_found"):
+                source = attributes.get("path") or attributes.get("registry_key")
+                if source:
+                    print(f"      {_label('Source:', 14)}{source}")
+                if attributes.get("material_type"):
+                    print(f"      {_label('Material:', 14)}{attributes['material_type']}")
             if attributes.get("metasploit_module"):
                 print(f"      {C.BOLD}Metasploit Module:{C.END} {attributes['metasploit_module']}")
                 if getattr(args, 'oscp', False):
@@ -1875,6 +1962,8 @@ def main():
     ag = main_parser.add_argument_group('Analysis Input Arguments')
     for spec in PARSER_SPECS:
         ag.add_argument(spec.flag, dest=spec.key, help=spec.help)
+        for alias in spec.aliases:
+            ag.add_argument(alias, dest=spec.key, help=argparse.SUPPRESS)
     ag.add_argument("--target-host", help="Target host IP or domain. Required for many parsers.")
     ag.add_argument("--gobuster-host", help="Target host for Gobuster. Deprecated, use --target-host.")
     ag.add_argument("--gobuster-port", type=int, help="Target port for Gobuster output.")

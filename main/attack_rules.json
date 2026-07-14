@@ -764,6 +764,7 @@
         "name": "Post-Foothold Credential Material - Review and Reuse",
         "priority": 86,
         "host_scope": "same_host",
+        "max_paths_per_host": 200,
         "triggers": [
             { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "credential_material_found" } }
         ],
@@ -1844,7 +1845,7 @@
         }
     },
     {
-        "_comment": "=== AI post-exploitation loot (fed by tools/ai_loot_collector.py; PEAS-style local evidence) ===",
+        "_comment": "=== AI post-exploitation loot (fed by tools/ai-peas.py; PEAS-style local evidence) ===",
         "name": "AI Loot - Platform Secrets and Tokens Found",
         "priority": 88,
         "host_scope": "same_host",

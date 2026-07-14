@@ -1,4 +1,5 @@
 import json
+import importlib.util
 import io
 import sys
 import tempfile
@@ -10,26 +11,30 @@ from pathlib import Path
 from main.attack_path_synthesizer import AttackPathSynthesizer
 from main.finding_schema import validate_findings
 from main.parser_registry import SPEC_BY_KEY
-from main.pathfinder import _attach_discovery_provenance, _sniff_file_type
+from main.pathfinder import _attach_discovery_provenance, _sniff_file_type, deduplicate_findings
 from parsers.post_exploitation.manual_privesc_parser import parse_manual_privesc_json
-from tools.manual_privesc_collector import Collector, _git_loot_search, _windows_writable
-
-
 ROOT = Path(__file__).parent.parent
 RULES_FILE = str(ROOT / "main" / "attack_rules.json")
+_COLLECTOR_PATH = ROOT / "tools" / "mini-peas.py"
+_SPEC = importlib.util.spec_from_file_location("pathfinder_mini_peas", _COLLECTOR_PATH)
+_MINI_PEAS = importlib.util.module_from_spec(_SPEC)
+_SPEC.loader.exec_module(_MINI_PEAS)
+Collector = _MINI_PEAS.Collector
+_git_loot_search = _MINI_PEAS._git_loot_search
+_windows_writable = _MINI_PEAS._windows_writable
 
 
 class ManualPrivilegeEscalationLootTests(unittest.TestCase):
     def _payload(self):
         return {
-            "tool": "pathfinder-manual-privesc-collector",
+            "tool": "mini-peas",
             "type": "pathfinder_manual_privesc_loot",
             "schema_version": "1.0",
             "host": "target-hostname",
             "platform": "linux",
             "user": "www-data",
             "collected_at": "2026-07-14T00:00:00+00:00",
-            "command": "python3 manual_privesc_collector.py -o loot.json",
+            "command": "python3 mini-peas.py -o loot.json",
             "options": {"sensitive_values_redacted": False},
             "checks": [
                 {
@@ -80,7 +85,7 @@ class ManualPrivilegeEscalationLootTests(unittest.TestCase):
         self.assertEqual(credential["attributes"]["evidence"], "DATABASE_PASSWORD=LabPassword123!")
         self.assertFalse(credential["attributes"]["sensitive_values_redacted"])
         self.assertEqual(credential["attributes"]["discovery_provenance"][0]["tool"],
-                         "manual-privesc-collector")
+                         "mini-peas")
         self.assertEqual(credential["attributes"]["discovery_command"], self._payload()["command"])
 
         sudo = next(f for f in findings if f["name"] == "sudo_nopasswd_privileges")
@@ -94,7 +99,8 @@ class ManualPrivilegeEscalationLootTests(unittest.TestCase):
         path = self._write(self._payload())
         self.assertEqual(_sniff_file_type(path), "manual_privesc_json")
         self.assertIn("manual_privesc_json", SPEC_BY_KEY)
-        self.assertEqual(SPEC_BY_KEY["manual_privesc_json"].flag, "--manual-privesc-json")
+        self.assertEqual(SPEC_BY_KEY["manual_privesc_json"].flag, "--mini-peas-json")
+        self.assertIn("--manual-privesc-json", SPEC_BY_KEY["manual_privesc_json"].aliases)
 
     def test_relative_windows_actions_are_not_treated_as_writable(self):
         self.assertFalse(_windows_writable("sc.exe"))
@@ -174,6 +180,28 @@ class ManualPrivilegeEscalationLootTests(unittest.TestCase):
         self.assertIn("Writable Scheduled Task Action - Binary Hijacking", names)
         self.assertIn("Writable Autorun or Startup Location - Privileged Logon Execution", names)
         self.assertIn("Dangerous Windows Token Privilege - Manual Abuse Review", names)
+
+    def test_many_credential_material_findings_survive_dedup_and_share_one_rule(self):
+        payload = self._payload()
+        payload["findings"] = [
+            {
+                "name": "credential_material_found",
+                "description": f"Credential material found in /opt/app/config-{index}.yml",
+                "evidence": f"PASSWORD=LabSecret{index}",
+                "path": f"/opt/app/config-{index}.yml",
+                "material_type": "file-content",
+            }
+            for index in range(32)
+        ]
+        findings = deduplicate_findings(parse_manual_privesc_json(self._write(payload)))
+        self.assertEqual(len(findings), 32)
+
+        paths = AttackPathSynthesizer(rules_file_path=RULES_FILE).generate_attack_paths(findings)
+        credential_paths = [
+            path for path in paths
+            if path["name"] == "Post-Foothold Credential Material - Review and Reuse"
+        ]
+        self.assertEqual(len(credential_paths), 32)
 
 
 if __name__ == "__main__":

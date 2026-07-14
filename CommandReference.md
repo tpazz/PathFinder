@@ -238,7 +238,7 @@ python3 -m main.pathfinder --llm-enum-json loot/10.10.10.10/llm_enum_11434.json
 # (or just drop the loot dir in front of `scan` - it is auto-detected)
 ```
 
-#### 4f. AI post-exploitation loot collector
+#### 4f. AI-PEAS post-exploitation loot collector
 
 After an authorised foothold on a host running AI/RAG/model services, run the
 read-only collector from the target-side project/app directory. It gathers
@@ -247,20 +247,20 @@ RAG/vector config, MCP/agent manifests, prompt templates, model artifacts, and
 unsafe loader signals into JSON.
 
 ```bash
-python3 tools/ai_loot_collector.py . -o ai_loot.json
+python3 tools/ai-peas.py . -o ai_loot.json
 
 # Optional broader collection from common Linux/Windows app locations
-python3 tools/ai_loot_collector.py /opt/app /srv/rag --common-roots -o ai_loot.json
+python3 tools/ai-peas.py /opt/app /srv/rag --common-roots -o ai_loot.json
 ```
 
 For a 64-bit Windows host without Python, transfer the standalone executable and
 run it from PowerShell or CMD:
 
 ```powershell
-.\pathfinder-ai-loot-collector.exe C:\path\to\app -o ai_loot.json
+.\tools\ai-peas.exe C:\path\to\app -o ai_loot.json
 
 # Optionally include common Windows application/configuration roots
-.\pathfinder-ai-loot-collector.exe C:\path\to\app --common-roots -o ai_loot.json
+.\tools\ai-peas.exe C:\path\to\app --common-roots -o ai_loot.json
 ```
 
 The `.exe` uses the same flags and emits the same schema as the Python collector.
@@ -268,14 +268,14 @@ To rebuild it on a Windows development machine:
 
 ```powershell
 python -m pip install pyinstaller
-.\tools\build_ai_loot_collector.ps1
+.\tools\build_ai-peas.ps1
 ```
 
 Transfer `ai_loot.json` back to the attack host and either pass it directly or
 drop it into the host's loot directory for scan-mode autodetection.
 
 ```bash
-python3 -m main.pathfinder --ai-loot-json ai_loot.json
+python3 -m main.pathfinder --ai-peas-json ai_loot.json
 python3 -m main.pathfinder scan loot/
 ```
 
@@ -387,7 +387,7 @@ winpeas.exe > winpeas.txt
 python3 -m main.pathfinder --winpeas-txt winpeas.txt --target-host TARGET_IP
 ```
 
-#### 9a. Manual privilege-escalation collector
+#### 9a. Mini-PEAS privilege-escalation collector
 
 When LinPEAS/WinPEAS cannot be transferred, use the collector based on the
 manual checks in `OSCP-Prep/3_LinuxPrivilegeEscalation.md`,
@@ -397,20 +397,20 @@ of `OSCP-Prep/Methodology.md`.
 Linux:
 
 ```bash
-python3 tools/manual_privesc_collector.py -o manual_privesc_loot.json
+python3 tools/mini-peas.py -o manual_privesc_loot.json
 
 # Prioritize application/config roots during the bounded credential search
-python3 tools/manual_privesc_collector.py /opt/app /var/www /srv \
+python3 tools/mini-peas.py /opt/app /var/www /srv \
   -o manual_privesc_loot.json
 ```
 
 Windows (standalone AMD64 binary; Python is not required):
 
 ```powershell
-.\pathfinder-manual-privesc-collector.exe -o manual_privesc_loot.json
+.\tools\mini-peas.exe -o manual_privesc_loot.json
 
 # Prioritize known application directories
-.\pathfinder-manual-privesc-collector.exe C:\inetpub\wwwroot C:\Apps `
+.\tools\mini-peas.exe C:\inetpub\wwwroot C:\Apps `
   -o manual_privesc_loot.json
 ```
 
@@ -427,12 +427,19 @@ reads `.git/config`, `HEAD`, refs and reflogs, and runs bounded `git remote`,
 bulk `.git/objects` database. Adjust the repository cap with
 `--max-git-repos NUMBER`.
 
+PathFinder keeps distinct collector evidence sources as separate findings rather
+than deduplicating solely by finding name. In the default triage view,
+`credential_material_found` paths are grouped into one compact
+`Post-Foothold Credential Material - Review and Reuse` lead that lists source
+paths once and prints one reusable review template. `--show-all` displays each
+resolved underlying path.
+
 Ingest directly:
 
 ```bash
 python3 -m main.pathfinder \
   -i findings.json \
-  --manual-privesc-json manual_privesc_loot.json \
+  --mini-peas-json manual_privesc_loot.json \
   --target-host TARGET_IP \
   -o findings-post.json
 ```
@@ -444,7 +451,7 @@ Build the Windows executable on a Windows development machine:
 
 ```powershell
 python -m pip install pyinstaller
-.\tools\build_manual_privesc_collector.ps1
+.\tools\build_mini-peas.ps1
 ```
 
 ---

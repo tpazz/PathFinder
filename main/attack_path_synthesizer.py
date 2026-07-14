@@ -199,6 +199,11 @@ class AttackPathSynthesizer:
         if rule_scope not in VALID_HOST_SCOPES:
             return False, f"Rule has invalid host_scope '{rule_scope}'"
 
+        max_paths = rule.get("max_paths_per_host")
+        if max_paths is not None and (not isinstance(max_paths, int) or isinstance(max_paths, bool)
+                                      or not 1 <= max_paths <= 5000):
+            return False, "Rule 'max_paths_per_host' must be an integer from 1 to 5000"
+
         suppress_conditions = rule.get("suppress_if_host_has", [])
         if not isinstance(suppress_conditions, list):
             return False, "Rule 'suppress_if_host_has' must be a list"
@@ -414,6 +419,7 @@ class AttackPathSynthesizer:
 
         for rule in self.rules:
             triggers = rule['triggers']
+            max_paths_per_host = rule.get("max_paths_per_host", MAX_PATHS_PER_RULE)
             candidate_lists = []
             # For each trigger in the rule, find all matching findings from the main list.
             for trigger in triggers:
@@ -447,7 +453,7 @@ class AttackPathSynthesizer:
                 host = self._target_host_for_combination(combination)
                 if self._rule_suppressed_for_host(rule, host, prioritized_findings):
                     continue
-                if host_path_counts.get(host, 0) >= MAX_PATHS_PER_RULE:
+                if host_path_counts.get(host, 0) >= max_paths_per_host:
                     capped_hosts.add(host)
                     continue
 
@@ -504,7 +510,8 @@ class AttackPathSynthesizer:
 
             if capped_hosts:
                 # Never silently truncate: tell the user a rule was bounded.
-                print(f"{C.YELLOW}[!] Rule '{rule['name']}' had many matches; capped at {MAX_PATHS_PER_RULE} paths per host.{C.END}")
+                print(f"{C.YELLOW}[!] Rule '{rule['name']}' had many matches; capped at "
+                      f"{max_paths_per_host} paths per host.{C.END}")
 
         # Rank by confidence-adjusted priority first (value of the move, docked for
         # shaky evidence), then by summed evidence score, then host/name for a
