@@ -417,7 +417,9 @@ Windows (standalone AMD64 binary; Python is not required):
 The collectors preserve raw sensitive values and evidence. They run read-only
 identity/system/network, Linux sudo/SUID/SGID/capability/cron/NFS/container,
 Windows token/service/task/autorun/installer/registry, and bounded
-history/key/config credential checks. Their only intended write is the report.
+history/key/config credential checks. They progressively print each check,
+completion status, duration, and promoted finding. Their only intended write is
+the report.
 
 Ingest directly:
 

@@ -156,7 +156,10 @@ python3 -m main.pathfinder scan loot/ -o findings-post.json
 
 The collector is read-only apart from writing its report. It does not redact
 captured environment variables, histories, keys, registry results, configuration
-lines, or command output. Maintainers can rebuild the Windows binary with
+lines, or command output. Checks, completion status, durations, and promoted
+findings are printed progressively while collection runs. When ingested,
+PathFinder displays the underlying check command in finding and attack-path
+discovery provenance. Maintainers can rebuild the Windows binary with
 `tools\build_manual_privesc_collector.ps1` after installing PyInstaller.
 
 ## Output Example

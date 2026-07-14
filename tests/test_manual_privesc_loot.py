@@ -1,14 +1,18 @@
 import json
+import io
+import sys
 import tempfile
 import unittest
+from argparse import Namespace
+from contextlib import redirect_stdout
 from pathlib import Path
 
 from main.attack_path_synthesizer import AttackPathSynthesizer
 from main.finding_schema import validate_findings
 from main.parser_registry import SPEC_BY_KEY
-from main.pathfinder import _sniff_file_type
+from main.pathfinder import _attach_discovery_provenance, _sniff_file_type
 from parsers.post_exploitation.manual_privesc_parser import parse_manual_privesc_json
-from tools.manual_privesc_collector import _windows_writable
+from tools.manual_privesc_collector import Collector, _windows_writable
 
 
 ROOT = Path(__file__).parent.parent
@@ -27,6 +31,13 @@ class ManualPrivilegeEscalationLootTests(unittest.TestCase):
             "collected_at": "2026-07-14T00:00:00+00:00",
             "command": "python3 manual_privesc_collector.py -o loot.json",
             "options": {"sensitive_values_redacted": False},
+            "checks": [
+                {
+                    "label": "sudo privileges",
+                    "command": "sudo -n -l",
+                    "returncode": 0,
+                },
+            ],
             "findings": [
                 {
                     "name": "sudo_nopasswd_privileges",
@@ -70,6 +81,14 @@ class ManualPrivilegeEscalationLootTests(unittest.TestCase):
         self.assertFalse(credential["attributes"]["sensitive_values_redacted"])
         self.assertEqual(credential["attributes"]["discovery_provenance"][0]["tool"],
                          "manual-privesc-collector")
+        self.assertEqual(credential["attributes"]["discovery_command"], self._payload()["command"])
+
+        sudo = next(f for f in findings if f["name"] == "sudo_nopasswd_privileges")
+        self.assertEqual(sudo["attributes"]["discovery_command"], "sudo -n -l")
+
+        _attach_discovery_provenance(credential, source_file=path)
+        self.assertEqual(len(credential["attributes"]["discovery_provenance"]), 1)
+        self.assertNotIn(None, [p.get("command") for p in credential["attributes"]["discovery_provenance"]])
 
     def test_scan_mode_and_registry_recognize_report(self):
         path = self._write(self._payload())
@@ -80,6 +99,20 @@ class ManualPrivilegeEscalationLootTests(unittest.TestCase):
     def test_relative_windows_actions_are_not_treated_as_writable(self):
         self.assertFalse(_windows_writable("sc.exe"))
         self.assertFalse(_windows_writable("relative\\task.exe"))
+
+    def test_collector_progressively_reports_checks_and_findings(self):
+        args = Namespace(max_output_kb=64, max_file_kb=64, command_timeout=5,
+                         max_files=10)
+        collector = Collector(args)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            collector.command("progress test", [sys.executable, "-c", "print('ok')"])
+            collector.finding("credential_material_found", "Test credential discovered",
+                              evidence="password=LabSecret")
+        rendered = output.getvalue()
+        self.assertIn("[>] Check: progress test", rendered)
+        self.assertIn("[complete] progress test", rendered)
+        self.assertIn("[!] Finding: Test credential discovered", rendered)
 
     def test_linux_findings_synthesize_existing_and_new_attack_paths(self):
         findings = parse_manual_privesc_json(self._write(self._payload()))

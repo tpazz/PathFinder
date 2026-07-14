@@ -85,8 +85,13 @@ class Collector:
         self._finding_keys: set[str] = set()
         self.files_examined = 0
 
+    @staticmethod
+    def progress(message: str) -> None:
+        print(message, flush=True)
+
     def command(self, label: str, argv: list[str], timeout: int | None = None) -> dict[str, Any]:
         started = time.monotonic()
+        self.progress(f"[>] Check: {label}")
         record: dict[str, Any] = {
             "label": label,
             "command": subprocess.list2cmdline(argv) if os.name == "nt" else shlex.join(argv),
@@ -120,11 +125,24 @@ class Collector:
             record.update({"returncode": None, "stdout": "", "stderr": str(exc), "error": True})
         record["duration_seconds"] = round(time.monotonic() - started, 3)
         self.checks.append(record)
+        if record.get("timed_out"):
+            status = "timed out"
+        elif record.get("unavailable"):
+            status = "unavailable"
+        elif record.get("error"):
+            status = "error"
+        elif record.get("returncode") == 0:
+            status = "complete"
+        else:
+            status = f"exit {record.get('returncode')}"
+        self.progress(f"    [{status}] {label} ({record['duration_seconds']:.3f}s)")
         return record
 
     def file_check(self, label: str, path: Path) -> dict[str, Any] | None:
+        self.progress(f"[>] Check: {label} ({path})")
         try:
             if not path.is_file() or path.stat().st_size > self.max_file_bytes:
+                self.progress(f"    [skipped] {label}")
                 return None
             raw = path.read_text(encoding="utf-8", errors="replace")
             content, truncated = _clip(raw, self.max_output_bytes)
@@ -137,9 +155,11 @@ class Collector:
                 "writable": os.access(path, os.W_OK),
             }
             self.checks.append(record)
+            self.progress(f"    [complete] {label}")
             return record
         except OSError as exc:
             self.checks.append({"label": label, "path": str(path), "readable": False, "error": str(exc)})
+            self.progress(f"    [error] {label}: {exc}")
             return None
 
     def finding(self, name: str, description: str, *, evidence: Any = None,
@@ -156,6 +176,7 @@ class Collector:
             return
         self._finding_keys.add(key)
         self.findings.append(record)
+        self.progress(f"[!] Finding: {description}")
 
     def walk_files(self, roots: Iterable[Path]) -> Iterable[Path]:
         seen: set[str] = set()
@@ -205,6 +226,9 @@ def _default_search_roots(extra: list[str]) -> list[Path]:
 
 
 def _credential_search(collector: Collector, roots: list[Path]) -> None:
+    started = time.monotonic()
+    starting_count = collector.files_examined
+    collector.progress("[>] Check: bounded credential, key, history, and configuration search")
     for path in collector.walk_files(roots):
         try:
             lower_name = path.name.lower()
@@ -256,6 +280,11 @@ def _credential_search(collector: Collector, roots: list[Path]) -> None:
                 path=str(path),
                 material_type="file-content",
             )
+    examined = collector.files_examined - starting_count
+    collector.progress(
+        f"    [complete] bounded credential search: {examined} file(s) examined "
+        f"({time.monotonic() - started:.3f}s)"
+    )
 
 
 def _linux_collect(collector: Collector, roots: list[Path]) -> None:
@@ -579,6 +608,8 @@ def main() -> int:
     args = parse_args()
     collector = Collector(args)
     roots = _default_search_roots(args.roots)
+    collector.progress(f"[*] {TOOL_NAME} starting on {socket.gethostname()} as {getpass.getuser()}")
+    collector.progress(f"[*] Sensitive-value redaction: disabled")
     if os.name == "nt":
         _windows_collect(collector, roots)
         platform_name = "windows"
@@ -614,7 +645,7 @@ def main() -> int:
     }
     out = Path(args.out)
     out.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    print(f"[+] Wrote {out} ({len(collector.findings)} findings; {len(collector.checks)} checks)")
+    collector.progress(f"[+] Wrote {out} ({len(collector.findings)} findings; {len(collector.checks)} checks)")
     return 0
 
 
