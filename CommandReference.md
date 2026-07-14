@@ -243,24 +243,30 @@ python3 -m main.pathfinder --llm-enum-json loot/10.10.10.10/llm_enum_11434.json
 After an authorised foothold on a host running AI/RAG/model services, run the
 read-only collector from the target-side project/app directory. It gathers
 provider/vector/MLflow/object-store/notebook secret values and references,
-RAG/vector config, MCP/agent manifests, prompt templates, model artifacts, and
-unsafe loader signals into JSON.
+RAG/vector config, MCP/agent manifests, prompt templates, model artifacts,
+unsafe loader signals, deployment configuration and readable runtime context.
+Notebook source cells are extracted without copying bulky execution outputs,
+and signals found in the same source are correlated into application-level
+control-plane chains.
 
 ```bash
-python3 tools/ai-peas.py . -o ai_loot.json
+python3 tools/ai-peas.py . -o ai-peas-loot.json
 
 # Optional broader collection from common Linux/Windows app locations
-python3 tools/ai-peas.py /opt/app /srv/rag --common-roots -o ai_loot.json
+python3 tools/ai-peas.py /opt/app /srv/rag --common-roots -o ai-peas-loot.json
+
+# Suppress progressive per-file discoveries when only JSON output is wanted
+python3 tools/ai-peas.py /opt/app --quiet -o ai-peas-loot.json
 ```
 
 For a 64-bit Windows host without Python, transfer the standalone executable and
 run it from PowerShell or CMD:
 
 ```powershell
-.\tools\ai-peas.exe C:\path\to\app -o ai_loot.json
+.\tools\ai-peas.exe C:\path\to\app -o ai-peas-loot.json
 
 # Optionally include common Windows application/configuration roots
-.\tools\ai-peas.exe C:\path\to\app --common-roots -o ai_loot.json
+.\tools\ai-peas.exe C:\path\to\app --common-roots -o ai-peas-loot.json
 ```
 
 The `.exe` uses the same flags and emits the same schema as the Python collector.
@@ -271,11 +277,11 @@ python -m pip install pyinstaller
 .\tools\build_ai-peas.ps1
 ```
 
-Transfer `ai_loot.json` back to the attack host and either pass it directly or
+Transfer `ai-peas-loot.json` back to the attack host and either pass it directly or
 drop it into the host's loot directory for scan-mode autodetection.
 
 ```bash
-python3 -m main.pathfinder --ai-peas-json ai_loot.json
+python3 -m main.pathfinder --ai-peas-json ai-peas-loot.json
 python3 -m main.pathfinder scan loot/
 ```
 
@@ -283,6 +289,16 @@ Discovered values and evidence snippets are preserved by default. Use
 `--redact-secret-values` only when you explicitly need a sanitized report. The
 legacy `--include-secret-values` flag remains accepted for compatibility and is
 equivalent to the default behaviour.
+
+`--max-files` limits relevant candidate files rather than every filesystem
+entry. When a broad search exceeds the limit, deployment/configuration,
+notebook, prompt, agent, RAG and model-related candidates are retained ahead of
+generic text. `--max-file-kb` bounds ordinary text reads, while
+`--max-notebook-kb` has a larger 4096 KiB default so useful notebooks are not
+discarded merely because they contain notebook metadata. Runtime
+collection is passive: AI-related environment variables plus readable `/proc`
+command lines on Linux, or matching process names through the Windows process
+API. AI-PEAS does not contact discovered services or execute external tools.
 
 #### 5. enum4linux-ng
 
@@ -389,37 +405,55 @@ python3 -m main.pathfinder --winpeas-txt winpeas.txt --target-host TARGET_IP
 
 #### 9a. Mini-PEAS privilege-escalation collector
 
-When LinPEAS/WinPEAS cannot be transferred, use the collector based on the
-manual checks in `OSCP-Prep/3_LinuxPrivilegeEscalation.md`,
-`OSCP-Prep/2_WindowsPrivilegeEscalation.md`, and the privilege-escalation section
-of `OSCP-Prep/Methodology.md`.
+When LinPEAS/WinPEAS cannot be transferred, use the built-in focused Linux and
+Windows post-foothold collector.
 
 Linux:
 
 ```bash
-python3 tools/mini-peas.py -o manual_privesc_loot.json
+python3 tools/mini-peas.py -o mini-peas-loot.json
 
 # Prioritize application/config roots during the bounded credential search
 python3 tools/mini-peas.py /opt/app /var/www /srv \
-  -o manual_privesc_loot.json
+  -o mini-peas-loot.json
+
+# Suppress progressive output while retaining the complete JSON report
+python3 tools/mini-peas.py /opt/app --quiet -o mini-peas-loot.json
+
+# Do not add common home/application locations to the supplied roots
+python3 tools/mini-peas.py /opt/app --only-specified-roots -o mini-peas-loot.json
 ```
 
 Windows (standalone AMD64 binary; Python is not required):
 
 ```powershell
-.\tools\mini-peas.exe -o manual_privesc_loot.json
+.\tools\mini-peas.exe -o mini-peas-loot.json
 
 # Prioritize known application directories
 .\tools\mini-peas.exe C:\inetpub\wwwroot C:\Apps `
-  -o manual_privesc_loot.json
+  -o mini-peas-loot.json
 ```
 
 The collectors preserve raw sensitive values and evidence. They run read-only
-identity/system/network, Linux sudo/SUID/SGID/capability/cron/NFS/container,
-Windows token/service/task/autorun/installer/registry, and bounded
-history/key/config credential checks. They progressively print each check,
-completion status, duration, and promoted finding. Their only intended write is
-the report.
+identity/system/network and bounded credential checks. Linux coverage includes
+sudo, filtered actionable SUID/SGID and capabilities, dangerous groups,
+writable PATH/privileged-process components, cron wildcards, systemd units,
+logrotate, dynamic-loader configuration, NFS/containers and mount options.
+Windows coverage includes dangerous token privileges, service change rights and
+writable directories, task binaries/scripts/definitions, autoruns,
+AlwaysInstallElevated, AutoLogon, unattended/IIS configuration, readable
+SAM/SYSTEM/SECURITY hives and writable machine PATH entries. Checks are
+read-only and progressively print completion status, duration and promoted
+findings. Their only intended write is the report.
+
+`--max-files` counts relevant credential/configuration candidates rather than
+every encountered filesystem entry, prioritises high-value named files and
+excludes the selected report itself. Explicit discovery operations such as
+`read <PATH>` and permission/access probes are retained in Pathfinder
+provenance. Credential searches explicitly recognise shell histories, private
+keys, `.netrc`, `.npmrc`, `.pypirc`, cloud/Kubernetes/Docker configuration,
+RDP profiles, KeePass metadata and common deployment formats without decoding
+binary stores as text.
 
 Both platforms search up to 100 Git repositories by default. The targeted pass
 reads `.git/config`, `HEAD`, refs and reflogs, and runs bounded `git remote`,
@@ -432,19 +466,20 @@ than deduplicating solely by finding name. In the default triage view,
 `credential_material_found` paths are grouped into one compact
 `Post-Foothold Credential Material - Review and Reuse` lead that lists source
 paths once and prints one reusable review template. `--show-all` displays each
-resolved underlying path.
+resolved underlying path. Privilege-escalation rules contain self-contained
+triage and validation steps rather than references to private note files.
 
 Ingest directly:
 
 ```bash
 python3 -m main.pathfinder \
   -i findings.json \
-  --mini-peas-json manual_privesc_loot.json \
+  --mini-peas-json mini-peas-loot.json \
   --target-host TARGET_IP \
   -o findings-post.json
 ```
 
-Or put the report at `loot/TARGET_IP/manual_privesc_loot.json` and rerun
+Or put the report at `loot/TARGET_IP/mini-peas-loot.json` and rerun
 `python3 -m main.pathfinder scan loot/`.
 
 Build the Windows executable on a Windows development machine:

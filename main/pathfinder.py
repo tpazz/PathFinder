@@ -154,7 +154,7 @@ def format_finding_display(name, entity_type):
     if "GitHub Exploit" in display_name: display_name = display_name.replace("GitHub Exploit", f"{C.BOLD}{C.GREEN}GitHub Exploit{C.END}")
     if not is_public_exploit:
         display_name = f"{C.BOLD}{display_name}{C.END}"
-    if entity_type == "privilege_escalation": display_type = f"({C.BOLD}{C.RED}{entity_type}{C.END})"
+    if entity_type == "privilege_escalation": display_type = f"({C.RED}{entity_type}{C.END})"
     elif entity_type == "web_content": display_type = f"({C.LIGHT_BLUE}{entity_type}{C.END})"
     elif entity_type == "misconfiguration": display_type = f"({C.YELLOW}{entity_type}{C.END})"
     elif entity_type == "vulnerability": display_type = f"({C.RED}{entity_type}{C.END})"
@@ -188,7 +188,7 @@ def _finding_type_token(entity_type):
     plain = f"({entity_type or 'unknown'})"
     if entity_type == "privilege_escalation":
         colour = C.RED
-        weight = C.BOLD
+        weight = ""
     elif entity_type == "web_content":
         colour = C.LIGHT_BLUE
         weight = ""

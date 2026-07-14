@@ -269,7 +269,7 @@ class TriageDisplayTests(unittest.TestCase):
         self.assertIn("\n\n[*] Triage view:", text)
         self.assertIn("additional grouped lead(s) hidden by --top 1", text)
 
-    def test_non_exploit_names_are_bold_but_vulnerability_type_is_not(self):
+    def test_non_exploit_names_are_bold_but_vulnerability_and_privesc_types_are_not(self):
         previous = C.enabled
         set_color_enabled(True)
         try:
@@ -277,6 +277,13 @@ class TriageDisplayTests(unittest.TestCase):
             vulnerability_type = _finding_type_token("vulnerability")
             self.assertTrue(display_name.startswith(C.BOLD))
             self.assertNotIn(C.BOLD, vulnerability_type)
+
+            _name, privesc_display_type = format_finding_display(
+                "sudo_nopasswd_privileges", "privilege_escalation",
+            )
+            privesc_type = _finding_type_token("privilege_escalation")
+            self.assertNotIn(C.BOLD, privesc_display_type)
+            self.assertNotIn(C.BOLD, privesc_type)
 
             exploit_name, _ = format_finding_display("EDB-ID: 12345", "vulnerability")
             self.assertIn(f"{C.BOLD}{C.RED}EDB-ID", exploit_name)

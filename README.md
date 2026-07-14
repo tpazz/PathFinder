@@ -100,23 +100,23 @@ PathFinder manual Linux/Windows privilege-escalation collector JSON.
 After an authorised foothold on an AI/RAG/model host, run:
 
 ```bash
-python3 tools/ai-peas.py . -o ai_loot.json
+python3 tools/ai-peas.py . -o ai-peas-loot.json
 ```
 
 On a 64-bit Windows target without Python, copy and run the standalone collector:
 
 ```powershell
-.\tools\ai-peas.exe . -o ai_loot.json
+.\tools\ai-peas.exe . -o ai-peas-loot.json
 ```
 
 The executable produces the same `ai_post_exploitation_loot` JSON accepted by
 `--ai-peas-json` and `scan`. Maintainers can rebuild it on Windows with
 `tools\build_ai-peas.ps1` after installing PyInstaller.
 
-Move `ai_loot.json` into the host loot folder or pass it directly:
+Move `ai-peas-loot.json` into the host loot folder or pass it directly:
 
 ```bash
-python3 -m main.pathfinder --ai-peas-json ai_loot.json -o findings.json
+python3 -m main.pathfinder --ai-peas-json ai-peas-loot.json -o findings.json
 python3 -m main.pathfinder scan loot/
 ```
 
@@ -124,26 +124,35 @@ The collector is read-only and preserves discovered values by default for lab
 use. Add `--redact-secret-values` only when you explicitly need a sanitized
 report. The legacy `--include-secret-values` flag remains accepted.
 
+AI-PEAS prioritizes AI/configuration candidates before applying `--max-files`
+and progressively reports significant discoveries. It extracts notebook cells,
+deployment configuration (Compose, Kubernetes, systemd and Jupyter), current
+AI-related environment variables, readable runtime process context, provider
+secrets, vector/RAG and MLflow/object-store relationships, MCP/agent manifests,
+prompt templates, model artifacts and unsafe loaders. Same-source signals are
+correlated into higher-confidence application control-plane chains. Use
+`--quiet` to suppress progress and `--common-roots` for a broader bounded pass.
+
 ## Mini-PEAS
 
-When PEAS is unavailable, the PEN-200-notes-driven collector automates the
+When PEAS is unavailable, the built-in PEN-200-oriented collector automates the
 manual post-foothold checks while preserving raw command output and sensitive
 evidence. On Linux:
 
 ```bash
-python3 tools/mini-peas.py -o manual_privesc_loot.json
+python3 tools/mini-peas.py -o mini-peas-loot.json
 ```
 
 On 64-bit Windows without Python:
 
 ```powershell
-.\tools\mini-peas.exe -o manual_privesc_loot.json
+.\tools\mini-peas.exe -o mini-peas-loot.json
 ```
 
 Additional paths can be supplied to prioritize credential/config searches:
 
 ```bash
-python3 tools/mini-peas.py /opt/app /var/www -o manual_privesc_loot.json
+python3 tools/mini-peas.py /opt/app /var/www -o mini-peas-loot.json
 ```
 
 On both platforms the collector also performs a bounded targeted Git-loot pass:
@@ -152,10 +161,21 @@ effective configuration, remotes, recent history, up to 20 stash contents, and
 secret-bearing configuration diffs. Use
 `--max-git-repos` to change the default limit of 100 repositories.
 
+The filesystem budget applies to relevant credential/configuration candidates,
+with high-value named files retained first; the selected output file is excluded
+from collection. Linux checks correlate unusual/abusable SUID and dangerous
+capabilities with groups, writable PATH entries, privileged processes, cron,
+systemd, logrotate, loader configuration and mounts. Windows checks cover
+dangerous token privileges, service configuration/directories, scheduled-task
+scripts and definitions, AutoLogon, unattended/IIS files, readable registry
+hives and writable machine PATH entries. Use `--quiet` when only JSON output is
+required. Positional paths normally augment common OS locations; add
+`--only-specified-roots` for a strictly targeted credential/configuration pass.
+
 Feed the report directly into PathFinder or place it beneath `loot/<IP>/`:
 
 ```bash
-python3 -m main.pathfinder --mini-peas-json manual_privesc_loot.json \
+python3 -m main.pathfinder --mini-peas-json mini-peas-loot.json \
   --target-host TARGET_IP -o findings-post.json
 python3 -m main.pathfinder scan loot/ -o findings-post.json
 ```
@@ -168,7 +188,9 @@ PathFinder displays the underlying check command in finding and attack-path
 discovery provenance. Distinct local files, Git artifacts, binaries, services,
 and tasks remain separate findings. Credential-material hits are summarized in
 one compact grouped triage path with source paths and a reusable review template;
-use `--show-all` for every underlying path. Maintainers can rebuild the Windows binary with
+use `--show-all` for every underlying path. Privilege-escalation attack paths
+embed the relevant validation and exploitation workflow directly instead of
+linking back to private notes. Maintainers can rebuild the Windows binary with
 `tools\build_mini-peas.ps1` after installing PyInstaller.
 
 ## Output Example

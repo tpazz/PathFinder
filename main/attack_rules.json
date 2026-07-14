@@ -752,12 +752,13 @@
             "description": "The current user can read /etc/shadow on {trigger.1.host}: {trigger.1.attributes.description}",
             "rationale": "Readable password hashes can be cracked offline and reused for local escalation or lateral movement.",
             "commands": [
-                "Copy the captured /etc/shadow evidence into shadow.txt",
+                "Save the captured /etc/passwd and /etc/shadow evidence as passwd.txt and shadow.txt",
+                "Identify the hash prefix before selecting a cracking mode ($6$ = SHA-512 crypt, $5$ = SHA-256 crypt, $1$ = MD5 crypt)",
                 "unshadow passwd.txt shadow.txt > unshadowed.txt",
-                "john --wordlist=/usr/share/wordlists/rockyou.txt unshadowed.txt",
-                "hashcat -m 1800 shadow.txt /usr/share/wordlists/rockyou.txt"
-            ],
-            "references": ["OSCP-Prep/3_LinuxPrivilegeEscalation.md#password-authentication"]
+                "john --format=sha512crypt --wordlist=/usr/share/wordlists/rockyou.txt unshadowed.txt",
+                "hashcat -m 1800 shadow.txt /usr/share/wordlists/rockyou.txt",
+                "Validate recovered passwords with su <USER> locally before considering reuse on another service"
+            ]
         }
     },
     {
@@ -773,10 +774,12 @@
             "rationale": "Shell histories, configuration files, registry values, and application logs frequently disclose reusable credentials after foothold.",
             "commands": [
                 "Review evidence and source path: {trigger.1.attributes.path}",
-                "Identify the username, service, and scope associated with each recovered value",
-                "Add validated username/password pairs with --add-cred, then regenerate credential-reuse paths"
-            ],
-            "references": ["OSCP-Prep/Methodology.md#44-credential-harvesting-and-reuse"]
+                "Classify the material as a password, token, connection string, key, hash, or false positive",
+                "Correlate nearby configuration, history, registry, Git, and application-log context to identify the username, service, and scope",
+                "Validate locally or against the explicitly associated service before broad reuse",
+                "Add validated username/password pairs with --add-cred, then regenerate credential-reuse paths",
+                "When testing reuse, proceed one service at a time and account for lockout policy"
+            ]
         }
     },
     {
@@ -790,11 +793,13 @@
             "description": "A readable private key was recovered on {trigger.1.host}: {trigger.1.attributes.description}",
             "rationale": "User SSH keys commonly enable access as another local user or reuse on another host.",
             "commands": [
+                "Use the source path and surrounding home-directory ownership to identify the likely account",
                 "Save the captured key evidence to id_key and run: chmod 600 id_key",
                 "Derive the public key/fingerprint: ssh-keygen -y -f id_key",
+                "If the key is encrypted, extract a crackable hash with ssh2john id_key > id_key.hash and attempt offline recovery",
+                "Check known_hosts, authorized_keys, shell history, and SSH config for likely hosts and usernames",
                 "Validate manually: ssh -i id_key <USER>@<TARGET>"
-            ],
-            "references": ["OSCP-Prep/3_LinuxPrivilegeEscalation.md#credentials"]
+            ]
         }
     },
     {
@@ -1006,17 +1011,19 @@
         "priority": 90,
         "host_scope": "same_host",
         "triggers": [
-            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "writable_scheduled_task_binary" } }
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "regex", "value": "^(writable_scheduled_task_binary|writable_scheduled_task_script|writable_scheduled_task_definition|writable_scheduled_task_working_directory)$" } }
         ],
         "suggestion": {
             "description": "A scheduled task on {trigger.1.host} executes a writable action: {trigger.1.attributes.description}",
             "rationale": "Replacing a task action that executes as a more privileged principal yields code execution when the task runs.",
             "commands": [
-                "schtasks /query /fo LIST /v (confirm task principal and schedule)",
+                "schtasks /query /fo LIST /v (confirm task principal, action, trigger, and schedule)",
                 "icacls '<TASK_BINARY>' (confirm effective write access)",
-                "Back up the original action, replace it with the required payload, and wait for or manually trigger the task if permitted"
-            ],
-            "references": ["OSCP-Prep/2_WindowsPrivilegeEscalation.md#scheduled-tasks"]
+                "copy '<TASK_BINARY>' '<TASK_BINARY>.bak' (preserve the original before replacement)",
+                "Replace the action with the controlled engagement payload only after confirming it runs as a more privileged principal",
+                "Wait for the scheduled trigger or run schtasks /run /tn '<TASK_NAME>' if the current user is permitted",
+                "Validate the resulting context with whoami /all and restore the original binary"
+            ]
         }
     },
     {
@@ -1030,11 +1037,12 @@
             "description": "A writable autorun/startup execution location was found on {trigger.1.host}: {trigger.1.attributes.description}",
             "rationale": "A payload placed in a privileged user's autorun or all-users Startup path executes when that user logs on.",
             "commands": [
-                "Confirm permissions with icacls '<PATH>'",
-                "Confirm which user triggers the autorun or Startup entry",
-                "Back up existing content before placing a controlled engagement payload"
-            ],
-            "references": ["OSCP-Prep/2_WindowsPrivilegeEscalation.md#autoruns", "OSCP-Prep/2_WindowsPrivilegeEscalation.md#startup-apps"]
+                "For autoruns: reg query HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
+                "For Startup: icacls 'C:\\ProgramData\\Microsoft\\Windows\\Start Menu\\Programs\\StartUp'",
+                "Confirm effective write access and which privileged user must log on to trigger execution",
+                "Back up existing content before replacing an autorun binary or adding the required Startup shortcut (.lnk)",
+                "After the controlled logon test, validate context with whoami /all and restore the original content"
+            ]
         }
     },
     {
@@ -1042,17 +1050,22 @@
         "priority": 93,
         "host_scope": "same_host",
         "triggers": [
-            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "regex", "value": "(seassignprimarytokenprivilege_enabled|sedebugprivilege_enabled)" } }
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "regex", "value": "^(seassignprimarytokenprivilege_enabled|sedebugprivilege_enabled|sebackupprivilege_enabled|serestoreprivilege_enabled|setakeownershipprivilege_enabled|seloaddriverprivilege_enabled)$" } }
         ],
         "suggestion": {
             "description": "A dangerous enabled token privilege was found on {trigger.1.host}: {trigger.1.attributes.description}",
-            "rationale": "SeAssignPrimaryToken and SeDebug can permit privileged token/process abuse, depending on OS and process context.",
+            "rationale": "Enabled token, backup, restore, ownership, debug, or driver privileges can cross local security boundaries when their specific prerequisites are present.",
             "commands": [
                 "whoami /priv (confirm the privilege is enabled)",
-                "tasklist /v (identify privileged processes and current integrity context)",
-                "Select an OS-compatible token abuse technique and validate with whoami /all"
-            ],
-            "references": ["OSCP-Prep/2_WindowsPrivilegeEscalation.md#kernel-exploits"]
+                "whoami /all and tasklist /v (record integrity level, groups, session, and privileged processes)",
+                "For SeAssignPrimaryTokenPrivilege, determine whether the service/process context can create a process with an available privileged token",
+                "For SeDebugPrivilege, identify a suitable SYSTEM process and use an engagement-approved process/token technique compatible with the target OS and architecture",
+                "For SeBackupPrivilege, make read-only backup-mode copies of SAM/SYSTEM/SECURITY or other otherwise-protected files before offline analysis",
+                "For SeRestorePrivilege or SeTakeOwnershipPrivilege, identify a protected service binary/configuration target and preserve ACLs and originals before any authorized change",
+                "For SeLoadDriverPrivilege, confirm the registry and driver-loading prerequisites and target OS protections before selecting a controlled technique",
+                "Do not assume the privilege alone is exploitable; confirm token access and process-creation prerequisites",
+                "Validate the resulting security context with whoami /all"
+            ]
         }
     },
     {
@@ -1854,7 +1867,7 @@
         ],
         "suggestion": {
             "description": "AI/platform secret references were found on {trigger.1.host}: {trigger.1.attributes.secret_names}.",
-            "rationale": "Local AI app configs commonly hold provider keys, vector DB tokens, MLflow credentials, object-store keys, notebook tokens, and cloud credentials. These are post-foothold pivots into the model/RAG/artifact control plane; the collector redacts values by default, so validate scope from the source paths before use.",
+            "rationale": "Local AI app configs commonly hold provider keys, vector DB tokens, MLflow credentials, object-store keys, notebook tokens, and cloud credentials. These are post-foothold pivots into the model/RAG/artifact control plane; AI-PEAS preserves values by default for the authorized lab workflow, so validate scope from the source paths before use.",
             "commands": [
                 "Review the collector samples and source paths: {trigger.1.attributes.samples}",
                 "Validate each credential's scope with read-only API calls first; do not mutate vector stores, model artifacts, or tool backends until authorized.",
@@ -2011,6 +2024,199 @@
                 "Prioritize writable artifacts and serialized formats only when a consuming process is identified."
             ],
             "references": ["https://owasp.org/www-project-top-10-for-large-language-model-applications/"]
+        }
+    },
+    {
+        "name": "AI Loot - Deployment and Runtime Configuration",
+        "priority": 79,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "ai_post_exploitation", "name_match": { "type": "exact", "value": "ai_config_inventory" } }
+        ],
+        "suggestion": {
+            "description": "AI/application deployment configuration was found on {trigger.1.host}: {trigger.1.attributes.config_kinds}.",
+            "rationale": "Compose files, Kubernetes manifests, systemd units, Jupyter runtime files, and application configs reveal service identities, mounted secrets, endpoints, consumers, and trust boundaries that isolated keyword hits cannot provide.",
+            "commands": [
+                "Review configuration samples: {trigger.1.attributes.samples}",
+                "Map environment files, secret mounts, service accounts, volumes, ports, dependency endpoints, and execution identities.",
+                "Correlate each configuration with runtime, credential, vector-store, MLflow, MCP, and model-artifact findings before validation."
+            ],
+            "references": ["https://owasp.org/www-project-top-10-for-large-language-model-applications/"]
+        }
+    },
+    {
+        "name": "AI Loot - Active Runtime Context",
+        "priority": 85,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "ai_post_exploitation", "name_match": { "type": "exact", "value": "ai_runtime_context_found" } }
+        ],
+        "suggestion": {
+            "description": "Readable AI runtime context was found on {trigger.1.host}: {trigger.1.attributes.runtime_kinds}.",
+            "rationale": "Running process names, command lines, and AI-related environment variables identify the live application and its effective configuration, reducing guesswork from stale source files or dormant artifacts.",
+            "commands": [
+                "Review runtime samples: {trigger.1.attributes.samples}",
+                "Correlate process identities and environment names with listening services, deployment configuration, loaded artifacts, and recovered credentials.",
+                "Prefer read-only health, metadata, and inventory requests when validating a live endpoint."
+            ],
+            "references": ["https://owasp.org/www-project-top-10-for-large-language-model-applications/"]
+        }
+    },
+    {
+        "name": "AI Loot - Correlated Application Control-Plane Chain",
+        "priority": 93,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "ai_post_exploitation", "name_match": { "type": "exact", "value": "ai_application_chain_found" } }
+        ],
+        "suggestion": {
+            "description": "Multiple AI control-plane signals occur together in the same source on {trigger.1.host}: {trigger.1.attributes.signals}.",
+            "rationale": "Same-source correlation is stronger than unrelated host-wide keyword hits. A configuration that joins credentials, storage, retrieval, tools, artifacts, or unsafe loaders provides a concrete application-level path to validate.",
+            "commands": [
+                "Review the correlated source paths and samples: {trigger.1.attributes.samples}",
+                "Build the exact chain from identity/credential to endpoint or storage, then to the consuming runtime or loader.",
+                "Validate each edge independently with low-impact read-only checks before attempting any authorized state-changing test."
+            ],
+            "references": ["https://owasp.org/www-project-top-10-for-large-language-model-applications/"]
+        }
+    },
+    {
+        "name": "Mini-PEAS - Sudo Allowed Command Review",
+        "priority": 82,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "sudo_allowed_commands" } }
+        ],
+        "suggestion": {
+            "description": "The current user has sudo command permissions on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "A sudo rule can be exploitable even when it is not NOPASSWD, particularly when a known password, cached credential, SETENV, wildcard, editable file, or GTFOBins-capable command is available.",
+            "commands": [
+                "Review the exact sudo -l output and run-as user restrictions: {trigger.1.attributes.evidence}",
+                "Check allowed binaries and argument wildcards against GTFOBins; also inspect SETENV and preserved environment variables.",
+                "Do not treat the rule as passwordless unless NOPASSWD is explicitly present."
+            ],
+            "references": ["https://gtfobins.github.io/#+sudo"]
+        }
+    },
+    {
+        "name": "Mini-PEAS - Linux Group and PATH Escalation Review",
+        "priority": 88,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "regex", "value": "^(dangerous_group_membership|writable_path_directory|privileged_relative_path_execution)$" } }
+        ],
+        "suggestion": {
+            "description": "A group/PATH privilege boundary requires review on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "Container, disk, shadow, virtualization, or log-reading groups can expose privileged resources. Writable PATH entries become direct escalation only when a privileged process resolves a relative command through them.",
+            "commands": [
+                "Review the matched evidence and identify the precise privileged resource or consumer: {trigger.1.attributes.evidence}",
+                "For docker/lxd/incus/libvirt, enumerate accessible management sockets and the identity under which workloads run.",
+                "For disk/shadow/adm, identify readable block devices, password material, or privileged logs without modifying them.",
+                "For PATH findings, confirm the privileged relative command and its search order before creating any controlled test file."
+            ]
+        }
+    },
+    {
+        "name": "Mini-PEAS - Writable Privileged Linux Execution Chain",
+        "priority": 94,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "regex", "value": "^(privileged_process_writable_component|privileged_environment_hijack|writable_systemd_execution_chain|cron_wildcard_injection_candidate|cron_path_hijack_candidate|writable_logrotate_configuration)$" } }
+        ],
+        "suggestion": {
+            "description": "A privileged Linux execution chain contains a writable component on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "A root process, systemd unit, timer, cron action, or logrotate configuration that consumes attacker-writable content provides a concrete execution boundary rather than a generic writable-file lead.",
+            "commands": [
+                "Review the collector evidence and confirm the owner, schedule/trigger, effective user, and exact writable component.",
+                "Inspect permissions with namei -l <PATH> and stat <PATH>; review unit/cron/logrotate content before changing anything.",
+                "Back up the original and use a harmless marker for the first authorized trigger test, then restore it."
+            ]
+        }
+    },
+    {
+        "name": "Mini-PEAS - Dynamic Loader Configuration Hijack",
+        "priority": 95,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "writable_dynamic_loader_configuration" } }
+        ],
+        "suggestion": {
+            "description": "Dynamic loader configuration is writable on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "Writable ld.so preload or search-path configuration can cause privileged dynamically linked programs to load attacker-controlled libraries.",
+            "commands": [
+                "Read and back up the loader configuration, then inspect ownership with stat and namei -l.",
+                "Use ldd and readelf -d on the intended privileged consumer to confirm dynamic loading and architecture.",
+                "Only after authorization, validate with a controlled library and immediately restore the original configuration."
+            ]
+        }
+    },
+    {
+        "name": "Mini-PEAS - Mount Configuration Review",
+        "priority": 70,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "interesting_mount_configuration" } }
+        ],
+        "suggestion": {
+            "description": "Interesting mount configuration was found on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "Credential files, user-mountable entries, and explicit exec/suid options can expose secrets or create an escalation prerequisite, but require validation of ownership and the privileged consumer.",
+            "commands": [
+                "Review /etc/fstab, /proc/mounts, mount and findmnt -o TARGET,SOURCE,FSTYPE,OPTIONS.",
+                "Inspect referenced credential files and mount-point permissions without mounting or modifying anything.",
+                "Confirm a privileged execution path before treating writable mount content as escalation."
+            ]
+        }
+    },
+    {
+        "name": "Mini-PEAS - Windows Service Control or Directory Hijack",
+        "priority": 94,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "regex", "value": "^(service_change_config_allowed|writable_service_directory)$" } }
+        ],
+        "suggestion": {
+            "description": "A privileged Windows service boundary is controllable on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "SERVICE_CHANGE_CONFIG access can redirect a privileged service executable; a writable service directory can enable executable or DLL-search-order hijacking when the service consumes content there.",
+            "commands": [
+                "sc.exe qc <SERVICE> and sc.exe sdshow <SERVICE> (record account, binary, start mode and DACL).",
+                "icacls '<SERVICE_PATH>' and icacls '<SERVICE_DIRECTORY>' (confirm effective rights and inheritance).",
+                "For writable directories, use Procmon or static import review to identify an actual missing DLL/config consumer before planting anything.",
+                "Back up configuration/files and use a controlled marker payload only when restart/trigger authority is confirmed."
+            ]
+        }
+    },
+    {
+        "name": "Mini-PEAS - Readable Windows Registry Hives",
+        "priority": 94,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "readable_windows_registry_hives" } }
+        ],
+        "suggestion": {
+            "description": "Sensitive Windows registry hives are readable on {trigger.1.host}.",
+            "rationale": "Readable SAM and SYSTEM material permits offline local-account hash extraction; SECURITY can also contain cached/domain and LSA secret material depending on the host.",
+            "commands": [
+                "Copy only the collector-confirmed readable hive files to the engagement workspace while preserving originals.",
+                "impacket-secretsdump -sam SAM -system SYSTEM -security SECURITY LOCAL",
+                "Record recovered account/hash scope and validate reuse conservatively with lockout awareness."
+            ]
+        }
+    },
+    {
+        "name": "Mini-PEAS - Writable Windows Machine PATH",
+        "priority": 72,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "writable_machine_path_directory" } }
+        ],
+        "suggestion": {
+            "description": "A machine PATH directory is writable on {trigger.1.host}: {trigger.1.attributes.description}",
+            "rationale": "A writable machine PATH is only exploitable when a more privileged process launches a relative executable name that resolves through it.",
+            "commands": [
+                "Review the machine PATH order and confirm effective ACLs with icacls '<PATH>'.",
+                "Search service, scheduled-task, autorun and application command lines for unqualified executable names.",
+                "Do not plant an executable until a specific privileged consumer and trigger have been confirmed."
+            ]
         }
     }
 ]

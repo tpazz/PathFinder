@@ -1,9 +1,12 @@
 import json
 import importlib.util
 import io
+import os
+import stat
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from argparse import Namespace
 from contextlib import redirect_stdout
 from pathlib import Path
@@ -22,9 +25,19 @@ _SPEC.loader.exec_module(_MINI_PEAS)
 Collector = _MINI_PEAS.Collector
 _git_loot_search = _MINI_PEAS._git_loot_search
 _windows_writable = _MINI_PEAS._windows_writable
+_windows_readable = _MINI_PEAS._windows_readable
+_credential_lines = _MINI_PEAS._credential_lines
+_history_credential_lines = _MINI_PEAS._history_credential_lines
+_dangerous_capabilities = _MINI_PEAS._dangerous_capabilities
+_linux_special_file_classification = _MINI_PEAS._linux_special_file_classification
+_extract_windows_script_paths = _MINI_PEAS._extract_windows_script_paths
+_is_privileged_windows_principal = _MINI_PEAS._is_privileged_windows_principal
 
 
 class ManualPrivilegeEscalationLootTests(unittest.TestCase):
+    def test_default_output_uses_mini_peas_name(self):
+        self.assertEqual(_MINI_PEAS.DEFAULT_OUTPUT, "mini-peas-loot.json")
+
     def _payload(self):
         return {
             "tool": "mini-peas",
@@ -105,6 +118,10 @@ class ManualPrivilegeEscalationLootTests(unittest.TestCase):
     def test_relative_windows_actions_are_not_treated_as_writable(self):
         self.assertFalse(_windows_writable("sc.exe"))
         self.assertFalse(_windows_writable("relative\\task.exe"))
+
+    def test_windows_read_probe_treats_access_denied_as_not_readable(self):
+        with patch.object(Path, "is_file", side_effect=PermissionError("denied")):
+            self.assertFalse(_windows_readable(r"C:\Windows\System32\config\SAM"))
 
     def test_collector_progressively_reports_checks_and_findings(self):
         args = Namespace(max_output_kb=64, max_file_kb=64, command_timeout=5,
@@ -202,6 +219,87 @@ class ManualPrivilegeEscalationLootTests(unittest.TestCase):
             if path["name"] == "Post-Foothold Credential Material - Review and Reuse"
         ]
         self.assertEqual(len(credential_paths), 32)
+
+    def test_privilege_escalation_rules_do_not_reference_private_notes(self):
+        rules = json.loads(Path(RULES_FILE).read_text(encoding="utf-8"))
+        privilege_rules = [
+            rule for rule in rules
+            if any(trigger.get("entity_type") == "privilege_escalation"
+                   for trigger in rule.get("triggers", []))
+        ]
+        self.assertTrue(privilege_rules)
+        self.assertNotIn("OSCP-Prep", json.dumps(privilege_rules))
+
+    def test_file_budget_prioritizes_candidates_and_excludes_own_output(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for index in range(12):
+                (root / f"ordinary-{index}.txt").write_text("ordinary", encoding="utf-8")
+            secret = root / ".netrc"
+            secret.write_text("machine lab login alice password LabSecret", encoding="utf-8")
+            output = root / "mini-peas-loot.json"
+            output.write_text('{"password":"old-secret"}', encoding="utf-8")
+            args = Namespace(max_output_kb=64, max_file_kb=64, command_timeout=1,
+                             max_files=3, max_git_repos=1, out=str(output), quiet=True)
+            collector = Collector(args)
+            selected = list(collector.walk_files([root]))
+
+            self.assertIn(secret, selected)
+            self.assertNotIn(output, selected)
+            self.assertEqual(len(selected), 3)
+            self.assertTrue(collector.file_limit_reached)
+
+    def test_credential_line_precision_and_history_commands(self):
+        text = "\n".join([
+            "# password documentation only",
+            "password policy requires twelve characters",
+            "DATABASE_PASSWORD=LabSecret123!",
+            "Authorization: Bearer raw-token-value",
+        ])
+        lines = _credential_lines(text)
+        self.assertEqual(lines, ["DATABASE_PASSWORD=LabSecret123!", "Authorization: Bearer raw-token-value"])
+        history = _history_credential_lines("sshpass -p 'LabSecret' ssh alice@host\necho password policy")
+        self.assertEqual(history, ["sshpass -p 'LabSecret' ssh alice@host"])
+
+    def test_linux_suid_and_capability_noise_filtering(self):
+        normal = _linux_special_file_classification(Path("/usr/bin/passwd"), stat.S_ISUID)
+        exploitable = _linux_special_file_classification(Path("/usr/bin/find"), stat.S_ISUID)
+        custom = _linux_special_file_classification(Path("/opt/tools/backup"), stat.S_ISUID)
+        self.assertEqual(normal, (False, False, None))
+        self.assertEqual(exploitable, (True, False, "known-abusable"))
+        self.assertEqual(custom, (True, False, "unusual"))
+        self.assertEqual(_dangerous_capabilities("/usr/bin/ping cap_net_raw=ep"), [])
+        self.assertEqual(_dangerous_capabilities("/opt/python cap_setuid,cap_net_raw=ep"), ["cap_setuid"])
+
+    def test_windows_task_script_and_principal_parsing(self):
+        paths = _extract_windows_script_paths(
+            r"powershell.exe -File C:\ProgramData\Jobs\backup.ps1 C:\Safe\other.cmd"
+        )
+        self.assertEqual(paths, [r"C:\ProgramData\Jobs\backup.ps1", r"C:\Safe\other.cmd"])
+        self.assertTrue(_is_privileged_windows_principal("SYSTEM"))
+        self.assertTrue(_is_privileged_windows_principal("S-1-5-18"))
+        self.assertFalse(_is_privileged_windows_principal("INTERACTIVE"))
+        self.assertFalse(_is_privileged_windows_principal(r"LAB\ordinary-user"))
+        self.assertFalse(_is_privileged_windows_principal(_MINI_PEAS.getpass.getuser()))
+
+    def test_new_linux_and_windows_findings_synthesize_paths(self):
+        payload = self._payload()
+        payload["findings"] = [
+            {"name": "writable_systemd_execution_chain", "description": "writable unit", "path": "/etc/systemd/system/x.service"},
+            {"name": "writable_dynamic_loader_configuration", "description": "writable preload", "path": "/etc/ld.so.preload"},
+            {"name": "service_change_config_allowed", "description": "service DACL", "service": "Updater"},
+            {"name": "readable_windows_registry_hives", "description": "hives readable", "paths": ["SAM", "SYSTEM"]},
+            {"name": "writable_machine_path_directory", "description": "PATH writable", "path": r"C:\Tools"},
+        ]
+        findings = parse_manual_privesc_json(self._write(payload))
+        validate_findings(findings)
+        names = {path["name"] for path in AttackPathSynthesizer(
+            rules_file_path=RULES_FILE).generate_attack_paths(findings)}
+        self.assertIn("Mini-PEAS - Writable Privileged Linux Execution Chain", names)
+        self.assertIn("Mini-PEAS - Dynamic Loader Configuration Hijack", names)
+        self.assertIn("Mini-PEAS - Windows Service Control or Directory Hijack", names)
+        self.assertIn("Mini-PEAS - Readable Windows Registry Hives", names)
+        self.assertIn("Mini-PEAS - Writable Windows Machine PATH", names)
 
 
 if __name__ == "__main__":

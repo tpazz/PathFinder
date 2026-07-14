@@ -20,6 +20,9 @@ clean_snippet = _AI_PEAS.clean_snippet
 
 
 class AiLootCollectorTests(unittest.TestCase):
+    def test_default_output_uses_ai_peas_name(self):
+        self.assertEqual(_AI_PEAS.DEFAULT_OUTPUT, "ai-peas-loot.json")
+
     def _fixture_tree(self, root):
         app = root / "app"
         app.mkdir()
@@ -66,13 +69,16 @@ class AiLootCollectorTests(unittest.TestCase):
             payload = json.loads(out.read_text(encoding="utf-8"))
             self.assertEqual(payload["type"], "ai_post_exploitation_loot")
             self.assertFalse(payload["options"]["secret_values_redacted"])
-            secret = payload["findings"]["secrets"][0]
+            secret = next(item for item in payload["findings"]["secrets"]
+                          if item["name"] == "OPENAI_API_KEY")
             self.assertEqual(secret["value"]["value"], "sk-supersecret")
             self.assertIn("sk-supersecret", json.dumps(payload))
             self.assertEqual(payload["stats"]["files_skipped_due_to_errors"], 0)
             self.assertGreaterEqual(len(payload["findings"]["vector_stores"]), 1)
             self.assertGreaterEqual(len(payload["findings"]["mcp_tools"]), 1)
             self.assertGreaterEqual(len(payload["findings"]["unsafe_loaders"]), 1)
+            self.assertGreaterEqual(len(payload["findings"]["config_refs"]), 1)
+            self.assertGreaterEqual(len(payload["findings"]["application_chains"]), 1)
             self.assertEqual(_sniff_file_type(str(out)), "ai_loot_json")
 
     def test_parser_and_rules_consume_collector_output(self):
@@ -141,7 +147,9 @@ class AiLootCollectorTests(unittest.TestCase):
             payload = json.loads(out.read_text(encoding="utf-8"))
             self.assertTrue(payload["options"]["secret_values_redacted"])
             self.assertNotIn("sk-supersecret", json.dumps(payload))
-            self.assertTrue(payload["findings"]["secrets"][0]["value"]["redacted"])
+            secret = next(item for item in payload["findings"]["secrets"]
+                          if item["name"] == "OPENAI_API_KEY")
+            self.assertTrue(secret["value"]["redacted"])
 
     def test_collector_survives_bad_json_file(self):
         with tempfile.TemporaryDirectory() as d:
@@ -170,6 +178,116 @@ class AiLootCollectorTests(unittest.TestCase):
         self.addCleanup(lambda: Path(path).unlink(missing_ok=True))
 
         self.assertEqual(_sniff_file_type(path), "ai_loot_json")
+
+    def test_notebook_cells_and_new_provider_secrets_are_collected(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            notebook = root / "analysis.ipynb"
+            notebook.write_text(json.dumps({
+                "cells": [{
+                    "cell_type": "code",
+                    "source": [
+                        "GROQ_API_KEY='groq-secret-value'\n",
+                        "vector_store = Qdrant(url='http://qdrant:6333')\n",
+                    ],
+                    "outputs": [{"output_type": "stream", "text": "x" * (600 * 1024)}],
+                }],
+                "metadata": {"kernelspec": {"name": "python3"}},
+            }), encoding="utf-8")
+            out = root / "loot.json"
+
+            subprocess.run(
+                [sys.executable, str(COLLECTOR), str(root), "--quiet", "-o", str(out)],
+                check=True,
+            )
+            payload = json.loads(out.read_text(encoding="utf-8"))
+            self.assertTrue(payload["findings"]["notebooks"])
+            self.assertGreater(notebook.stat().st_size, 512 * 1024)
+            names = {item["name"] for item in payload["findings"]["secrets"]}
+            self.assertIn("GROQ_API_KEY", names)
+            self.assertTrue(payload["findings"]["vector_stores"])
+
+    def test_noise_is_not_promoted_as_ai_evidence(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "general.py").write_text(
+                "import subprocess\nsubprocess.run(['echo', 'hello'])\nchunks = 3\n",
+                encoding="utf-8",
+            )
+            (root / "server.conf").write_text(
+                "listen=localhost:8080\nsearch=localhost:9200\n", encoding="utf-8"
+            )
+            (root / "ordinary.csv").write_text("name,value\na,1\n", encoding="utf-8")
+            out = root / "loot.json"
+
+            subprocess.run(
+                [sys.executable, str(COLLECTOR), str(root), "--quiet", "-o", str(out)],
+                check=True,
+            )
+            findings = json.loads(out.read_text(encoding="utf-8"))["findings"]
+            self.assertFalse(findings["unsafe_loaders"])
+            self.assertFalse(findings["rag_sources"])
+            self.assertFalse(findings["vector_stores"])
+            self.assertFalse(findings["model_artifacts"])
+
+    def test_generic_subprocess_in_ai_source_is_not_an_unsafe_model_loader(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "ai_agent.py").write_text(
+                "import subprocess\nsubprocess.run(['worker', '--health'])\n",
+                encoding="utf-8",
+            )
+            out = root / "loot.json"
+            subprocess.run(
+                [sys.executable, str(COLLECTOR), str(root), "--quiet", "-o", str(out)],
+                check=True,
+            )
+            findings = json.loads(out.read_text(encoding="utf-8"))["findings"]
+            self.assertFalse(findings["unsafe_loaders"])
+
+    def test_relevant_files_are_prioritized_before_max_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            for index in range(8):
+                (root / f"z{index}.txt").write_text("ordinary text", encoding="utf-8")
+            (root / "system_prompt.md").write_text("system_prompt=important", encoding="utf-8")
+            selected, candidates, limited = _AI_PEAS.walk_paths([str(root)], 3)
+            self.assertTrue(limited)
+            self.assertGreater(candidates, len(selected))
+            self.assertIn("system_prompt.md", {path.name for path in selected})
+
+    def test_parser_exposes_config_runtime_and_correlated_chain_findings(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            app = root / "app"
+            app.mkdir()
+            (app / "docker-compose.yml").write_text(
+                "services:\n  rag:\n    environment:\n"
+                "      OPENROUTER_API_KEY: secret-value\n"
+                "      QDRANT_URL: http://qdrant:6333\n",
+                encoding="utf-8",
+            )
+            out = root / "loot.json"
+            subprocess.run(
+                [sys.executable, str(COLLECTOR), str(app), "--quiet", "-o", str(out)],
+                check=True,
+            )
+            payload = json.loads(out.read_text(encoding="utf-8"))
+            payload["findings"]["runtime_context"].append({
+                "path": "process:42", "kind": "running-process", "process_name": "ollama.exe"
+            })
+            out.write_text(json.dumps(payload), encoding="utf-8")
+
+            findings = parse_ai_loot_json(str(out))
+            names = {finding["name"] for finding in findings}
+            self.assertIn("ai_config_inventory", names)
+            self.assertIn("ai_runtime_context_found", names)
+            self.assertIn("ai_application_chain_found", names)
+            paths = AttackPathSynthesizer(rules_file_path=RULES_FILE).generate_attack_paths(findings)
+            path_names = {path["name"] for path in paths}
+            self.assertIn("AI Loot - Deployment and Runtime Configuration", path_names)
+            self.assertIn("AI Loot - Active Runtime Context", path_names)
+            self.assertIn("AI Loot - Correlated Application Control-Plane Chain", path_names)
 
 if __name__ == "__main__":
     unittest.main()
