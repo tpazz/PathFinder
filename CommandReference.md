@@ -421,6 +421,12 @@ history/key/config credential checks. They progressively print each check,
 completion status, duration, and promoted finding. Their only intended write is
 the report.
 
+Both platforms search up to 100 Git repositories by default. The targeted pass
+reads `.git/config`, `HEAD`, refs and reflogs, and runs bounded `git remote`,
+`git config`, `git log`, and `git stash`/stash-content checks without traversing the
+bulk `.git/objects` database. Adjust the repository cap with
+`--max-git-repos NUMBER`.
+
 Ingest directly:
 
 ```bash

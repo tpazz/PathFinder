@@ -146,6 +146,12 @@ Additional paths can be supplied to prioritize credential/config searches:
 python3 tools/manual_privesc_collector.py /opt/app /var/www -o manual_privesc_loot.json
 ```
 
+On both platforms the collector also performs a bounded targeted Git-loot pass:
+it reads useful `.git` metadata while skipping object databases, and records
+effective configuration, remotes, recent history, up to 20 stash contents, and
+secret-bearing configuration diffs. Use
+`--max-git-repos` to change the default limit of 100 repositories.
+
 Feed the report directly into PathFinder or place it beneath `loot/<IP>/`:
 
 ```bash

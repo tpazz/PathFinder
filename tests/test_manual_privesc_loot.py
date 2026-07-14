@@ -12,7 +12,7 @@ from main.finding_schema import validate_findings
 from main.parser_registry import SPEC_BY_KEY
 from main.pathfinder import _attach_discovery_provenance, _sniff_file_type
 from parsers.post_exploitation.manual_privesc_parser import parse_manual_privesc_json
-from tools.manual_privesc_collector import Collector, _windows_writable
+from tools.manual_privesc_collector import Collector, _git_loot_search, _windows_writable
 
 
 ROOT = Path(__file__).parent.parent
@@ -113,6 +113,30 @@ class ManualPrivilegeEscalationLootTests(unittest.TestCase):
         self.assertIn("[>] Check: progress test", rendered)
         self.assertIn("[complete] progress test", rendered)
         self.assertIn("[!] Finding: Test credential discovered", rendered)
+
+    def test_git_loot_search_reads_metadata_without_scanning_objects(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            metadata = root / "project" / ".git"
+            metadata.mkdir(parents=True)
+            (metadata / "HEAD").write_text("ref: refs/heads/main\n", encoding="utf-8")
+            (metadata / "config").write_text(
+                '[remote "origin"]\n'
+                '    url = https://labuser:LabPassword123!@git.example/repo.git\n',
+                encoding="utf-8",
+            )
+            args = Namespace(max_output_kb=64, max_file_kb=64, command_timeout=1,
+                             max_files=100, max_git_repos=10)
+            collector = Collector(args)
+            with redirect_stdout(io.StringIO()):
+                _git_loot_search(collector, [root])
+
+            finding = next(f for f in collector.findings
+                           if f.get("material_type") == "git-metadata")
+            self.assertIn("labuser:LabPassword123!", finding["evidence"])
+            self.assertEqual(finding["discovery_command"], f"read {metadata / 'config'}")
+            self.assertFalse(any("objects" in str(check.get("path", ""))
+                                 for check in collector.checks))
 
     def test_linux_findings_synthesize_existing_and_new_attack_paths(self):
         findings = parse_manual_privesc_json(self._write(self._payload()))

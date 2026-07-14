@@ -65,6 +65,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-file-kb", type=int, default=512, help="Largest text file read")
     parser.add_argument("--max-output-kb", type=int, default=2048, help="Max captured output per command/check")
     parser.add_argument("--command-timeout", type=int, default=30, help="Per-command timeout in seconds")
+    parser.add_argument("--max-git-repos", type=int, default=100, help="Max Git repositories examined")
     return parser.parse_args()
 
 
@@ -287,6 +288,143 @@ def _credential_search(collector: Collector, roots: list[Path]) -> None:
     )
 
 
+def _git_secret_lines(text: str) -> list[str]:
+    patterns = (
+        SECRET_LINE_RE,
+        re.compile(r"https?://[^/\s:@]+:[^@\s/]+@", re.I),
+        re.compile(r"\b(?:gh[opusr]_[A-Za-z0-9_]{20,}|glpat-[A-Za-z0-9_-]{20,})\b"),
+    )
+    return [line for line in text.splitlines() if any(pattern.search(line) for pattern in patterns)]
+
+
+def _git_metadata_dir(repository: Path) -> Path | None:
+    marker = repository / ".git"
+    if marker.is_dir():
+        return marker
+    if marker.is_file():
+        try:
+            match = re.match(r"gitdir:\s*(.+)", marker.read_text(encoding="utf-8", errors="replace").strip(), re.I)
+            if match:
+                value = Path(match.group(1))
+                return value if value.is_absolute() else (repository / value).resolve()
+        except OSError:
+            return None
+    if repository.name.lower().endswith(".git") and (repository / "HEAD").is_file():
+        return repository
+    return None
+
+
+def _discover_git_repositories(roots: list[Path], limit: int) -> list[tuple[Path, Path]]:
+    repositories: list[tuple[Path, Path]] = []
+    seen: set[str] = set()
+    for root in roots:
+        try:
+            root = root.expanduser()
+            if not root.exists() or not root.is_dir():
+                continue
+            direct_metadata = _git_metadata_dir(root)
+            if direct_metadata:
+                key = str(root.resolve())
+                seen.add(key)
+                repositories.append((root, direct_metadata))
+            for current, dirs, _ in os.walk(root):
+                current_path = Path(current)
+                current_metadata = _git_metadata_dir(current_path)
+                if current_metadata:
+                    key = str(current_path.resolve())
+                    if key not in seen:
+                        seen.add(key)
+                        repositories.append((current_path, current_metadata))
+                if ".git" in dirs:
+                    dirs.remove(".git")
+                dirs[:] = [directory for directory in dirs if directory not in SKIP_DIRS]
+                if len(repositories) >= limit:
+                    return repositories
+        except OSError:
+            continue
+    return repositories
+
+
+def _git_loot_search(collector: Collector, roots: list[Path]) -> None:
+    started = time.monotonic()
+    collector.progress("[>] Check: targeted Git repository loot search")
+    repositories = _discover_git_repositories(roots, max(1, collector.args.max_git_repos))
+    for repository, metadata in repositories:
+        collector.progress(f"    [repo] {repository}")
+        metadata_files = [
+            metadata / "config",
+            metadata / "HEAD",
+            metadata / "packed-refs",
+            metadata / "logs" / "HEAD",
+        ]
+        for subtree in (metadata / "refs", metadata / "logs" / "refs"):
+            try:
+                metadata_files.extend(path for path in subtree.rglob("*") if path.is_file())
+            except OSError:
+                pass
+        for metadata_file in metadata_files[:200]:
+            record = collector.file_check("Git metadata", metadata_file)
+            if not record:
+                continue
+            secret_lines = _git_secret_lines(record.get("content", ""))
+            if secret_lines:
+                collector.finding(
+                    "credential_material_found",
+                    f"Credential-like material found in Git metadata at {metadata_file}",
+                    evidence="\n".join(secret_lines),
+                    path=str(metadata_file),
+                    material_type="git-metadata",
+                    discovery_command=f"read {metadata_file}",
+                )
+
+        git_checks = [
+            ("remotes", ["git", "-C", str(repository), "remote", "-v"]),
+            ("configuration", ["git", "-C", str(repository), "config", "--list", "--show-origin"]),
+            ("history", ["git", "-C", str(repository), "log", "--all", "--oneline", "-n", "100"]),
+            ("stashes", ["git", "-C", str(repository), "stash", "list"]),
+            ("secret-bearing diffs", [
+                "git", "-C", str(repository), "log", "--all", "-p", "-n", "100", "--",
+                ".env", "*.env", "*config*", "*settings*", "*secret*", "*credential*",
+                "*.ini", "*.conf", "*.properties", "*.yml", "*.yaml", "*.json", "*.xml",
+            ]),
+        ]
+        stash_refs: list[str] = []
+        for kind, argv in git_checks:
+            result = collector.command(f"Git {kind}: {repository}", argv)
+            if kind == "stashes":
+                stash_refs = re.findall(r"^stash@\{\d+\}", result.get("stdout", ""), re.M)[:20]
+            secret_lines = _git_secret_lines(result.get("stdout", ""))
+            if secret_lines:
+                collector.finding(
+                    "credential_material_found",
+                    f"Credential-like material found in Git {kind} for {repository}",
+                    evidence="\n".join(secret_lines),
+                    path=str(repository),
+                    material_type=f"git-{kind}",
+                    discovery_command=result.get("command"),
+                )
+        for stash_ref in stash_refs:
+            result = collector.command(
+                f"Git stash contents {stash_ref}: {repository}",
+                ["git", "-C", str(repository), "stash", "show", "-p", stash_ref],
+            )
+            secret_lines = _git_secret_lines(result.get("stdout", ""))
+            if secret_lines:
+                collector.finding(
+                    "credential_material_found",
+                    f"Credential-like material found in {stash_ref} for {repository}",
+                    evidence="\n".join(secret_lines),
+                    path=str(repository),
+                    material_type="git-stash-content",
+                    stash=stash_ref,
+                    discovery_command=result.get("command"),
+                )
+    collector.progress(
+        f"    [complete] targeted Git loot search: {len(repositories)} repository/repositories "
+        f"({time.monotonic() - started:.3f}s)"
+    )
+
+
 def _linux_collect(collector: Collector, roots: list[Path]) -> None:
     inventory_commands = [
         ("identity", ["id"]),
@@ -385,6 +523,7 @@ def _linux_collect(collector: Collector, roots: list[Path]) -> None:
         ["find", "/", "-type", "d", "-perm", "-0002", "-print"],
         timeout=max(collector.args.command_timeout, 90),
     )
+    _git_loot_search(collector, roots)
     _credential_search(collector, roots)
 
 
@@ -601,6 +740,7 @@ def _windows_collect(collector: Collector, roots: list[Path]) -> None:
             collector.finding("credential_material_found", f"Readable PowerShell history: {history}",
                               evidence=record.get("content"), path=str(history), material_type="history",
                               confidence="medium")
+    _git_loot_search(collector, roots)
     _credential_search(collector, roots)
 
 
@@ -633,6 +773,7 @@ def main() -> int:
             "max_file_kb": args.max_file_kb,
             "max_output_kb": args.max_output_kb,
             "command_timeout": args.command_timeout,
+            "max_git_repos": args.max_git_repos,
             "sensitive_values_redacted": False,
         },
         "stats": {
