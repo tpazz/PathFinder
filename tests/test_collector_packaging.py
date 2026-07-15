@@ -13,6 +13,16 @@ from tools.verify_collector_artifacts import (
 
 
 class CollectorPackagingTests(unittest.TestCase):
+    def test_linux_workflow_uses_native_python_for_staticx(self):
+        workflow = (
+            Path(__file__).resolve().parent.parent
+            / ".github" / "workflows" / "linux-collectors.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertNotIn("actions/setup-python", workflow)
+        self.assertIn("/usr/bin/python3 -m venv .venv", workflow)
+        self.assertIn("--python .venv/bin/python", workflow)
+
     def test_both_collectors_remain_stdlib_only(self):
         for details in COLLECTORS.values():
             imports = verify_stdlib_only(details["source"])
