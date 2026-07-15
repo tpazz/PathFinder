@@ -922,6 +922,13 @@ def _linux_mount_checks(collector: Collector) -> None:
                     )
 
 
+def _linux_filesystem_scan_scope(collector: Collector, roots: list[Path]) -> tuple[list[Path], int]:
+    """Scope expensive recursive checks for targeted and verification runs."""
+    if collector.args.only_specified_roots:
+        return roots, collector.args.command_timeout
+    return [Path("/")], max(collector.args.command_timeout, 90)
+
+
 def _linux_collect(collector: Collector, roots: list[Path]) -> None:
     inventory_commands = [
         ("identity", ["id"]),
@@ -955,43 +962,47 @@ def _linux_collect(collector: Collector, roots: list[Path]) -> None:
             evidence=sudo_text, discovery_command=sudo.get("command"), confidence="medium",
         )
 
-    suid = collector.command(
-        "SUID and SGID files",
-        ["find", "/", "-type", "f", "(", "-perm", "-4000", "-o", "-perm", "-2000", ")", "-print"],
-        timeout=max(collector.args.command_timeout, 90),
-    )
-    for value in suid.get("stdout", "").splitlines():
-        path = Path(value.strip())
-        if not value.strip():
-            continue
-        try:
-            mode = path.stat().st_mode
-        except OSError:
-            mode = 0
-        actionable_suid, actionable_sgid, classification = _linux_special_file_classification(path, mode)
-        if actionable_suid:
-            collector.finding(
-                "suid_binary_found", f"Actionable or unusual SUID binary: {path}",
-                evidence=str(path), path=str(path),
-                classification=classification,
-                discovery_command=suid.get("command"),
-            )
-        if actionable_sgid:
-            collector.finding(
-                "sgid_binary_found", f"Actionable or unusual SGID binary: {path}", evidence=str(path),
-                path=str(path), confidence="medium",
-                classification=classification,
-                discovery_command=suid.get("command"),
-            )
+    filesystem_roots, filesystem_timeout = _linux_filesystem_scan_scope(collector, roots)
+    for root in filesystem_roots:
+        suid = collector.command(
+            "SUID and SGID files",
+            ["find", str(root), "-type", "f", "(", "-perm", "-4000", "-o", "-perm", "-2000", ")", "-print"],
+            timeout=filesystem_timeout,
+        )
+        for value in suid.get("stdout", "").splitlines():
+            path = Path(value.strip())
+            if not value.strip():
+                continue
+            try:
+                mode = path.stat().st_mode
+            except OSError:
+                mode = 0
+            actionable_suid, actionable_sgid, classification = _linux_special_file_classification(path, mode)
+            if actionable_suid:
+                collector.finding(
+                    "suid_binary_found", f"Actionable or unusual SUID binary: {path}",
+                    evidence=str(path), path=str(path),
+                    classification=classification,
+                    discovery_command=suid.get("command"),
+                )
+            if actionable_sgid:
+                collector.finding(
+                    "sgid_binary_found", f"Actionable or unusual SGID binary: {path}", evidence=str(path),
+                    path=str(path), confidence="medium",
+                    classification=classification,
+                    discovery_command=suid.get("command"),
+                )
 
-    caps = collector.command("file capabilities", ["getcap", "-r", "/"], timeout=max(collector.args.command_timeout, 90))
-    for line in caps.get("stdout", "").splitlines():
-        capability_names = _dangerous_capabilities(line)
-        if "=" in line and capability_names:
-            collector.finding(
-                "process_capabilities_found", f"Dangerous Linux file capability: {line}",
-                evidence=line, capabilities=capability_names, discovery_command=caps.get("command"),
-            )
+        caps = collector.command(
+            "file capabilities", ["getcap", "-r", str(root)], timeout=filesystem_timeout
+        )
+        for line in caps.get("stdout", "").splitlines():
+            capability_names = _dangerous_capabilities(line)
+            if "=" in line and capability_names:
+                collector.finding(
+                    "process_capabilities_found", f"Dangerous Linux file capability: {line}",
+                    evidence=line, capabilities=capability_names, discovery_command=caps.get("command"),
+                )
 
     is_root = hasattr(os, "geteuid") and os.geteuid() == 0
     for sensitive in (Path("/etc/passwd"), Path("/etc/shadow")):
@@ -1069,11 +1080,12 @@ def _linux_collect(collector: Collector, roots: list[Path]) -> None:
     _linux_systemd_checks(collector)
     _linux_logrotate_and_library_checks(collector)
     _linux_mount_checks(collector)
-    collector.command(
-        "world-writable directories",
-        ["find", "/", "-type", "d", "-perm", "-0002", "-print"],
-        timeout=max(collector.args.command_timeout, 90),
-    )
+    for root in filesystem_roots:
+        collector.command(
+            "world-writable directories",
+            ["find", str(root), "-type", "d", "-perm", "-0002", "-print"],
+            timeout=filesystem_timeout,
+        )
     _git_loot_search(collector, roots)
     _credential_search(collector, roots)
 

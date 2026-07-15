@@ -31,6 +31,7 @@ _credential_lines = _MINI_PEAS._credential_lines
 _history_credential_lines = _MINI_PEAS._history_credential_lines
 _dangerous_capabilities = _MINI_PEAS._dangerous_capabilities
 _linux_special_file_classification = _MINI_PEAS._linux_special_file_classification
+_linux_filesystem_scan_scope = _MINI_PEAS._linux_filesystem_scan_scope
 _extract_windows_script_paths = _MINI_PEAS._extract_windows_script_paths
 _is_privileged_windows_principal = _MINI_PEAS._is_privileged_windows_principal
 
@@ -343,6 +344,17 @@ class ManualPrivilegeEscalationLootTests(unittest.TestCase):
         self.assertEqual(custom, (True, False, "unusual"))
         self.assertEqual(_dangerous_capabilities("/usr/bin/ping cap_net_raw=ep"), [])
         self.assertEqual(_dangerous_capabilities("/opt/python cap_setuid,cap_net_raw=ep"), ["cap_setuid"])
+
+    def test_only_specified_roots_bounds_expensive_linux_scans(self):
+        roots = [Path("/tmp/collector-smoke-root")]
+        targeted = Namespace(only_specified_roots=True, command_timeout=2)
+        normal = Namespace(only_specified_roots=False, command_timeout=2)
+
+        self.assertEqual(_linux_filesystem_scan_scope(Namespace(args=targeted), roots), (roots, 2))
+        self.assertEqual(
+            _linux_filesystem_scan_scope(Namespace(args=normal), roots),
+            ([Path("/")], 90),
+        )
 
     def test_windows_task_script_and_principal_parsing(self):
         paths = _extract_windows_script_paths(
