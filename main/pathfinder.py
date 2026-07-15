@@ -15,6 +15,9 @@ from .attack_path_synthesizer import AttackPathSynthesizer
 from .vulnerability_mapper import VulnerabilityMapper
 from .finding_schema import FindingValidationError, validate_and_normalize_finding, validate_findings
 from .parser_registry import PARSER_SPECS, SPEC_BY_KEY, HOST_REQUIRED_KEYS, ParserContext
+from .report_generator import DEFAULT_REPORT_NAME, write_html_report
+from parsers.active_directory.sharphound_parser import is_sharphound_archive, is_sharphound_directory
+from parsers.credential_routing import usable_ntlm_hash
 
 # ANSI color codes for formatted output (TTY-aware; togglable via --no-color)
 from parsers.ansi import C, set_color_enabled, should_enable_color
@@ -71,7 +74,10 @@ def configure_logging(verbosity):
 
 def _normalise_provenance_path(path):
     """Return a stable, loot-root-relative key for provenance joins."""
-    return str(path or "").replace("\\", "/").lstrip("./").lower()
+    normalized = str(path or "").replace("\\", "/")
+    while normalized.startswith("./"):
+        normalized = normalized[2:]
+    return normalized.lower()
 
 
 def _load_provenance_manifest(loot_dir):
@@ -330,6 +336,12 @@ def _merge_credential(kept, duplicate):
     and record provenance."""
     kept_attrs = kept.setdefault("attributes", {})
     dup_attrs = duplicate.get("attributes") or {}
+    for field in _CREDENTIAL_SECRET_FIELDS:
+        kept_value = kept_attrs.get(field)
+        duplicate_value = dup_attrs.get(field)
+        if (kept_value not in (None, "") and duplicate_value not in (None, "")
+                and kept_value != duplicate_value):
+            return False
     for field, value in dup_attrs.items():
         if field in ("score", "source_file", "corroborating_sources", "source_files",
                      "discovery_provenance"):
@@ -341,6 +353,7 @@ def _merge_credential(kept, duplicate):
     if isinstance(dup_score, (int, float)):
         kept_attrs["score"] = max(kept_attrs.get("score") or 0, dup_score)
     _merge_provenance(kept, duplicate)
+    return True
 
 
 def deduplicate_findings(findings_list):
@@ -351,14 +364,19 @@ def deduplicate_findings(findings_list):
     unique_findings = []
     for finding in findings_list:
         key = _dedup_key(finding)
-        kept = seen.get(key)
-        if kept is None:
-            seen[key] = finding
+        kept_candidates = seen.get(key)
+        if kept_candidates is None:
+            seen[key] = [finding]
             unique_findings.append(finding)
         elif finding.get("entity_type") == "credential":
-            _merge_credential(kept, finding)
+            for kept in kept_candidates:
+                if _merge_credential(kept, finding):
+                    break
+            else:
+                kept_candidates.append(finding)
+                unique_findings.append(finding)
         else:
-            _merge_provenance(kept, finding)
+            _merge_provenance(kept_candidates[0], finding)
     return unique_findings
 
 
@@ -382,6 +400,16 @@ def validate_parser_output(parser_name, findings):
         print(f"{C.BOLD}{C.YELLOW}[!] {parser_name}: kept {len(valid)} valid finding(s), "
               f"dropped {dropped} malformed.{C.END}")
     return valid
+
+
+def _run_parser_safely(spec, path, ctx):
+    """Run one parser without allowing malformed loot to abort the whole ingestion."""
+    try:
+        return spec.run(path, ctx)
+    except Exception as exc:
+        print(f"{C.BOLD}{C.YELLOW}[!] {spec.key} parser failed for '{path}': {exc}; skipping file.{C.END}")
+        logger.exception("Parser %s failed for %s", spec.key, path)
+        return []
 
 
 def manage_credentials():
@@ -496,7 +524,7 @@ def parse_new_data_files(args, target_host):
             continue
         if args.verbose > 0:
             print(f"[*] Parsing {spec.key}: {file_path}")
-        findings_from_parser = spec.run(file_path, ctx)
+        findings_from_parser = _run_parser_safely(spec, file_path, ctx)
         validated_findings = validate_parser_output(spec.key, findings_from_parser)
         for finding in validated_findings:
             _attach_discovery_provenance(finding, source_file=str(file_path))
@@ -556,6 +584,11 @@ def _sniff_file_type_details(path):
     Reads the first ~3KB of a file and returns (parser_key, reason).
     Detection is content-based, not extension-based.
     """
+    if os.path.splitext(path)[1].lower() == ".zip":
+        if is_sharphound_archive(path):
+            return "sharphound_dir", "matched SharpHound ZIP collection members"
+        return None, "ZIP archive without core SharpHound collections"
+
     ffuf_capture = bool(re.fullmatch(
         r"ffuf_pages_(?:https?)_\d{1,5}",
         os.path.basename(os.path.dirname(os.path.abspath(path))),
@@ -606,6 +639,13 @@ def _sniff_file_type_details(path):
                 or '"tool": "mini-peas"' in sanitized_head
                 or '"tool": "pathfinder-manual-privesc-collector"' in sanitized_head):
             return 'manual_privesc_json', 'matched PathFinder manual privilege-escalation loot signature'
+        if ('"logon_sessions"' in sanitized_head or '"msv_creds"' in sanitized_head
+                or '"msv_credentials"' in sanitized_head):
+            return 'lsass_json', 'matched pypykatz LSASS JSON signature'
+        if ('"credentials"' in sanitized_head
+                and ('"nt_hash"' in sanitized_head or '"nthash"' in sanitized_head
+                     or '"lm_hash"' in sanitized_head)):
+            return 'lsass_json', 'matched lsassy credential JSON signature'
         # one-shot-enum LLM/AI enumeration output (self-identifying).
         if '"ai_surfaces"' in sanitized_head or '"type": "llm_enum"' in sanitized_head or '"type":"llm_enum"' in sanitized_head:
             return 'llm_enum_json', 'matched one-shot-enum LLM enum signature'
@@ -752,19 +792,19 @@ def _detect_dir_based_parsers(scan_root, host, detections, dir_parser_paths, ver
     for candidate in [scan_root] + subdirs:
         if candidate in dir_parser_paths:
             continue
-        try:
-            contents_lower = {f.lower() for f in os.listdir(candidate)}
-        except (PermissionError, FileNotFoundError):
-            continue
-        # SharpHound: needs at least users.json + domains.json
-        if 'users.json' in contents_lower and 'domains.json' in contents_lower:
+        # SharpHound: exact or timestamp-prefixed users/domains collections.
+        if is_sharphound_directory(candidate):
             detections.append({"host": host, "key": "sharphound_dir", "path": candidate,
-                               "reason": "directory with users.json + domains.json"})
+                               "reason": "directory with SharpHound users + domains collections"})
             dir_parser_paths.add(candidate)
             if verbose > 0:
                 print(f"    [auto-detect] {os.path.basename(candidate)}/ -> sharphound_dir"
                       + (f" (host {host})" if host else ""))
         # ldapdomaindump: needs domain_users.tsv
+        try:
+            contents_lower = {f.lower() for f in os.listdir(candidate)}
+        except (PermissionError, FileNotFoundError):
+            continue
         if 'domain_users.tsv' in contents_lower:
             detections.append({"host": host, "key": "ldapdomaindump_dir", "path": candidate,
                                "reason": "directory with domain_users.tsv"})
@@ -1147,6 +1187,7 @@ def _group_action_buckets(paths):
 
 _COMPACT_LOGIN_RULES = {
     "Credential Reuse on Login Service",
+    "Pass-the-Hash on Windows Login Service",
     "Password Spray Discovered Users Against Services",
 }
 _COMPACT_EXPLOIT_RULES = {
@@ -1207,12 +1248,10 @@ def _print_compact_login_bucket(bucket, rule_name):
     if port and port != _LOGIN_DEFAULT_PORTS.get(protocol):
         base += f" --port {port}"
     print("        Core command:")
-    if rule_name == "Credential Reuse on Login Service" and secret_kinds == {"hash"}:
+    if rule_name == "Pass-the-Hash on Windows Login Service":
         print(f"          {C.GREEN}-{C.END} {base} -u '<USERNAME>' -H '<NTLM_HASH>'")
     else:
         print(f"          {C.GREEN}-{C.END} {base} -u '<USERNAME>' -p '<PASSWORD>'")
-        if rule_name == "Credential Reuse on Login Service" and "hash" in secret_kinds:
-            print(f"          {C.GREEN}-{C.END} {base} -u '<USERNAME>' -H '<NTLM_HASH>'")
 
 
 def _print_compact_exploit_group(group, args):
@@ -1412,14 +1451,7 @@ def _display_command(argv):
 
 
 def _usable_ntlm_hash(attributes):
-    direct = attributes.get("nt_hash") or attributes.get("ntlm_hash")
-    if direct:
-        return direct
-    hash_value = attributes.get("hash")
-    hash_type = str(attributes.get("hash_type") or "").lower()
-    if hash_value and ("ntlm" in hash_type or hash_type in {"nt", "nthash"}):
-        return hash_value
-    return None
+    return usable_ntlm_hash(attributes)
 
 
 def _credential_validation_actions(paths):
@@ -1427,7 +1459,9 @@ def _credential_validation_actions(paths):
     actions = []
     seen = set()
     for path in paths:
-        if path.get("name") != "Credential Reuse on Login Service":
+        if path.get("name") not in {
+                "Credential Reuse on Login Service",
+                "Pass-the-Hash on Windows Login Service"}:
             continue
         findings = [record["finding"] for record in _matched_finding_records(path)]
         credential = next((f for f in findings if f.get("entity_type") == "credential"), None)
@@ -1697,6 +1731,16 @@ def _display_results(args, synthesizer, prioritized_findings):
     min_likelihood = getattr(args, 'min_likelihood', 'low')
     display_paths = [p for p in display_paths if _passes_min_likelihood(p, min_likelihood)]
 
+    report_path = getattr(args, "report", None)
+    if report_path:
+        written_report = write_html_report(
+            report_path,
+            prioritized_findings,
+            display_paths,
+            include_secrets=not getattr(args, "report_redact_secrets", False),
+        )
+        print(f"\n{C.BOLD}{C.GREEN}[+] HTML report written to: {written_report}{C.END}")
+
     if display_paths:
         print(f"\n{_rule_line('-', C.YELLOW)}")
         print(f"{C.BOLD}{C.YELLOW}PathFinder identified {len(display_paths)} potential attack path(s){C.END}")
@@ -1878,7 +1922,7 @@ def run_scan_mode(args):
 
         ctx = ParserContext(target_host=host, gobuster_host=gb_host,
                             gobuster_port=gb_port, gobuster_mode=gb_mode)
-        raw = spec.run(path, ctx)
+        raw = _run_parser_safely(spec, path, ctx)
         validated = validate_parser_output(key, raw)
         # Record provenance: which file, tool, and exact producer command each
         # finding came from. Legacy/manual loot remains valid with command=None.
@@ -1942,6 +1986,9 @@ def main():
     scan_p.add_argument('loot_dir', help='Path to directory containing tool output files.')
     scan_p.add_argument('--target-host', help='Target host IP or domain (inferred from nmap XML if omitted).')
     scan_p.add_argument('-o', '--output-json', help='Save prioritized findings to a JSON file.')
+    scan_p.add_argument('--report', nargs='?', const=DEFAULT_REPORT_NAME, metavar='HTML', help=f'Write a self-contained HTML engagement report (default path: {DEFAULT_REPORT_NAME}).')
+    scan_p.add_argument('--report-redact-secrets', action='store_true', help='Redact credential secrets in the HTML report (unredacted by default).')
+    scan_p.add_argument('--report-include-secrets', action='store_true', help=argparse.SUPPRESS)
     scan_p.add_argument('-v', '--verbose', action='count', default=0, help='Verbosity level (-v, -vv).')
     scan_p.add_argument('--max-vulns', type=int, default=DEFAULT_MAX_VULNS, help=f'Max EDB/GitHub exploits to display (default: {DEFAULT_MAX_VULNS}).')
     scan_p.add_argument('--offline', action='store_true', help='Disable all external enrichment lookups.')
@@ -1972,6 +2019,9 @@ def main():
     io_group = main_parser.add_argument_group('Data I/O Arguments')
     io_group.add_argument("-i", "--input-json", help="Load prioritized findings from a JSON file (can be used with other inputs).")
     io_group.add_argument("-o", "--output-json", help="Save the final prioritized findings to a JSON file.")
+    io_group.add_argument("--report", nargs="?", const=DEFAULT_REPORT_NAME, metavar="HTML", help=f"Write a self-contained HTML engagement report (default path: {DEFAULT_REPORT_NAME}).")
+    io_group.add_argument("--report-redact-secrets", action="store_true", help="Redact credential secrets in the HTML report (unredacted by default).")
+    io_group.add_argument("--report-include-secrets", action="store_true", help=argparse.SUPPRESS)
 
     lg = main_parser.add_argument_group('Intelligence Management Arguments')
     lg.add_argument("--learn", action="store_true", help="Enter interactive mode to teach a new attack path.")
@@ -1994,6 +2044,12 @@ def main():
     gg.add_argument("--min-likelihood", choices=sorted(LIKELIHOOD_RANK.keys()), default="low", help="Only display attack paths at or above this triage likelihood (default: low).")
 
     args = main_parser.parse_args()
+    if (getattr(args, "report_redact_secrets", False)
+            or getattr(args, "report_include_secrets", False)) and not getattr(args, "report", None):
+        main_parser.error("report secret-policy flags require --report.")
+    if (getattr(args, "report_redact_secrets", False)
+            and getattr(args, "report_include_secrets", False)):
+        main_parser.error("--report-redact-secrets cannot be combined with --report-include-secrets.")
     configure_logging(args.verbose)
     set_color_enabled(should_enable_color(getattr(args, 'no_color', False)))
     print_banner()

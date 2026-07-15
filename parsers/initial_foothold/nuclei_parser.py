@@ -10,10 +10,13 @@ VULN_SEVERITIES = {"critical", "high", "medium"}
 
 def _host_port(record):
     """Resolve (host, port) from a nuclei record's host/matched-at URL."""
-    candidate = record.get("matched-at") or record.get("host") or record.get("matched_at") or ""
-    parsed = urlparse(candidate if "://" in candidate else f"http://{candidate}")
-    host = parsed.hostname or candidate or "UNKNOWN_HOST"
-    port = parsed.port
+    candidate = str(record.get("matched-at") or record.get("host") or record.get("matched_at") or "")
+    try:
+        parsed = urlparse(candidate if "://" in candidate else f"http://{candidate}")
+        host = parsed.hostname or candidate or "UNKNOWN_HOST"
+        port = parsed.port
+    except ValueError:
+        return candidate or "UNKNOWN_HOST", 80
     if not port:
         port = 443 if parsed.scheme == "https" else 80
     return host, port
@@ -49,20 +52,23 @@ def parse_nuclei_jsonl(file_path):
             continue
 
         info = record.get("info", {}) if isinstance(record.get("info"), dict) else {}
-        severity = (info.get("severity") or "unknown").lower()
-        template_id = record.get("template-id") or record.get("templateID") or "nuclei_finding"
+        severity = str(info.get("severity") or "unknown").lower()
+        template_id = str(record.get("template-id") or record.get("templateID") or "nuclei_finding")
 
         classification = info.get("classification", {}) if isinstance(info.get("classification"), dict) else {}
         cve_ids = classification.get("cve-id") or classification.get("cve_id") or []
         if isinstance(cve_ids, str):
             cve_ids = [cve_ids]
-        primary_cve = cve_ids[0].upper() if cve_ids else None
+        elif not isinstance(cve_ids, (list, tuple, set)):
+            cve_ids = []
+        cve_ids = [str(cve).upper() for cve in cve_ids if cve not in (None, "")]
+        primary_cve = cve_ids[0] if cve_ids else None
 
         host, port = _host_port(record)
         entity_type = "vulnerability" if severity in VULN_SEVERITIES else "information_leak"
         name = primary_cve or template_id
 
-        identifier = (host, port, name, record.get("matched-at"))
+        identifier = (host, port, name, str(record.get("matched-at") or ""))
         if identifier in seen:
             continue
         seen.add(identifier)

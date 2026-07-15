@@ -36,12 +36,20 @@ class CredentialDedupMergeTests(unittest.TestCase):
                     _cred("dc", "admin", "OTHER", password="b")]
         self.assertEqual(len(deduplicate_findings(findings)), 2)
 
-    def test_existing_secret_not_overwritten(self):
+    def test_differing_secret_for_same_identity_is_preserved(self):
         findings = [_cred("dc", "svc", "CORP", password="first"),
                     _cred("dc", "svc", "CORP", password="second")]
         out = deduplicate_findings(findings)
-        self.assertEqual(len(out), 1)
-        self.assertEqual(out[0]["attributes"]["password"], "first")
+        self.assertEqual(len(out), 2)
+        self.assertEqual({item["attributes"]["password"] for item in out}, {"first", "second"})
+
+    def test_repeated_copy_of_each_differing_secret_still_deduplicates(self):
+        findings = [
+            _cred("dc", "svc", "CORP", password="first"),
+            _cred("dc", "svc", "CORP", password="second"),
+            _cred("dc", "svc", "CORP", password="second"),
+        ]
+        self.assertEqual(len(deduplicate_findings(findings)), 2)
 
 
 class AnonymousCredentialDedupTests(unittest.TestCase):

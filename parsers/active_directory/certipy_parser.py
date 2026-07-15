@@ -6,6 +6,41 @@ import re
 _ESC_RE = re.compile(r"\bESC\d+\b", re.IGNORECASE)
 
 
+def _flatten_principals(value):
+    values = []
+    if isinstance(value, str):
+        candidate = value.strip()
+        if candidate:
+            values.append(candidate)
+    elif isinstance(value, list):
+        for item in value:
+            values.extend(_flatten_principals(item))
+    elif isinstance(value, dict):
+        for key, nested in value.items():
+            if isinstance(key, str) and ("\\" in key or "@" in key or " " in key):
+                values.append(key.strip())
+            values.extend(_flatten_principals(nested))
+    return values
+
+
+def _enrollment_principals(obj):
+    """Collect Certipy v4/v5 enrollment-principal fields recursively."""
+    principals = []
+    if not isinstance(obj, dict):
+        return principals
+    for key, value in obj.items():
+        normalized = re.sub(r"[^a-z]", "", str(key).lower())
+        if "enrollableprincipals" in normalized or normalized == "enrollmentrights":
+            for principal in _flatten_principals(value):
+                if principal not in principals:
+                    principals.append(principal)
+        if isinstance(value, dict):
+            for principal in _enrollment_principals(value):
+                if principal not in principals:
+                    principals.append(principal)
+    return principals
+
+
 def _find_vulnerabilities(obj):
     """Return the vulnerabilities mapping from a template/CA object, tolerating
     certipy's varied key spellings ('Vulnerabilities', '[!] Vulnerabilities')."""
@@ -80,6 +115,7 @@ def parse_certipy_json(file_path, target_host=None):
                         "template": name,
                         "description": f"{esc_id} on '{name}': {description}",
                         "enabled": obj.get("Enabled"),
+                        "enrollment_principals": _enrollment_principals(obj),
                     },
                 })
 

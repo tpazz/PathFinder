@@ -2,11 +2,15 @@ from urllib.parse import parse_qsl, urlparse
 
 
 def _absolute_url(host, port, candidate):
-    value = (candidate or "").strip()
+    value = str(candidate or "").strip()
     if not value:
         return None
     parsed = urlparse(value)
     if parsed.scheme and parsed.netloc:
+        try:
+            parsed.port
+        except ValueError:
+            return None
         return value
     if not value.startswith("/"):
         value = "/" + value
@@ -23,13 +27,19 @@ def parameterized_url_finding(host, port, source_tool, candidate, source_name=No
     if not parsed.query:
         return None
 
+    try:
+        parsed_host = parsed.hostname
+        parsed_port = parsed.port
+    except ValueError:
+        return None
+
     params = [name for name, _value in parse_qsl(parsed.query, keep_blank_values=True) if name]
     if not params:
         return None
 
     return {
-        "host": parsed.hostname or host,
-        "port": parsed.port or port,
+        "host": parsed_host or host,
+        "port": parsed_port or port,
         "source_tool": source_tool,
         "entity_type": "web_parameterized_url",
         "name": url,

@@ -1,0 +1,77 @@
+name: Linux collector artifacts
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - "tools/mini-peas.py"
+      - "tools/ai-peas.py"
+      - "tools/build-linux-collectors.sh"
+      - "tools/verify_collector_artifacts.py"
+      - "tools/linux-build-requirements.txt"
+      - ".github/workflows/linux-collectors.yml"
+  pull_request:
+    paths:
+      - "tools/mini-peas.py"
+      - "tools/ai-peas.py"
+      - "tools/build-linux-collectors.sh"
+      - "tools/verify_collector_artifacts.py"
+      - "tools/linux-build-requirements.txt"
+      - ".github/workflows/linux-collectors.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: linux-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tools/linux-build-requirements.txt
+
+      - name: Install native packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes binutils musl-tools patchelf scons
+
+      - name: Install pinned Python build tools
+        env:
+          BOOTLOADER_CC: musl-gcc
+        run: python -m pip install --no-binary staticx --requirement tools/linux-build-requirements.txt
+
+      - name: Enforce stdlib-only collector sources
+        run: python tools/verify_collector_artifacts.py --source-only
+
+      - name: Build and verify frozen collectors
+        run: bash tools/build-linux-collectors.sh --output-dir dist
+
+      - name: Upload verified artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: pathfinder-collectors-linux-${{ matrix.arch }}
+          path: |
+            dist/mini-peas-linux-${{ matrix.arch }}
+            dist/ai-peas-linux-${{ matrix.arch }}
+            dist/SHA256SUMS
+            dist/artifact-manifest.json
+          if-no-files-found: error
+          retention-days: 30

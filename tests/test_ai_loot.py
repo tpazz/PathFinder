@@ -9,7 +9,7 @@ from pathlib import Path
 from main.attack_path_synthesizer import AttackPathSynthesizer
 from main.finding_schema import validate_findings
 from main.pathfinder import _sniff_file_type
-from parsers.post_exploitation.ai_loot_parser import parse_ai_loot_json
+from parsers.post_exploitation.ai_peas_parser import parse_ai_loot_json
 ROOT = Path(__file__).parent.parent
 COLLECTOR = ROOT / "tools" / "ai-peas.py"
 RULES_FILE = str(ROOT / "main" / "attack_rules.json")
@@ -17,9 +17,20 @@ _SPEC = importlib.util.spec_from_file_location("pathfinder_ai_peas", COLLECTOR)
 _AI_PEAS = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_AI_PEAS)
 clean_snippet = _AI_PEAS.clean_snippet
+load_text = _AI_PEAS.load_text
 
 
 class AiLootCollectorTests(unittest.TestCase):
+    def test_load_text_rejects_directories_and_oversized_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            candidate = root / "config.json"
+            candidate.write_bytes(b"x" * 11)
+            self.assertIsNone(load_text(root, 10))
+            self.assertIsNone(load_text(candidate, 10))
+            candidate.write_bytes(b"x" * 10)
+            self.assertEqual(load_text(candidate, 10), "x" * 10)
+
     def test_default_output_uses_ai_peas_name(self):
         self.assertEqual(_AI_PEAS.DEFAULT_OUTPUT, "ai-peas-loot.json")
 

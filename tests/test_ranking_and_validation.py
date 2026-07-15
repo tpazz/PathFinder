@@ -24,12 +24,27 @@ from main.pathfinder import (
     _gobuster_extract_target,
     _group_attack_paths,
     _load_provenance_manifest,
+    _normalise_provenance_path,
     _path_likelihood,
+    _run_parser_safely,
     _run_credential_validations,
     filter_prioritized_findings,
     format_finding_display,
 )
 from parsers.ansi import C, set_color_enabled
+
+
+class ParserSafetyTests(unittest.TestCase):
+    def test_parser_exception_drops_only_that_file(self):
+        spec = SimpleNamespace(key="bad_parser", run=lambda _path, _ctx: 1 / 0)
+        with redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(_run_parser_safely(spec, "bad.json", None), [])
+        self.assertIn("skipping file", output.getvalue())
+
+    def test_provenance_path_strips_only_dot_slash_prefix(self):
+        self.assertEqual(_normalise_provenance_path("././Host/Loot.txt"), "host/loot.txt")
+        self.assertEqual(_normalise_provenance_path("../Host/Loot.txt"), "../host/loot.txt")
+        self.assertEqual(_normalise_provenance_path(".../Host/Loot.txt"), ".../host/loot.txt")
 
 
 def _finding(entity_type, name, host="H", **attrs):

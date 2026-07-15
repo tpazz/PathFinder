@@ -22,9 +22,14 @@ _LABELLED = re.compile(
     re.IGNORECASE,
 )
 _PORT_FROM_NAME = re.compile(r"(?:webpage|page|body)[_-](?:https?[_-])?(\d{1,5})", re.IGNORECASE)
+MAX_HTML_ANALYSIS_CHARS = 1_000_000
+MAX_QUERY_LITERAL_CHARS = 2_048
 _QUERY_LITERAL = re.compile(
-    r"(?P<value>(?:https?://[^\"'`\s<>]+|(?:/|\./|\.\./)?[A-Za-z0-9_.~/-]+)"
-    r"\?[A-Za-z0-9_.~-]+=[^\"'`\s<>]*|\?[A-Za-z0-9_.~-]+=[^\"'`\s<>]*)",
+    rf"(?P<value>(?<![A-Za-z0-9_.~/-])(?:https?://[^\"'`\s<>]{{1,{MAX_QUERY_LITERAL_CHARS}}}|"
+    rf"(?:/|\./|\.\./)?[A-Za-z0-9_.~/-]{{1,{MAX_QUERY_LITERAL_CHARS}}})"
+    rf"\?[A-Za-z0-9_.~-]{{1,256}}=[^\"'`\s<>]{{0,{MAX_QUERY_LITERAL_CHARS}}}|"
+    rf"(?<![A-Za-z0-9_.~-])\?[A-Za-z0-9_.~-]{{1,256}}="
+    rf"[^\"'`\s<>]{{0,{MAX_QUERY_LITERAL_CHARS}}})",
     re.IGNORECASE,
 )
 _STATIC_EXTENSIONS = {
@@ -186,6 +191,7 @@ class _WebSurfaceParser(HTMLParser):
 
 
 def _page_text(content):
+    content = str(content or "")[:MAX_HTML_ANALYSIS_CHARS]
     parser = _VisibleTextParser()
     try:
         parser.feed(content)
@@ -235,9 +241,14 @@ def _ffuf_result_source(path, target_host):
             parsed = urlparse(url)
         except ValueError:
             return None
-        if (parsed.scheme in {"http", "https"} and parsed.hostname
-                and parsed.hostname.lower().strip("[]") == str(target_host).lower().strip("[]")):
-            return parsed.port or (443 if parsed.scheme == "https" else 80), url
+        try:
+            parsed_host = parsed.hostname
+            parsed_port = parsed.port
+        except ValueError:
+            return None
+        if (parsed.scheme in {"http", "https"} and parsed_host
+                and parsed_host.lower().strip("[]") == str(target_host).lower().strip("[]")):
+            return parsed_port or (443 if parsed.scheme == "https" else 80), url
     return None
 
 
@@ -279,6 +290,7 @@ def _valid_candidate(value):
 
 def extract_username_candidates(content):
     """Return deduplicated candidate records from visible HTML text and comments."""
+    content = str(content or "")[:MAX_HTML_ANALYSIS_CHARS]
     text = _page_text(content)
     candidates = {}
 
@@ -380,6 +392,7 @@ def _get_form_url(action_url, fields):
 
 def extract_parameter_candidates(content, target_host, port, base_url):
     """Extract concrete same-target GET URLs and POST form bodies for manual SQLi triage."""
+    content = str(content or "")[:MAX_HTML_ANALYSIS_CHARS]
     parser = _WebSurfaceParser()
     try:
         parser.feed(content)
@@ -461,6 +474,7 @@ def parse_webpage_html(path, target_host):
     with open(path, "r", encoding="utf-8", errors="ignore") as handle:
         content = handle.read(5_000_000)
     content = _response_body(content)
+    content = content[:MAX_HTML_ANALYSIS_CHARS]
     port, url = _source_details(path, target_host)
     findings = []
     for candidate in extract_username_candidates(content):

@@ -15,7 +15,7 @@ from main.attack_path_synthesizer import AttackPathSynthesizer
 from main.finding_schema import validate_findings
 from main.parser_registry import SPEC_BY_KEY
 from main.pathfinder import _attach_discovery_provenance, _sniff_file_type, deduplicate_findings
-from parsers.post_exploitation.manual_privesc_parser import parse_manual_privesc_json
+from parsers.post_exploitation.mini_peas_parser import parse_manual_privesc_json
 ROOT = Path(__file__).parent.parent
 RULES_FILE = str(ROOT / "main" / "attack_rules.json")
 _COLLECTOR_PATH = ROOT / "tools" / "mini-peas.py"
@@ -24,6 +24,7 @@ _MINI_PEAS = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_MINI_PEAS)
 Collector = _MINI_PEAS.Collector
 _git_loot_search = _MINI_PEAS._git_loot_search
+_read_bounded_text = _MINI_PEAS._read_bounded_text
 _windows_writable = _MINI_PEAS._windows_writable
 _windows_readable = _MINI_PEAS._windows_readable
 _credential_lines = _MINI_PEAS._credential_lines
@@ -35,6 +36,51 @@ _is_privileged_windows_principal = _MINI_PEAS._is_privileged_windows_principal
 
 
 class ManualPrivilegeEscalationLootTests(unittest.TestCase):
+    def test_bounded_text_reader_rejects_directories_and_oversized_files(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            large = root / "large.env"
+            large.write_bytes(b"x" * 11)
+            self.assertIsNone(_read_bounded_text(root, 10))
+            self.assertIsNone(_read_bounded_text(large, 10))
+            large.write_bytes(b"x" * 10)
+            self.assertEqual(_read_bounded_text(large, 10), "x" * 10)
+
+    def test_git_loot_disables_fsmonitor_and_pager_without_patch_modes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            repository = Path(directory) / "repo"
+            metadata = repository / ".git"
+            metadata.mkdir(parents=True)
+
+            class FakeCollector:
+                args = Namespace(max_git_repos=1)
+                commands = []
+                findings = []
+
+                def progress(self, _message):
+                    pass
+
+                def file_check(self, _label, _path):
+                    return None
+
+                def command(self, _label, argv):
+                    self.commands.append(argv)
+                    stdout = "stash@{0}: test" if argv[-2:] == ["stash", "list"] else ""
+                    return {"stdout": stdout, "command": " ".join(argv)}
+
+                def finding(self, *args, **kwargs):
+                    self.findings.append((args, kwargs))
+
+            collector = FakeCollector()
+            with patch.object(_MINI_PEAS, "_discover_git_repositories",
+                              return_value=[(repository, metadata)]):
+                _git_loot_search(collector, [repository])
+
+            self.assertTrue(collector.commands)
+            for argv in collector.commands:
+                self.assertEqual(argv[1:5], ["-c", "core.fsmonitor=", "-c", "core.pager=cat"])
+                self.assertNotIn("-p", argv)
+
     def test_default_output_uses_mini_peas_name(self):
         self.assertEqual(_MINI_PEAS.DEFAULT_OUTPUT, "mini-peas-loot.json")
 
@@ -260,6 +306,33 @@ class ManualPrivilegeEscalationLootTests(unittest.TestCase):
         self.assertEqual(lines, ["DATABASE_PASSWORD=LabSecret123!", "Authorization: Bearer raw-token-value"])
         history = _history_credential_lines("sshpass -p 'LabSecret' ssh alice@host\necho password policy")
         self.assertEqual(history, ["sshpass -p 'LabSecret' ssh alice@host"])
+
+    def test_structured_credential_formats_are_detected_without_placeholders(self):
+        cases = {
+            '"password": "JsonSecret!"': True,
+            "'api_key': 'yaml-token-value'": True,
+            '<add key="password" value="XmlAttributeSecret!" />': True,
+            '<add value="reverse-order-secret" name="token" />': True,
+            '"auth": "dXNlcjpwYXNz"': True,
+            'DefaultPassword    REG_SZ    RegistrySecret!': True,
+            '"password": null': False,
+            '"password": ""': False,
+            '"token": "${TOKEN_FROM_ENV}"': False,
+            '"auth": "not-valid-base64"': False,
+            'password policy requires twelve characters': False,
+        }
+        for line, expected in cases.items():
+            with self.subTest(line=line):
+                self.assertEqual(bool(_credential_lines(line)), expected)
+
+        context = _MINI_PEAS._credential_context(
+            '"username": "json-user"\n"auth": "ZG9ja2VyLXVzZXI6ZG9ja2VyLXBhc3M="\n'
+            'DefaultUserName    REG_SZ    registry-user'
+        )
+        self.assertEqual(
+            context["associated_usernames"],
+            ["json-user", "docker-user", "registry-user"],
+        )
 
     def test_linux_suid_and_capability_noise_filtering(self):
         normal = _linux_special_file_classification(Path("/usr/bin/passwd"), stat.S_ISUID)

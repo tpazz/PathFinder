@@ -8,6 +8,7 @@ from collections import namedtuple
 
 from parsers.active_directory.kerberos_parser import parse_getnpusers_output, parse_getuserspns_output, parse_kerbrute_output
 from parsers.active_directory.ldapdomaindump_parser import parse_ldapdomaindump_dir
+from parsers.active_directory.lsass_parser import parse_lsass_json
 from parsers.active_directory.potfile_parser import parse_potfile
 from parsers.active_directory.sharphound_parser import parse_sharphound_dir
 from parsers.active_directory.certipy_parser import parse_certipy_json
@@ -30,8 +31,8 @@ from parsers.initial_foothold.sqlmap_parser import parse_sqlmap_log
 from parsers.initial_foothold.whatweb_parser import parse_whatweb_json
 from parsers.initial_foothold.wpscan_parser import parse_wpscan_json
 from parsers.initial_foothold.webpage_identity_parser import parse_webpage_html
-from parsers.post_exploitation.ai_loot_parser import parse_ai_loot_json
-from parsers.post_exploitation.manual_privesc_parser import parse_manual_privesc_json
+from parsers.post_exploitation.ai_peas_parser import parse_ai_loot_json
+from parsers.post_exploitation.mini_peas_parser import parse_manual_privesc_json
 from parsers.privilege_escalation.linpeas_parser import parse_linpeas
 from parsers.privilege_escalation.winpeas_parser import parse_winpeas
 
@@ -104,7 +105,7 @@ PARSER_SPECS = [
                True, lambda p, ctx: parse_rsync_output(p, ctx.target_host)),
     ParserSpec("smtp_user_enum_txt", "--smtp-user-enum-txt", "Path to SMTP user enumeration output.",
                True, lambda p, ctx: parse_smtp_user_enum_output(p, ctx.target_host)),
-    ParserSpec("sharphound_dir", "--sharphound-dir", "Path to directory with unzipped SharpHound JSON files.",
+    ParserSpec("sharphound_dir", "--sharphound-dir", "Path to a SharpHound JSON directory or ZIP archive.",
                False, lambda p, ctx: parse_sharphound_dir(p)),
     ParserSpec("ldapdomaindump_dir", "--ldapdomaindump-dir", "Path to directory with ldapdomaindump TSV files.",
                False, lambda p, ctx: parse_ldapdomaindump_dir(p)),
@@ -116,6 +117,9 @@ PARSER_SPECS = [
                False, lambda p, ctx: parse_getuserspns_output(p, ctx.target_host)),
     ParserSpec("secretsdump_txt", "--secretsdump-txt", "Path to impacket-secretsdump output.",
                False, lambda p, ctx: parse_secretsdump(p, ctx.target_host)),
+    ParserSpec("lsass_json", "--lsass-json", "Path to pypykatz or lsassy JSON output.",
+               False, lambda p, ctx: parse_lsass_json(p, ctx.target_host),
+               ("--pypykatz-json", "--lsassy-json")),
     ParserSpec("potfile_txt", "--potfile", "Path to john/hashcat .pot cracked-password file.",
                False, lambda p, ctx: parse_potfile(p, ctx.target_host)),
     ParserSpec("certipy_json", "--certipy-json", "Path to certipy find JSON output.",

@@ -374,9 +374,13 @@ def walk_paths(roots: list[str], max_files: int, excluded: Path | None = None) -
 
 def load_text(path: Path, max_bytes: int) -> str | None:
     try:
-        if path.stat().st_size > max_bytes:
+        if not path.is_file() or path.stat().st_size > max_bytes:
             return None
-        return path.read_text(encoding="utf-8", errors="replace")
+        with path.open("rb") as handle:
+            raw = handle.read(max_bytes + 1)
+        if len(raw) > max_bytes:
+            return None
+        return raw.decode("utf-8", errors="replace")
     except OSError:
         return None
 

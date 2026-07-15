@@ -34,6 +34,9 @@ python3 -m main.pathfinder scan loot/ --target-host TARGET_IP
 # Save findings for later or for iterative analysis
 python3 -m main.pathfinder scan loot/ --target-host TARGET_IP -o findings.json
 
+# Render findings, attack paths, and provenance into a standalone HTML report
+python3 -m main.pathfinder scan loot/ --report engagement.html
+
 # Keep noisy engagements readable: display only the top grouped triage leads
 python3 -m main.pathfinder scan loot/ --top 10
 
@@ -56,6 +59,8 @@ python3 -m main.pathfinder scan loot/ --show-all
 | JSON with `"type":"ai_post_exploitation_loot"` | PathFinder AI loot collector |
 | JSON with `"users"` + `"groups"` | enum4linux-ng |
 | JSON with `"Certificate Templates"` | certipy |
+| JSON with `"logon_sessions"` / `"msv_creds"` | pypykatz |
+| JSON with `"credentials"` + NT/LM hash fields | lsassy |
 | Text with `VALID USERNAME:` | Kerbrute |
 | Text with `$krb5asrep$` | impacket-GetNPUsers |
 | Text with `$krb5tgs$` | impacket-GetUserSPNs |
@@ -69,7 +74,7 @@ python3 -m main.pathfinder scan loot/ --show-all
 | Text with `linpeas` / `╔══` | LinPEAS |
 | JSON with `"type":"pathfinder_manual_privesc_loot"` | PathFinder manual Linux/Windows privilege-escalation collector |
 | Text with `[INFO]` + `sqlmap` + `vulnerable` | SQLMap |
-| Directory with `users.json` + `domains.json` | SharpHound |
+| Directory/ZIP with `users.json` + `domains.json` or timestamp-prefixed equivalents | SharpHound |
 | Directory with `domain_users.tsv` | ldapdomaindump |
 
 > **Note:** For host-dependent parsers (saved webpage HTML, LinPEAS, WinPEAS, Gobuster, SNMP, Kerbrute, enum4linux) in a *flat* loot dir, the target host is inferred from the nmap XML or Gobuster header — pass `--target-host` if those are absent. In a **per-host** loot layout (below) the host comes from the directory name, so no `--target-host` is needed.
@@ -277,6 +282,10 @@ python -m pip install pyinstaller
 .\tools\build_ai-peas.ps1
 ```
 
+Frozen Linux builds are published by the `Linux collector artifacts` workflow
+as `ai-peas-linux-x86_64` and `ai-peas-linux-arm64`; see the frozen Linux build
+section below for local build and verification commands.
+
 Transfer `ai-peas-loot.json` back to the attack host and either pass it directly or
 drop it into the host's loot directory for scan-mode autodetection.
 
@@ -453,7 +462,9 @@ excludes the selected report itself. Explicit discovery operations such as
 provenance. Credential searches explicitly recognise shell histories, private
 keys, `.netrc`, `.npmrc`, `.pypirc`, cloud/Kubernetes/Docker configuration,
 RDP profiles, KeePass metadata and common deployment formats without decoding
-binary stores as text.
+binary stores as text. Concrete quoted JSON/YAML assignments, XML elements and
+key/value attributes, Netrc entries, registry values and validated Docker Basic
+authentication blobs are supported; empty or templated values are filtered.
 
 Both platforms search up to 100 Git repositories by default. The targeted pass
 reads `.git/config`, `HEAD`, refs and reflogs, and runs bounded `git remote`,
@@ -489,28 +500,74 @@ python -m pip install pyinstaller
 .\tools\build_mini-peas.ps1
 ```
 
+Frozen Linux builds are published as `mini-peas-linux-x86_64` and
+`mini-peas-linux-arm64`.
+
+#### Frozen Linux collector build and verification
+
+Build on native x86_64 or ARM64 Linux. The script packages both collectors with
+PyInstaller, wraps them with StaticX, and refuses to finish unless artifact and
+runtime verification succeeds.
+
+```bash
+sudo apt-get update
+sudo apt-get install binutils musl-tools patchelf scons
+BOOTLOADER_CC=musl-gcc python3 -m pip install --no-binary staticx \
+  -r tools/linux-build-requirements.txt
+bash tools/build-linux-collectors.sh --output-dir dist
+```
+
+The output directory contains both architecture-suffixed executables plus:
+
+- `SHA256SUMS` for transfer-integrity checks.
+- `artifact-manifest.json` with source commit, tool versions, sizes, hashes,
+  ELF inspection, help/runtime status, and emitted collector schema versions.
+
+Re-run verification without rebuilding:
+
+```bash
+python3 tools/verify_collector_artifacts.py --source-only
+python3 tools/verify_collector_artifacts.py --arch x86_64 --artifact-dir dist
+sha256sum -c dist/SHA256SUMS
+```
+
+Use `--arch arm64` on an ARM64 build host. PyInstaller builds are native rather
+than cross-compiled. The GitHub Actions workflow uses `ubuntu-24.04` and
+`ubuntu-24.04-arm` to produce both variants. StaticX-bundled programs ignore
+advanced target NSS configuration, which may affect AD/LDAP-backed account
+lookups; this does not prevent local-file, environment, or native-command checks.
+
 ---
 
 ### Active Directory Parsers
 
 #### 10. SharpHound
 
-Run `SharpHound.exe` on a domain-joined machine, unzip the resulting archive, then point PathFinder at the directory of JSON files.
+Run `SharpHound.exe` on a domain-joined machine. PathFinder accepts the resulting
+ZIP directly, or a directory containing extracted JSON files.
 
 ```bash
 # Collect all data
 SharpHound.exe -c All
 
-# Transfer the zip back and unzip
-unzip *_BloodHound.zip -d sharphound_data/
+# Transfer the zip back; extraction is optional
 ```
 
 ```bash
-# Provide the directory path, not a single file
-python3 -m main.pathfinder --sharphound-dir sharphound_data/
+python3 -m main.pathfinder --sharphound-dir 20260715120000_BloodHound.zip
+# Or: python3 -m main.pathfinder --sharphound-dir sharphound_data/
 ```
 
-> Supports BloodHound v4 (flat JSON keys) and v5/CE (`Properties` sub-object) formats.
+> Supports BloodHound v4 (flat JSON keys) and v5/CE (`Properties` sub-object)
+> formats. Exact and timestamp-prefixed filenames are accepted; the newest
+> collection of each type is selected.
+
+When the same run also contains recovered credentials, PathFinder correlates
+their identities against direct SharpHound ACL/delegation edges. Owned DCSync,
+gMSA password-read, and vulnerable AD CS enrollment rights are promoted as
+zero-hop actions. Direct targets receive at most one high-value hint; PathFinder
+does not perform transitive graph traversal. Ambiguous short account names fail
+closed, and correlation is capped at 5,000 owned principals / 250 results.
 
 #### 11. ldapdomaindump
 
@@ -545,7 +602,9 @@ python3 -m main.pathfinder \
 
 #### 13. impacket-GetUserSPNs (Kerberoasting)
 
-Requires valid domain credentials. Each captured TGS-REP hash becomes a Kerberoastable-user finding **and** a reusable credential.
+Requires valid domain credentials. Each captured TGS-REP hash becomes a
+Kerberoastable-user finding and crack-first credential material; it is never
+routed to pass-the-hash.
 
 ```bash
 impacket-GetUserSPNs DOMAIN.COM/USER:PASS -dc-ip TARGET_IP -request -outputfile kerberoast.txt
@@ -557,7 +616,8 @@ python3 -m main.pathfinder --getuserspns-hashes kerberoast.txt
 
 #### 14. impacket-secretsdump
 
-Recovered NT hashes (and any cleartext) become credentials that spray/PtH against every discovered service.
+Recovered cleartext passwords route to password reuse. Valid NT hashes route to
+pass-the-hash only on compatible Windows services.
 
 ```bash
 impacket-secretsdump DOMAIN.COM/USER:PASS@TARGET_IP | tee secretsdump.txt
@@ -567,7 +627,21 @@ impacket-secretsdump DOMAIN.COM/USER:PASS@TARGET_IP | tee secretsdump.txt
 python3 -m main.pathfinder --secretsdump-txt secretsdump.txt
 ```
 
-#### 15. certipy (AD CS)
+#### 15. pypykatz / lsassy JSON
+
+Export LSASS results as JSON and retain the unredacted file under the relevant
+per-host loot directory, or pass it explicitly:
+
+```bash
+python3 -m main.pathfinder --lsass-json pypykatz.json --target-host WS01.CORP.LOCAL
+# Aliases: --pypykatz-json and --lsassy-json
+```
+
+Cleartext passwords, valid NT hashes, Kerberos AES keys, DPAPI material, and
+other digests are tagged separately. NetNTLMv2, AS-REP, TGS, DCC2, and DPAPI
+material always routes to cracking/recovery rather than pass-the-hash.
+
+#### 16. certipy (AD CS)
 
 Use `-json`. Each ESC* finding on a vulnerable template becomes a privilege-escalation path.
 
@@ -665,6 +739,15 @@ python3 -m main.pathfinder scan loot/ --hide-findings
 # Actively validate complete credentials against resolved login services
 python3 -m main.pathfinder scan loot/ --validate-credentials
 
+# Write a standalone HTML engagement report (evidence preserved by default)
+python3 -m main.pathfinder scan loot/ --report engagement.html
+
+# Omitting the path writes pathfinder-report.html
+python3 -m main.pathfinder scan loot/ --report
+
+# Explicitly create a sanitized copy with credential values redacted
+python3 -m main.pathfinder scan loot/ --report engagement-sanitized.html --report-redact-secrets
+
 # Teach PathFinder a new attack path rule (interactive)
 python3 -m main.pathfinder --learn
 
@@ -680,3 +763,8 @@ python3 -m main.pathfinder scan loot/ --no-color
 # commands are removed. (searchsploit/GitHub enrichment stay on - both allowed.)
 python3 -m main.pathfinder scan loot/ --oscp
 ```
+
+Certipy findings produce technique-specific AD CS guidance for ESC1, ESC3,
+ESC4, ESC6, ESC8, ESC11, and ESC13. Other `ESC*` findings remain visible with a
+manual-validation workflow; PathFinder does not reuse an ESC1 command sequence
+for a different technique.

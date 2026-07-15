@@ -1,6 +1,6 @@
 import unittest
 
-from main.vulnerability_mapper import VulnerabilityMapper, _scale_score_by_confidence
+from main.vulnerability_mapper import VulnerabilityMapper, _scale_score_by_confidence, _searchsploit_cves
 
 
 def _f(etype, name, **attrs):
@@ -9,6 +9,14 @@ def _f(etype, name, **attrs):
 
 
 class ScaleHelperTests(unittest.TestCase):
+    def test_searchsploit_cves_are_canonical_and_null_safe(self):
+        self.assertEqual(
+            _searchsploit_cves("CVE-2021-41773; cve-2021-42013;EDB-123"),
+            ["CVE-2021-41773", "CVE-2021-42013"],
+        )
+        self.assertEqual(_searchsploit_cves(None), [])
+        self.assertEqual(_searchsploit_cves({"unexpected": "object"}), [])
+
     def test_confidence_bands(self):
         self.assertEqual(_scale_score_by_confidence(95, {"confidence": "high"}), 95)
         self.assertEqual(_scale_score_by_confidence(95, {"confidence": "medium"}), 76)

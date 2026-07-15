@@ -14,8 +14,14 @@ from parsers.initial_foothold.netexec_parser import parse_netexec_output
 from parsers.initial_foothold.nuclei_parser import parse_nuclei_jsonl
 from parsers.initial_foothold.smbmap_parser import parse_smbmap_output
 from parsers.initial_foothold.web_url_helpers import parameterized_url_finding
+from parsers.initial_foothold.whatweb_parser import parse_whatweb_json
 from parsers.initial_foothold.wpscan_parser import parse_wpscan_json
-from parsers.initial_foothold.webpage_identity_parser import parse_webpage_html
+from parsers.initial_foothold.webpage_identity_parser import (
+    MAX_HTML_ANALYSIS_CHARS,
+    _ffuf_result_source,
+    extract_parameter_candidates,
+    parse_webpage_html,
+)
 
 
 class NewParserTests(unittest.TestCase):
@@ -25,6 +31,30 @@ class NewParserTests(unittest.TestCase):
         tmp.close()
         self.addCleanup(lambda: Path(tmp.name).unlink(missing_ok=True))
         return tmp.name
+
+    def test_parameterized_url_rejects_out_of_range_port(self):
+        self.assertIsNone(parameterized_url_finding(
+            "10.0.0.5", 80, "test", "http://10.0.0.5:99999/?q=x",
+        ))
+
+    def test_ffuf_source_rejects_out_of_range_port(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pages = root / "ffuf_pages_http_80"
+            pages.mkdir()
+            response = pages / "hash"
+            response.write_text("body", encoding="utf-8")
+            (root / "ffuf_80.json").write_text(json.dumps({"results": [{
+                "resultfile": "hash", "url": "http://10.0.0.5:99999/?q=x",
+            }]}), encoding="utf-8")
+            self.assertIsNone(_ffuf_result_source(str(response), "10.0.0.5"))
+
+    def test_webpage_regex_analysis_is_size_bounded(self):
+        content = "x" * (MAX_HTML_ANALYSIS_CHARS + 10) + "/late?q=value"
+        findings = extract_parameter_candidates(
+            content, "10.0.0.5", 80, "http://10.0.0.5",
+        )
+        self.assertEqual(findings, [])
 
     def test_ffuf(self):
         payload = {
@@ -326,18 +356,55 @@ class NewParserTests(unittest.TestCase):
 
     def test_certipy(self):
         payload = {
-            "Certificate Authorities": {"0": {"CA Name": "CORP-DC-CA"}},
+            "Certificate Authorities": {
+                "0": {"CA Name": "CORP-DC-CA",
+                      "[!] Vulnerabilities": {"ESC8": "Web Enrollment permits NTLM relay"}},
+            },
             "Certificate Templates": {
                 "0": {"Template Name": "VulnTemplate", "Enabled": True,
+                      "Enrollment Rights": ["CORP\\Domain Users"],
                       "[!] Vulnerabilities": {"ESC1": "Enrollee supplies subject + client auth"}},
             },
         }
         findings = parse_certipy_json(self._write(json.dumps(payload), ".json"), "CORP.LOCAL")
         validate_findings(findings)
+        self.assertEqual({finding["name"] for finding in findings}, {"adcs_esc1", "adcs_esc8"})
+        esc1 = next(finding for finding in findings if finding["name"] == "adcs_esc1")
+        self.assertEqual(esc1["attributes"]["esc"], "ESC1")
+        self.assertEqual(esc1["attributes"]["template"], "VulnTemplate")
+        self.assertEqual(esc1["attributes"]["enrollment_principals"], ["CORP\\Domain Users"])
+        esc8 = next(finding for finding in findings if finding["name"] == "adcs_esc8")
+        self.assertEqual(esc8["attributes"]["template"], "CORP-DC-CA")
+
+    def test_post_exploitation_parser_files_use_collector_names(self):
+        parser_dir = Path(__file__).parent.parent / "parsers" / "post_exploitation"
+        self.assertTrue((parser_dir / "ai_peas_parser.py").is_file())
+        self.assertTrue((parser_dir / "mini_peas_parser.py").is_file())
+        self.assertFalse((parser_dir / "ai_loot_parser.py").exists())
+        self.assertFalse((parser_dir / "manual_privesc_parser.py").exists())
+
+
+    def test_nuclei_coerces_non_string_fields(self):
+        line = json.dumps({
+            "template-id": 42,
+            "info": {"severity": 7, "classification": {"cve-id": [123, None]}},
+            "matched-at": 12345,
+        })
+        findings = parse_nuclei_jsonl(self._write(line + "\n", ".jsonl"))
+        self.assertEqual(findings[0]["name"], "123")
+        self.assertEqual(findings[0]["attributes"]["severity"], "7")
+
+    def test_whatweb_skips_non_mapping_records_and_plugins(self):
+        payload = [None, {"target": 123, "plugins": []}, {
+            "target": "http://10.0.0.5", "plugins": {
+                "Broken": None,
+                123: {"version": [7]},
+            },
+        }]
+        findings = parse_whatweb_json(self._write(json.dumps(payload), ".json"))
         self.assertEqual(len(findings), 1)
-        self.assertEqual(findings[0]["name"], "adcs_esc1")
-        self.assertEqual(findings[0]["attributes"]["esc"], "ESC1")
-        self.assertEqual(findings[0]["attributes"]["template"], "VulnTemplate")
+        self.assertEqual(findings[0]["name"], "123")
+        self.assertEqual(findings[0]["version"], "7")
 
 
 if __name__ == "__main__":

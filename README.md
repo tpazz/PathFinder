@@ -15,6 +15,7 @@ python3 -m main.pathfinder scan loot/ -o findings.json
 python3 -m main.pathfinder scan loot/ --top 10
 python3 -m main.pathfinder scan loot/ --min-likelihood medium
 python3 -m main.pathfinder scan loot/ --show-all
+python3 -m main.pathfinder scan loot/ --report engagement.html
 ```
 
 For one-shot-enum users:
@@ -41,8 +42,9 @@ loot/
 
 PathFinder supports Nmap, saved webpage HTML, Gobuster, ffuf, Nikto, WhatWeb, nuclei, WPScan,
 enum4linux-ng, smbmap, NetExec/CrackMapExec, SNMP, NFS/showmount, Redis, rsync,
-SMTP user enum, SQLMap logs, LinPEAS, WinPEAS, SharpHound, ldapdomaindump,
-Kerbrute, GetNPUsers, GetUserSPNs, secretsdump, john/hashcat `.pot` files,
+SMTP user enum, SQLMap logs, LinPEAS, WinPEAS, SharpHound directories/ZIPs,
+ldapdomaindump, pypykatz/lsassy JSON, Kerbrute, GetNPUsers, GetUserSPNs,
+secretsdump, john/hashcat `.pot` files,
 certipy, one-shot-enum AI surface JSON, the AI loot collector JSON, and the
 PathFinder manual Linux/Windows privilege-escalation collector JSON.
 
@@ -62,7 +64,7 @@ PathFinder manual Linux/Windows privilege-escalation collector JSON.
   pages as manual SQLMap triage candidates. It also recognises query URLs in
   JavaScript literals while excluding external targets, static assets, and
   tracking-only parameters.
-- Synthesises attack paths from a 99-rule engine.
+- Synthesises attack paths from a rule-driven engine.
 - Groups repeated paths by rule and actionable target, showing compact resolved
   inputs and commands instead of an arbitrary first match.
 - Shows the discovery tool and producer command on findings and attack paths by
@@ -72,12 +74,22 @@ PathFinder manual Linux/Windows privilege-escalation collector JSON.
   including operator-supplied credentials.
 - Correlates credentials, usernames, hashes, shares, web paths, AD findings, and
   AI/LLM surfaces across hosts.
+- Correlates owned credential identities with direct SharpHound ACL and
+  delegation edges. DCSync, vulnerable AD CS enrollment, and gMSA-read wins are
+  surfaced as zero-hop actions; a direct target may receive one high-value hint
+  when it is itself an administrator or local administrator. No transitive graph
+  search is performed.
+- Routes cleartext passwords to reuse checks and valid NT hashes to pass-the-hash.
+  NetNTLMv2, AS-REP, TGS, DCC2, and DPAPI material is crack-first and is never
+  offered to pass-the-hash actions.
 - Compacts grouped credential-reuse and password-spray leads into input lists
   plus one `<USERNAME>`/`<PASSWORD>` core command per login service.
 - Maps software/version findings to Searchsploit and GitHub exploit leads.
 - Supports an OSCP profile with `--oscp` for manual-safe suggestions around
   restricted tools.
 - Saves/reloads findings with `-o findings.json` and `-i findings.json`.
+- Generates a self-contained, offline HTML engagement report with normalized
+  findings, prioritized paths, and deduplicated discovery provenance.
 
 ## Useful Flags
 
@@ -94,6 +106,47 @@ PathFinder manual Linux/Windows privilege-escalation collector JSON.
 - `--target-host HOST`: provide host context for flat loot folders.
 - `--oscp`: strip restricted-tool commands from suggestions and flag exam caveats.
 - `--no-color`: disable ANSI colour output.
+- `--report [HTML]`: write an offline, self-contained HTML engagement report.
+  With no path, the default is `pathfinder-report.html`. The report includes all
+  paths passing `--min-likelihood`; terminal `--top` does not truncate it.
+- `--report-redact-secrets`: create a sanitized report by redacting passwords,
+  hashes, tokens, and credential-bearing commands. Reports preserve evidence by
+  default, consistent with terminal and JSON output.
+
+### HTML engagement reports
+
+```bash
+python3 -m main.pathfinder scan loot/ --report engagement.html
+python3 -m main.pathfinder scan loot/ --min-likelihood medium --report
+```
+
+The report is a single HTML file with inline styling and no JavaScript or
+network-loaded assets. Untrusted finding content is HTML-escaped. Findings,
+evidence, actions, and producer commands are preserved by default; use
+`--report-redact-secrets` when a sanitized export is required. Treat the default
+report as sensitive engagement loot.
+
+SharpHound collection directories may use canonical names (`users.json`) or
+timestamp-prefixed names (`*_users.json`). When multiple exports exist,
+PathFinder selects the newest collection of each type. Pass a ZIP directly with
+`--sharphound-dir collection.zip`, or place it beneath a scan loot tree.
+Pypykatz and lsassy JSON can likewise be auto-detected, or supplied with
+`--lsass-json` (`--pypykatz-json` and `--lsassy-json` are accepted aliases).
+
+### Bounded BloodHound correlation
+
+PathFinder builds its owned-principal index only from credentials that already
+support authentication: recovered passwords, valid NT hashes, or Kerberos key
+material. Uncracked NetNTLMv2/Kerberos/DCC2/DPAPI captures do not mark a
+principal as owned. Principal matching is domain-aware and ambiguous bare names
+fail closed.
+
+Correlation is intentionally bounded to direct edges. PathFinder may annotate
+the direct takeover target with one high-value fact from SharpHound—such as
+direct Domain Admin membership or local administrator access—but never follows
+an outgoing edge from that target. The ownership index is capped at 5,000
+principals and derived output at 250 results, with an explicit warning if either
+limit is reached.
 
 ## AI-PEAS
 
@@ -171,6 +224,10 @@ scripts and definitions, AutoLogon, unattended/IIS files, readable registry
 hives and writable machine PATH entries. Use `--quiet` when only JSON output is
 required. Positional paths normally augment common OS locations; add
 `--only-specified-roots` for a strictly targeted credential/configuration pass.
+Credential promotion recognises concrete assignments in environment, YAML,
+quoted JSON, XML element/attribute, Netrc, registry and PowerShell formats, plus
+Docker `auth` values only when they decode to a non-empty `username:password`.
+Empty values and environment/template placeholders are not promoted.
 
 Feed the report directly into PathFinder or place it beneath `loot/<IP>/`:
 
@@ -192,6 +249,38 @@ use `--show-all` for every underlying path. Privilege-escalation attack paths
 embed the relevant validation and exploitation workflow directly instead of
 linking back to private notes. Maintainers can rebuild the Windows binary with
 `tools\build_mini-peas.ps1` after installing PyInstaller.
+
+## Frozen Linux collectors
+
+Release CI builds both collectors natively for x86_64 and ARM64, then wraps the
+PyInstaller executables with StaticX. The resulting files do not require Python
+or target-system shared libraries:
+
+- `mini-peas-linux-x86_64` / `mini-peas-linux-arm64`
+- `ai-peas-linux-x86_64` / `ai-peas-linux-arm64`
+
+Each architecture artifact also contains `SHA256SUMS` and
+`artifact-manifest.json`. Verification fails unless each file has the expected
+ELF machine type, has no `PT_INTERP` dynamic loader, renders `--help`, completes
+a bounded real collection, writes the expected PathFinder JSON schema, and the
+two collector sources import only the Python standard library.
+
+Build on a native Linux host matching the desired target architecture
+(PyInstaller is not a cross-compiler):
+
+```bash
+sudo apt-get install binutils musl-tools patchelf scons
+BOOTLOADER_CC=musl-gcc python3 -m pip install --no-binary staticx \
+  -r tools/linux-build-requirements.txt
+bash tools/build-linux-collectors.sh --output-dir dist
+sha256sum -c dist/SHA256SUMS
+```
+
+The `Linux collector artifacts` workflow performs the same build on
+`ubuntu-24.04` and `ubuntu-24.04-arm`. StaticX ignores advanced target NSS
+configuration, so directory-backed identity lookup may differ on hosts using
+AD/LDAP NSS modules; local files, environment context, and native discovery
+commands remain available.
 
 ## Output Example
 

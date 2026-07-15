@@ -38,9 +38,11 @@ def parse_whatweb_json(json_file_path):
 
     # The WhatWeb JSON output is usually a list of results, one for each target scanned.
     for target_result in data:
+        if not isinstance(target_result, dict):
+            continue
         try:
             # Parse the target URL to reliably extract the hostname and port.
-            parsed_url = urlparse(target_result.get('target', ''))
+            parsed_url = urlparse(str(target_result.get('target') or ''))
             host = parsed_url.hostname
             port = parsed_url.port
             # If a port is not specified in the URL, infer the default based on the scheme (http/https).
@@ -55,7 +57,13 @@ def parse_whatweb_json(json_file_path):
             continue # Skip this target if the URL is malformed.
 
         # Iterate through all the plugins that WhatWeb identified for the target.
-        for plugin_name, plugin_data in target_result.get("plugins", {}).items():
+        plugins = target_result.get("plugins", {})
+        if not isinstance(plugins, dict):
+            continue
+        for plugin_name, plugin_data in plugins.items():
+            plugin_name = str(plugin_name)
+            if not isinstance(plugin_data, dict):
+                continue
             # Skip any plugins that are on our ignore list.
             if plugin_name in PLUGINS_TO_IGNORE:
                 continue
@@ -65,6 +73,7 @@ def parse_whatweb_json(json_file_path):
             if not isinstance(version_candidates, list):
                 version_candidates = [version_candidates]
             version = version_candidates[0] if version_candidates else None
+            version = str(version) if version not in (None, "") else None
 
             # Create a clean attributes dictionary, dumping all other plugin data into it.
             # We remove 'version' since it's already a top-level key in our finding object.

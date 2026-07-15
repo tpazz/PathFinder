@@ -36,6 +36,27 @@ class ScanSmokeTests(unittest.TestCase):
             self.assertIn("gobuster_txt", result.stdout)
             self.assertIn("sqlmap_log", result.stdout)
 
+    def test_scan_cli_writes_redacted_html_report(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            loot = root / "loot"
+            loot.mkdir()
+            shutil.copy(FIXTURES / "nmap_sample.xml", loot / "nmap.xml")
+            report = root / "reports" / "engagement.html"
+
+            result = self._run_scan(
+                loot, "--no-color", "--report", str(report), "--report-redact-secrets"
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + "\n" + result.stderr)
+            self.assertTrue(report.is_file())
+            document = report.read_text(encoding="utf-8")
+            self.assertIn("PathFinder Engagement Report", document)
+            self.assertIn("Normalized findings", document)
+            self.assertIn("Discovery provenance", document)
+            self.assertIn("credential values were redacted", document)
+            self.assertIn(str(report.resolve()), result.stdout)
+
     def test_scan_cli_detects_and_parses_new_parser_types(self):
         """End-to-end: the Phase 3-4 parsers are auto-detected and run by `scan`."""
         files = {
@@ -167,6 +188,44 @@ class ScanSmokeTests(unittest.TestCase):
             self.assertIn("Credential Reuse on Login Service", result.stdout)
             # .20 has no credential of its own, so any path targeting it is cross-host.
             self.assertIn("10.10.10.20", result.stdout)
+
+    def test_scan_cli_correlates_owned_credential_with_direct_sharphound_edge(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            loot = Path(tmp_dir)
+            host_dir = loot / "10.10.10.10"
+            sharp = host_dir / "sharphound"
+            sharp.mkdir(parents=True)
+            domain_sid = "S-1-5-21-1-2-3"
+            svc_sid = f"{domain_sid}-1100"
+            helpdesk_sid = f"{domain_sid}-1101"
+            (sharp / "20260715_users.json").write_text(json.dumps({"data": [
+                {"ObjectIdentifier": svc_sid, "Name": "SVC_WEB@CORP.LOCAL", "Aces": []},
+                {
+                    "ObjectIdentifier": helpdesk_sid,
+                    "Name": "HELPDESK_ADMIN@CORP.LOCAL",
+                    "IsAdmin": True,
+                    "Aces": [{
+                        "PrincipalSID": svc_sid,
+                        "RightName": "ForceChangePassword",
+                    }],
+                },
+            ]}), encoding="utf-8")
+            (sharp / "20260715_domains.json").write_text(json.dumps({"data": [{
+                "ObjectIdentifier": domain_sid, "Name": "CORP.LOCAL", "Aces": [],
+            }]}), encoding="utf-8")
+            (host_dir / "secretsdump.txt").write_text(
+                "CORP.LOCAL\\svc_web:1100:aad3b435b51404eeaad3b435b51404ee:"
+                "31d6cfe0d16ae931b73c59d7e0c089c0:::\n",
+                encoding="utf-8",
+            )
+
+            result = self._run_scan(loot, "--no-color", "--show-all")
+
+        self.assertEqual(result.returncode, 0, result.stdout + "\n" + result.stderr)
+        self.assertIn("OWNED DIRECT EDGE - ACL Abuse Now", result.stdout)
+        self.assertIn("OWNED ONE-HOP - Take Over High-Value Principal", result.stdout)
+        self.assertIn("You own 'SVC_WEB@CORP.LOCAL'", result.stdout)
+        self.assertNotIn("ACL Abuse Right - ForceChangePassword / WriteDacl / WriteOwner", result.stdout)
 
     def test_scan_cli_multihost_per_host_directories(self):
         """Per-host subdirectories: every file is ingested and stamped with the

@@ -10,6 +10,8 @@ only intended write is the JSON report selected with --out.
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import datetime as dt
 import getpass
 import json
@@ -75,19 +77,84 @@ DANGEROUS_GROUPS = {
     "docker", "lxd", "lxc", "disk", "adm", "shadow", "libvirt", "incus",
 }
 
+SECRET_KEY_PATTERN = (
+    r"password|passwd|pwd|secret|token|api[_-]?key|private[_-]?key|credential|"
+    r"connectionstring|database_url|authorization"
+)
+
+
+def _is_concrete_secret(value: str | None) -> bool:
+    value = str(value or "").strip().strip("\"'")
+    if not value or value.lower() in {"null", "none", "true", "false", "undefined", "<redacted>"}:
+        return False
+    return not bool(re.fullmatch(r"\$\{[^}]+\}|\{\{.*\}\}|<%.*%>", value))
+
+
+def _has_structured_secret_assignment(line: str) -> bool:
+    match = re.search(
+        rf"(?i)[\"']?(?:{SECRET_KEY_PATTERN})[\"']?\s*[=:]\s*"
+        rf"(?P<value>[\"'][^\"']*[\"']|[^\s,}}\]]+)",
+        line,
+    )
+    return bool(match and _is_concrete_secret(match.group("value")))
+
+
+def _has_xml_key_value_secret(line: str) -> bool:
+    patterns = (
+        re.search(rf"(?i)(?:key|name)\s*=\s*[\"'](?:{SECRET_KEY_PATTERN})[\"']"
+                  r"[^>]*\bvalue\s*=\s*[\"']([^\"']*)[\"']", line),
+        re.search(rf"(?i)\bvalue\s*=\s*[\"']([^\"']*)[\"']"
+                  rf"[^>]*(?:key|name)\s*=\s*[\"'](?:{SECRET_KEY_PATTERN})[\"']", line),
+    )
+    return any(match and _is_concrete_secret(match.group(1)) for match in patterns)
+
+
+def _has_xml_element_secret(line: str) -> bool:
+    match = re.search(r"(?i)<(?:password|token|secret|connectionString)>([^<]*)</", line)
+    return bool(match and _is_concrete_secret(match.group(1)))
+
+
+def _docker_auth_value(line: str) -> str | None:
+    match = re.search(r'(?i)["\']auth["\']\s*:\s*["\']([A-Za-z0-9+/=_-]{8,})["\']', line)
+    if not match:
+        return None
+    encoded = match.group(1)
+    try:
+        padded = encoded + "=" * (-len(encoded) % 4)
+        decoded = base64.b64decode(padded, altchars=b"-_", validate=True).decode("utf-8", "strict")
+    except (binascii.Error, UnicodeDecodeError, ValueError):
+        return None
+    username, separator, password = decoded.partition(":")
+    return encoded if separator and username and password else None
+
+
+def _docker_auth_username(line: str) -> str | None:
+    encoded = _docker_auth_value(line)
+    if not encoded:
+        return None
+    try:
+        padded = encoded + "=" * (-len(encoded) % 4)
+        return base64.b64decode(padded, altchars=b"-_", validate=True).decode("utf-8", "strict").split(":", 1)[0]
+    except (binascii.Error, UnicodeDecodeError, ValueError):
+        return None
+
 
 def _credential_lines(text: str) -> list[str]:
     lines = []
     for line in text.splitlines():
         stripped = line.strip()
-        if not stripped or stripped.startswith(("#", "//")) or not SECRET_LINE_RE.search(stripped):
+        docker_auth = _docker_auth_value(stripped)
+        if (not stripped or stripped.startswith(("#", "//"))
+                or (not SECRET_LINE_RE.search(stripped) and not docker_auth)):
             continue
-        if (re.search(r"(?i)(?:password|passwd|pwd|secret|token|api[_-]?key|credential|"
-                     r"connectionstring|database_url|authorization)\s*[=:]\s*\S+", stripped)
-                or re.search(r"(?i)<(?:password|token|secret|connectionString)>[^<]+</", stripped)
+        if (_has_structured_secret_assignment(stripped)
+                or _has_xml_element_secret(stripped)
+                or _has_xml_key_value_secret(stripped)
                 or re.search(r"(?i)\bBearer\s+\S+", stripped)
                 or re.search(r"(?i)\bmachine\s+\S+\s+login\s+\S+\s+password\s+\S+", stripped)
-                or re.search(r"[a-z][a-z0-9+.-]*://[^\s/:]+:[^\s/@]+@", stripped)):
+                or re.search(r"[a-z][a-z0-9+.-]*://[^\s/:]+:[^\s/@]+@", stripped)
+                or re.search(rf"(?i)\b(?:DefaultPassword|{SECRET_KEY_PATTERN})\b\s+REG_\w+\s+\S+", stripped)
+                or docker_auth):
             lines.append(line)
     return lines
 
@@ -96,7 +163,16 @@ def _credential_context(text: str) -> dict[str, list[str]]:
     usernames = []
     secret_keys = []
     for line in text.splitlines():
-        user_match = re.search(r"(?i)\b(?:user(?:name)?|login)\s*[=:]\s*[\"']?([^\s\"',;]+)", line)
+        user_match = re.search(
+            r"(?i)[\"']?(?:user(?:name)?|login)[\"']?\s*[=:]\s*[\"']?([^\s\"',;<>]+)", line
+        )
+        if not user_match:
+            user_match = re.search(r"(?i)<(?:UserName|Username|Login)>([^<]+)</", line)
+        if not user_match:
+            user_match = re.search(r"(?i)\bDefaultUserName\b\s+REG_\w+\s+(\S+)", line)
+        docker_username = _docker_auth_username(line)
+        if docker_username and docker_username not in usernames:
+            usernames.append(docker_username)
         if user_match and user_match.group(1) not in usernames:
             usernames.append(user_match.group(1))
         key_match = re.search(r"(?i)\b(password|passwd|pwd|secret|token|api[_-]?key|connectionstring|database_url)\b", line)
@@ -150,6 +226,20 @@ def _clip(value: str, max_bytes: int) -> tuple[str, bool]:
     tail_size = remaining - head_size
     clipped = encoded[:head_size] + marker + encoded[-tail_size:]
     return clipped.decode("utf-8", errors="replace"), True
+
+
+def _read_bounded_text(path: Path, max_bytes: int) -> str | None:
+    """Read at most max_bytes from a regular file, including if it grows after stat."""
+    try:
+        if not path.is_file():
+            return None
+        with path.open("rb") as handle:
+            raw = handle.read(max_bytes + 1)
+        if len(raw) > max_bytes:
+            return None
+        return raw.decode("utf-8", errors="replace")
+    except OSError:
+        return None
 
 
 class Collector:
@@ -228,7 +318,10 @@ class Collector:
             if not path.is_file() or path.stat().st_size > self.max_file_bytes:
                 self.progress(f"    [skipped] {label}")
                 return None
-            raw = path.read_text(encoding="utf-8", errors="replace")
+            raw = _read_bounded_text(path, self.max_file_bytes)
+            if raw is None:
+                self.progress(f"    [skipped] {label}")
+                return None
             content, truncated = _clip(raw, self.max_output_bytes)
             record = {
                 "label": label,
@@ -372,6 +465,8 @@ def _credential_search(collector: Collector, roots: list[Path]) -> None:
                            or is_config_candidate or bool(INTERESTING_NAME_RE.search(lower_name)))
             if not interesting:
                 continue
+            if not path.is_file():
+                continue
             if is_credential_artifact and path.suffix.lower() in {".kdbx", ".pfx", ".p12"}:
                 collector.finding(
                     "credential_material_found",
@@ -382,9 +477,9 @@ def _credential_search(collector: Collector, roots: list[Path]) -> None:
                     discovery_command=f"stat {path}",
                 )
                 continue
-            if path.stat().st_size > collector.max_file_bytes:
+            text = _read_bounded_text(path, collector.max_file_bytes)
+            if text is None:
                 continue
-            text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:
             collector.file_errors += 1
             continue
@@ -526,13 +621,16 @@ def _git_loot_search(collector: Collector, roots: list[Path]) -> None:
                     discovery_command=f"read {metadata_file}",
                 )
 
+        git_prefix = [
+            "git", "-c", "core.fsmonitor=", "-c", "core.pager=cat", "-C", str(repository),
+        ]
         git_checks = [
-            ("remotes", ["git", "-C", str(repository), "remote", "-v"]),
-            ("configuration", ["git", "-C", str(repository), "config", "--list", "--show-origin"]),
-            ("history", ["git", "-C", str(repository), "log", "--all", "--oneline", "-n", "100"]),
-            ("stashes", ["git", "-C", str(repository), "stash", "list"]),
-            ("secret-bearing diffs", [
-                "git", "-C", str(repository), "log", "--all", "-p", "-n", "100", "--",
+            ("remotes", [*git_prefix, "remote", "-v"]),
+            ("configuration", [*git_prefix, "config", "--list", "--show-origin"]),
+            ("history", [*git_prefix, "log", "--all", "--oneline", "-n", "100"]),
+            ("stashes", [*git_prefix, "stash", "list"]),
+            ("secret-related history", [
+                *git_prefix, "log", "--all", "--oneline", "-n", "100", "--",
                 ".env", "*.env", "*config*", "*settings*", "*secret*", "*credential*",
                 "*.ini", "*.conf", "*.properties", "*.yml", "*.yaml", "*.json", "*.xml",
             ]),
@@ -555,7 +653,7 @@ def _git_loot_search(collector: Collector, roots: list[Path]) -> None:
         for stash_ref in stash_refs:
             result = collector.command(
                 f"Git stash contents {stash_ref}: {repository}",
-                ["git", "-C", str(repository), "stash", "show", "-p", stash_ref],
+                [*git_prefix, "stash", "show", "--stat", stash_ref],
             )
             secret_lines = _git_secret_lines(result.get("stdout", ""))
             if secret_lines:

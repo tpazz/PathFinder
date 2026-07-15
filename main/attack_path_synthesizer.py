@@ -5,6 +5,8 @@ from copy import deepcopy
 import os
 
 from parsers.ansi import C
+from parsers.credential_routing import credential_usages
+from .bloodhound_correlator import correlate_bloodhound_ownership
 
 # Get the absolute path to the directory where this script is located.
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -195,6 +197,15 @@ class AttackPathSynthesizer:
                 except re.error as exc:
                     return False, f"Trigger {trigger_id} has invalid regex '{name_match['value']}': {exc}"
 
+            attributes_match = trigger.get("attributes_match", {})
+            if not isinstance(attributes_match, dict):
+                return False, f"Trigger {trigger_id} has invalid 'attributes_match' (expected an object)"
+            for attribute, expected in attributes_match.items():
+                if not isinstance(attribute, str) or not attribute.strip():
+                    return False, f"Trigger {trigger_id} has an invalid attribute matcher name"
+                if isinstance(expected, (dict, list)) or expected is None:
+                    return False, f"Trigger {trigger_id} has an invalid expected value for '{attribute}'"
+
         rule_scope = rule.get("host_scope", "same_host")
         if rule_scope not in VALID_HOST_SCOPES:
             return False, f"Rule has invalid host_scope '{rule_scope}'"
@@ -325,6 +336,18 @@ class AttackPathSynthesizer:
             if match_type == 'exact' and finding_name.lower() != match_value.lower(): return False
             if match_type == 'contains' and match_value.lower() not in finding_name.lower(): return False
             if match_type == 'regex' and not re.search(match_value, finding_name, re.IGNORECASE): return False
+        attributes = finding.get("attributes") or {}
+        for attribute, expected in trigger.get("attributes_match", {}).items():
+            if attribute == "credential_usage":
+                if str(expected).lower() not in credential_usages(attributes):
+                    return False
+                continue
+            actual = attributes.get(attribute)
+            if isinstance(expected, str):
+                if str(actual or "").lower() != expected.lower():
+                    return False
+            elif actual != expected:
+                return False
         return True
 
     def _format_suggestion(self, suggestion_template, matched_findings_by_id):
@@ -414,6 +437,7 @@ class AttackPathSynthesizer:
         Analyzes findings against rules to generate suggested attack paths,
         handling host-agnostic credentials and host-scope controls.
         """
+        prioritized_findings = correlate_bloodhound_ownership(prioritized_findings)
         suggested_paths = []
         seen = set()  # dedup by (rule name, host, resolved description + commands)
 

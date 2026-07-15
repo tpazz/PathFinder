@@ -47,13 +47,43 @@ class NewRuleTests(unittest.TestCase):
         paths = _synth().generate_attack_paths(findings)
         self.assertIn("Null/Guest SMB Session - Enumerate Without Creds", _names(paths))
 
-    def test_adcs_esc_fires(self):
-        findings = [_f("CORP.LOCAL", None, "certipy", "privilege_escalation", "adcs_esc1",
-                       esc="ESC1", template="VulnTemplate", description="ESC1 on VulnTemplate", score=95)]
-        paths = _synth().generate_attack_paths(findings)
-        adcs = [p for p in paths if "AD CS Vulnerable Certificate Template" in p["name"]]
-        self.assertGreaterEqual(len(adcs), 1)
-        self.assertIn("ESC1", adcs[0]["suggestion"]["description"])
+    def test_adcs_esc_rules_are_technique_specific(self):
+        cases = (
+            ("ESC1", "AD CS ESC1 - Arbitrary Principal Certificate", "-upn"),
+            ("ESC3", "AD CS ESC3 - Enrollment Agent Impersonation", "-on-behalf-of"),
+            ("ESC4", "AD CS ESC4 - Certificate Template Takeover", "-write-default-configuration"),
+            ("ESC6", "AD CS ESC6 - Conditional SAN Impersonation Chain", "ESC9"),
+            ("ESC8", "AD CS ESC8 - Relay to Web Enrollment", "https://<CA_HOST>"),
+            ("ESC11", "AD CS ESC11 - Relay to RPC Enrollment", "rpc://<CA_HOST>"),
+            ("ESC13", "AD CS ESC13 - Issuance Policy Group Escalation", "-oids"),
+        )
+        for esc, expected_name, command_marker in cases:
+            with self.subTest(esc=esc):
+                finding = _f(
+                    "CORP.LOCAL", None, "certipy", "privilege_escalation",
+                    f"adcs_{esc.lower()}", esc=esc, template="VulnTemplate",
+                    description=f"{esc} on VulnTemplate", enrollment_principals=["CORP\\alice"],
+                    score=95,
+                )
+                paths = _synth().generate_attack_paths([finding])
+                self.assertIn(expected_name, _names(paths))
+                self.assertNotIn("AD CS ESC - Technique-Specific Manual Validation", _names(paths))
+                path = next(p for p in paths if p["name"] == expected_name)
+                self.assertIn(command_marker, " ".join(path["suggestion"]["commands"]))
+
+    def test_unknown_adcs_esc_uses_manual_validation_not_esc1_workflow(self):
+        finding = _f(
+            "CORP.LOCAL", None, "certipy", "privilege_escalation", "adcs_esc16",
+            esc="ESC16", template="CORP-DC-CA", description="ESC16 on CORP-DC-CA",
+            enrollment_principals=[], score=95,
+        )
+        paths = _synth().generate_attack_paths([finding])
+        self.assertIn("AD CS ESC - Technique-Specific Manual Validation", _names(paths))
+        manual = next(p for p in paths
+                      if p["name"] == "AD CS ESC - Technique-Specific Manual Validation")
+        commands = " ".join(manual["suggestion"]["commands"])
+        self.assertIn("ESC16", commands)
+        self.assertNotIn("-upn", commands)
 
     def test_cve_detected_fires(self):
         findings = [_f("10.10.10.10", 80, "nuclei", "vulnerability", "CVE-2021-41773",
@@ -114,7 +144,7 @@ class NewRuleTests(unittest.TestCase):
                hash_type="NTLM", password=None, score=90),
         ]
         paths = _synth().generate_attack_paths(findings)
-        reuse = [p for p in paths if "Credential Reuse on Login Service" in p["name"]]
+        reuse = [p for p in paths if "Pass-the-Hash on Windows Login Service" in p["name"]]
         self.assertGreaterEqual(len(reuse), 1)
         commands = " ".join(reuse[0]["suggestion"]["commands"])
         self.assertIn("-H", commands)
