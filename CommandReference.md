@@ -249,10 +249,10 @@ After an authorised foothold on a host running AI/RAG/model services, run the
 read-only collector from the target-side project/app directory. It gathers
 provider/vector/MLflow/object-store/notebook secret values and references,
 RAG/vector config, MCP/agent manifests, prompt templates, model artifacts,
-unsafe loader signals, deployment configuration and readable runtime context.
-Notebook source cells are extracted without copying bulky execution outputs,
-and signals found in the same source are correlated into application-level
-control-plane chains.
+unsafe loader signals, deployment configuration, local AI listeners, readable
+process environments, Kubernetes/cloud workload identity, local RAG stores,
+ingestion consumers and guardrail rules. Python MCP tools are inspected through
+the AST, and related evidence is correlated at project scope.
 
 ```bash
 python3 tools/ai-peas.py . -o ai-peas-loot.json
@@ -299,15 +299,13 @@ Discovered values and evidence snippets are preserved by default. Use
 legacy `--include-secret-values` flag remains accepted for compatibility and is
 equivalent to the default behaviour.
 
-`--max-files` limits relevant candidate files rather than every filesystem
-entry. When a broad search exceeds the limit, deployment/configuration,
-notebook, prompt, agent, RAG and model-related candidates are retained ahead of
-generic text. `--max-file-kb` bounds ordinary text reads, while
-`--max-notebook-kb` has a larger 4096 KiB default so useful notebooks are not
-discarded merely because they contain notebook metadata. Runtime
-collection is passive: AI-related environment variables plus readable `/proc`
-command lines on Linux, or matching process names through the Windows process
-API. AI-PEAS does not contact discovered services or execute external tools.
+`--max-files` limits retained relevant candidates while discovery still
+considers every supplied root. Oversized text and logs are bounded using
+head/tail sampling rather than discarded. Runtime collection is passive:
+readable process context and listeners are correlated without contacting the
+service. SQLite RAG inspection opens databases read-only. AI-PEAS does not call
+discovered endpoints, execute external tools, dump process memory or mutate
+target files.
 
 #### 5. enum4linux-ng
 

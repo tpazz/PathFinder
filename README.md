@@ -96,7 +96,8 @@ their JSON report. Reports preserve sensitive evidence by default.
 
 ### AI-PEAS
 
-Collect AI/RAG/model-host configuration and runtime evidence:
+Collect AI/RAG/model-host configuration, local listeners, workload identities,
+RAG stores, MCP tools, ingestion paths, guardrails and artifact consumers:
 
 ```bash
 python3 tools/ai-peas.py . -o ai-peas-loot.json

@@ -2358,6 +2358,98 @@
         }
     },
     {
+        "name": "AI Loot - Local Service and Workload Identity Pivot",
+        "priority": 94,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "ai_post_exploitation", "name_match": { "type": "exact", "value": "ai_local_listener_found" } },
+            { "id": 2, "entity_type": "ai_post_exploitation", "name_match": { "type": "exact", "value": "ai_cloud_identity_found" } }
+        ],
+        "suggestion": {
+            "description": "A live local AI service and readable cloud/Kubernetes identity were correlated on {trigger.1.host}.",
+            "rationale": "Local-only AI control-plane services often trust the workload identity or mounted credentials of their process. Listener ownership plus kubeconfig, service-account JWT, cloud role, or credential-file context identifies the exact low-noise pivot to validate.",
+            "commands": [
+                "Review listeners and owning processes: {trigger.1.attributes.samples}",
+                "Review workload identity evidence and expiry/audience details: {trigger.2.attributes.samples}",
+                "Confirm the endpoint, identity scope, and intended authorization with read-only metadata or inventory requests first."
+            ],
+            "references": ["https://owasp.org/www-project-top-10-for-large-language-model-applications/"]
+        }
+    },
+    {
+        "name": "AI Loot - Local RAG Plaintext and Ingestion Path",
+        "priority": 93,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "ai_post_exploitation", "name_match": { "type": "exact", "value": "local_rag_store_found" } },
+            { "id": 2, "entity_type": "ai_post_exploitation", "name_match": { "type": "exact", "value": "ai_pipeline_consumer_found" } }
+        ],
+        "suggestion": {
+            "description": "A local RAG store and its likely ingestion/consumer path were found on {trigger.1.host}.",
+            "rationale": "Plaintext chunks, metadata, collection names, and writable ingestion sources are faster and more reliable than embedding inversion. A consuming loader or scheduled ingestion path turns isolated data into a concrete retrieval-control boundary.",
+            "commands": [
+                "Review bounded read-only store metadata and plaintext samples: {trigger.1.attributes.samples}",
+                "Trace the ingestion and consumer references: {trigger.2.attributes.samples}",
+                "Identify source directories, collection names, refresh triggers, service identity, and write permissions before any authorized validation."
+            ],
+            "references": ["https://owasp.org/www-project-top-10-for-large-language-model-applications/"]
+        }
+    },
+    {
+        "name": "AI Loot - Kubernetes or Cloud Workload Identity",
+        "priority": 91,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "ai_post_exploitation", "name_match": { "type": "exact", "value": "ai_cloud_identity_found" } }
+        ],
+        "suggestion": {
+            "description": "Cloud or Kubernetes workload identity evidence was found on {trigger.1.host}: {trigger.1.attributes.identity_kinds}.",
+            "rationale": "Kubeconfigs, mounted service-account tokens, web-identity files, role ARNs, and cloud credential paths provide the identity context needed to prioritize cluster and cloud enumeration without broad noisy probing.",
+            "commands": [
+                "Review identity samples, JWT claims, servers, namespaces, audiences, and expiry: {trigger.1.attributes.samples}",
+                "Determine whether the identity belongs to the current process, a pod, a human kubeconfig, or a cloud workload.",
+                "Validate only read-only identity and permission endpoints before accessing application data."
+            ],
+            "references": ["https://kubernetes.io/docs/reference/access-authn-authz/service-accounts-admin/"]
+        }
+    },
+    {
+        "name": "AI Loot - Writable Guardrail or Policy Rules",
+        "priority": 84,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "ai_post_exploitation", "name_match": { "type": "exact", "value": "ai_guardrail_rule_found" } }
+        ],
+        "suggestion": {
+            "description": "AI guardrail or detection-rule configuration was found on {trigger.1.host}; writable count: {trigger.1.attributes.writable_count}.",
+            "rationale": "Guardrail definitions expose exact blocked phrases, transformations, approval markers, and fail-open assumptions. Writable rule files are control-plane inputs, but impact depends on identifying the application and reload path that consumes them.",
+            "commands": [
+                "Review guardrail samples and exact rule semantics: {trigger.1.attributes.samples}",
+                "Identify the consuming process, reload behavior, input/output stage, and whether enforcement is code-backed or prompt-only.",
+                "Use the rules to design non-destructive boundary tests; do not alter them without explicit authorization."
+            ],
+            "references": ["https://owasp.org/www-project-top-10-for-large-language-model-applications/"]
+        }
+    },
+    {
+        "name": "AI Loot - Developer Repository and Branch Context",
+        "priority": 82,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "ai_post_exploitation", "name_match": { "type": "exact", "value": "ai_developer_context_found" } }
+        ],
+        "suggestion": {
+            "description": "Developer/VCS context was found on {trigger.1.host}; current branches: {trigger.1.attributes.current_branches}.",
+            "rationale": "Repository remotes and local branch references identify development configurations, alternate deployment branches, helper modules, and supply-chain consumers that may not exist in the checked-out production tree.",
+            "commands": [
+                "Review repository roots, remotes and local branch names: {trigger.1.attributes.samples}",
+                "Prioritize configuration, deployment, MCP/tool and credential differences between production and development branches.",
+                "Use normal read-only Git inspection and preserve repository state."
+            ],
+            "references": ["https://git-scm.com/docs/gitrepository-layout"]
+        }
+    },
+    {
         "name": "Mini-PEAS - Sudo Allowed Command Review",
         "priority": 82,
         "host_scope": "same_host",

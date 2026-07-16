@@ -1,9 +1,11 @@
 import json
 import importlib.util
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 
 from main.attack_path_synthesizer import AttackPathSynthesizer
@@ -21,13 +23,16 @@ load_text = _AI_PEAS.load_text
 
 
 class AiLootCollectorTests(unittest.TestCase):
-    def test_load_text_rejects_directories_and_oversized_files(self):
+    def test_load_text_rejects_directories_and_samples_oversized_files(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             candidate = root / "config.json"
-            candidate.write_bytes(b"x" * 11)
             self.assertIsNone(load_text(root, 10))
-            self.assertIsNone(load_text(candidate, 10))
+            candidate.write_bytes(b"HEAD" + b"x" * 100 + b"TAIL")
+            sampled = load_text(candidate, 20)
+            self.assertIn("HEAD", sampled)
+            self.assertIn("TAIL", sampled)
+            self.assertIn("omitted middle", sampled)
             candidate.write_bytes(b"x" * 10)
             self.assertEqual(load_text(candidate, 10), "x" * 10)
 
@@ -266,6 +271,141 @@ class AiLootCollectorTests(unittest.TestCase):
             self.assertTrue(limited)
             self.assertGreater(candidates, len(selected))
             self.assertIn("system_prompt.md", {path.name for path in selected})
+
+    def test_secret_mount_kube_files_and_systemd_units_are_candidates(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            service_account = root / "var" / "run" / "secrets" / "kubernetes.io" / "serviceaccount"
+            service_account.mkdir(parents=True)
+            token = service_account / "token"
+            namespace = service_account / "namespace"
+            unit = root / "rag-worker.service"
+            token.write_text("eyJhbGciOiJub25lIn0.eyJzdWIiOiJzeXN0ZW06c2VydmljZWFjY291bnQ6bWw6cmFnIn0.", encoding="utf-8")
+            namespace.write_text("ml", encoding="utf-8")
+            unit.write_text("[Service]\nExecStart=/opt/rag/worker.py\n", encoding="utf-8")
+
+            selected, _, _ = _AI_PEAS.walk_paths([str(root)], 20)
+            selected_paths = {path.resolve() for path in selected}
+            self.assertIn(token.resolve(), selected_paths)
+            self.assertIn(namespace.resolve(), selected_paths)
+            self.assertIn(unit.resolve(), selected_paths)
+
+    def test_collector_inspects_local_rag_sqlite_and_mcp_source(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            app = root / "rag-app"
+            app.mkdir()
+            database = app / "chroma.sqlite3"
+            connection = sqlite3.connect(database)
+            connection.execute("CREATE TABLE embeddings (document TEXT, metadata TEXT)")
+            connection.execute(
+                "INSERT INTO embeddings VALUES (?, ?)",
+                ("internal deployment runbook", '{"source":"runbook.md"}'),
+            )
+            connection.commit()
+            connection.close()
+            (app / "server.py").write_text(
+                "from fastmcp import FastMCP\n"
+                "mcp = FastMCP('ops')\n"
+                "@mcp.tool()\n"
+                "def read_runbook(path: str):\n"
+                "    '''Read an approved filesystem runbook.'''\n"
+                "    return open(path).read()\n",
+                encoding="utf-8",
+            )
+            out = root / "loot.json"
+
+            subprocess.run(
+                [sys.executable, str(COLLECTOR), str(app), "--quiet", "-o", str(out)],
+                check=True,
+            )
+            findings = json.loads(out.read_text(encoding="utf-8"))["findings"]
+            self.assertTrue(findings["rag_stores"])
+            self.assertIn("embeddings", findings["rag_stores"][0]["tables"])
+            self.assertIn("internal deployment runbook", json.dumps(findings["rag_stores"]))
+            source_tool = next(item for item in findings["mcp_tools"]
+                               if item.get("name") == "read_runbook")
+            self.assertEqual(source_tool["context"], "python-source")
+            self.assertIn("filesystem", source_tool["risk_categories"])
+
+    def test_collector_records_git_branches_packages_and_non_sql_rag_stores(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            app = root / "ai-app"
+            (app / ".git" / "refs" / "heads").mkdir(parents=True)
+            (app / ".git" / "HEAD").write_text("ref: refs/heads/dev\n", encoding="utf-8")
+            (app / ".git" / "refs" / "heads" / "dev").write_text("a" * 40, encoding="ascii")
+            (app / ".git" / "config").write_text(
+                "[remote \"origin\"]\n"
+                "    url = https://gitlab.example/ai/app.git\n",
+                encoding="utf-8",
+            )
+            (app / "rag.index.faiss").write_bytes(b"FAISS")
+            package = app / "agent_tools.whl"
+            with zipfile.ZipFile(package, "w") as archive:
+                archive.writestr("agent_tools/plugin.py", "def tool(): pass")
+                archive.writestr("agent_tools-1.0.dist-info/entry_points.txt", "[console_scripts]")
+            out = root / "loot.json"
+
+            subprocess.run(
+                [sys.executable, str(COLLECTOR), str(app), "--quiet", "-o", str(out)],
+                check=True,
+            )
+            findings = json.loads(out.read_text(encoding="utf-8"))["findings"]
+            self.assertEqual(findings["developer_context"][0]["current_branch"], "dev")
+            self.assertIn("dev", findings["developer_context"][0]["branches"])
+            self.assertTrue(findings["rag_stores"])
+            package_record = next(item for item in findings["model_artifacts"]
+                                  if item["path"].endswith("agent_tools.whl"))
+            self.assertIn("agent_tools/plugin.py", package_record["interesting_members"])
+
+    def test_parser_surfaces_new_exam_context_categories(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = Path(d) / "loot.json"
+            out.write_text(json.dumps({
+                "type": "ai_post_exploitation_loot",
+                "schema_version": "1.2",
+                "host": "exam-host",
+                "findings": {
+                    "listeners": [{
+                        "path": "listener:127.0.0.1:6333", "address": "127.0.0.1",
+                        "port": 6333, "process_name": "qdrant",
+                    }],
+                    "cloud_identities": [{
+                        "path": "/var/run/secrets/kubernetes.io/serviceaccount/token",
+                        "kind": "kubernetes-service-account",
+                    }],
+                    "rag_stores": [{
+                        "path": "/opt/rag/chroma.sqlite3", "kind": "sqlite-rag-store",
+                        "tables": ["embeddings"], "writable": True,
+                    }],
+                    "pipeline_consumers": [{
+                        "path": "/opt/rag/ingest.py", "signal": "DirectoryLoader",
+                        "writable": True,
+                    }],
+                    "guardrail_rules": [{
+                        "path": "/opt/rag/config.yml", "writable": True,
+                    }],
+                    "developer_context": [{
+                        "path": "/opt/rag", "kind": "git-repository",
+                        "current_branch": "dev",
+                        "remotes": ["https://gitlab.example/rag.git"],
+                    }],
+                },
+            }), encoding="utf-8")
+
+            findings = parse_ai_loot_json(str(out))
+            names = {finding["name"] for finding in findings}
+            self.assertIn("ai_local_listener_found", names)
+            self.assertIn("ai_cloud_identity_found", names)
+            self.assertIn("local_rag_store_found", names)
+            self.assertIn("ai_pipeline_consumer_found", names)
+            self.assertIn("ai_guardrail_rule_found", names)
+            self.assertIn("ai_developer_context_found", names)
+            paths = AttackPathSynthesizer(rules_file_path=RULES_FILE).generate_attack_paths(findings)
+            path_names = {path["name"] for path in paths}
+            self.assertIn("AI Loot - Local Service and Workload Identity Pivot", path_names)
+            self.assertIn("AI Loot - Local RAG Plaintext and Ingestion Path", path_names)
 
     def test_parser_exposes_config_runtime_and_correlated_chain_findings(self):
         with tempfile.TemporaryDirectory() as d:
