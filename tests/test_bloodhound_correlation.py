@@ -85,6 +85,21 @@ class BoundedCorrelationTests(unittest.TestCase):
         correlated = correlate_bloodhound_ownership(findings)
         self.assertFalse(any(item["source_tool"] == "bloodhound-correlation" for item in correlated))
 
+    def test_netbios_and_dns_domain_spellings_match_without_cross_domain_fallback(self):
+        compatible = correlate_bloodhound_ownership([
+            _credential("svc_web", "CORP"),
+            _acl("svc_web@CORP.LOCAL", "target@CORP.LOCAL"),
+        ])
+        self.assertTrue(any(item["name"] == "bloodhound_owned_acl_edge"
+                            for item in compatible))
+
+        incompatible = correlate_bloodhound_ownership([
+            _credential("svc_web", "CORP.LOCAL"),
+            _acl("svc_web@PARTNER.LOCAL", "target@PARTNER.LOCAL"),
+        ])
+        self.assertFalse(any(item["source_tool"] == "bloodhound-correlation"
+                             for item in incompatible))
+
     def test_zero_hop_dcsync_and_gmsa_are_loud(self):
         dcsync = _finding(
             "sharphound", "privilege_escalation", "dcsync_rights_found",
@@ -182,7 +197,7 @@ class CorrelationRuleTests(unittest.TestCase):
         names = {path["name"] for path in synth.generate_attack_paths(findings)}
         self.assertIn("OWNED DIRECT EDGE - ACL Abuse Now", names)
         self.assertIn("OWNED ONE-HOP - Take Over High-Value Principal", names)
-        self.assertNotIn("ACL Abuse Right - ForceChangePassword / WriteDacl / WriteOwner", names)
+        self.assertNotIn("ACL Abuse Right - Direct Object Control", names)
 
     def test_owned_dcsync_is_priority_100_and_suppresses_generic_path(self):
         synth = AttackPathSynthesizer(DEFAULT_RULES_FILE)
@@ -194,6 +209,18 @@ class CorrelationRuleTests(unittest.TestCase):
         self.assertEqual(paths[0]["name"], "OWNED ZERO-HOP - DCSync Now")
         self.assertEqual(paths[0]["priority"], 100)
         self.assertNotIn("DCSync Rights - Dump All Domain Hashes", {path["name"] for path in paths})
+
+    def test_owned_laps_read_is_a_zero_hop_priority_100_path(self):
+        finding = _finding(
+            "sharphound", "privilege_escalation", "laps_password_read_right_found",
+            attacker="svc_laps@CORP.LOCAL", target="WS01.CORP.LOCAL",
+            right="ReadLAPSPassword", target_high_value_contexts=[],
+        )
+        paths = AttackPathSynthesizer(DEFAULT_RULES_FILE).generate_attack_paths([
+            _credential("svc_laps"), finding,
+        ])
+        self.assertEqual(paths[0]["name"], "OWNED ZERO-HOP - Read LAPS Password Now")
+        self.assertEqual(paths[0]["priority"], 100)
 
 
 class SharpHoundGraphMetadataTests(unittest.TestCase):
@@ -212,7 +239,11 @@ class SharpHoundGraphMetadataTests(unittest.TestCase):
                 {
                     "ObjectIdentifier": helpdesk_sid, "Name": "HELPDESK_ADMIN@CORP.LOCAL",
                     "IsAdmin": True,
-                    "Aces": [{"PrincipalSID": svc_sid, "RightName": "ForceChangePassword"}],
+                    "Aces": [
+                        {"PrincipalSID": svc_sid, "RightName": "ForceChangePassword"},
+                        {"PrincipalSID": svc_sid, "RightName": "AddKeyCredentialLink"},
+                        {"PrincipalSID": svc_sid, "RightName": "WriteSPN"},
+                    ],
                 },
                 {
                     "ObjectIdentifier": gmsa_sid, "Name": "SQL_GMSA$@CORP.LOCAL",
@@ -221,22 +252,42 @@ class SharpHoundGraphMetadataTests(unittest.TestCase):
             ]
             groups = [{
                 "ObjectIdentifier": f"{domain_sid}-512", "Name": "DOMAIN ADMINS@CORP.LOCAL",
-                "Members": [{"ObjectIdentifier": helpdesk_sid, "ObjectType": "User"}], "Aces": [],
+                "Members": [{"ObjectIdentifier": helpdesk_sid, "ObjectType": "User"}],
+                "Aces": [{"PrincipalSID": svc_sid, "RightName": "AddSelf"}],
             }]
             computers = [{
-                "ObjectIdentifier": computer_sid, "Name": "FILE01.CORP.LOCAL", "Aces": [],
+                "ObjectIdentifier": computer_sid, "Name": "FILE01.CORP.LOCAL",
+                "Aces": [
+                    {"PrincipalSID": svc_sid, "RightName": "ReadLAPSPassword"},
+                    {"PrincipalSID": svc_sid, "RightName": "AddSelf"},
+                ],
                 "LocalAdmins": {"Results": [{"ObjectIdentifier": helpdesk_sid, "ObjectType": "User"}]},
                 "AllowedToAct": {"Results": [{"ObjectIdentifier": svc_sid, "ObjectType": "User"}]},
             }]
-            domains = [{"ObjectIdentifier": domain_sid, "Name": "CORP.LOCAL", "Aces": []}]
+            domains = [{
+                "ObjectIdentifier": domain_sid, "Name": "CORP.LOCAL", "Aces": [],
+                "Trusts": [{
+                    "TargetDomainSid": "S-1-5-21-9-8-7",
+                    "TargetDomainName": "CHILD.CORP.LOCAL",
+                    "TrustDirection": 3,
+                    "TrustType": "ParentChild",
+                    "IsTransitive": True,
+                    "SidFilteringEnabled": False,
+                }],
+            }]
             templates = [{
                 "ObjectIdentifier": template_sid, "Name": "ESC1-Template",
                 "Properties": {"Vulnerabilities": {"ESC1": True}},
                 "Aces": [{"PrincipalSID": svc_sid, "RightName": "Enroll"}],
             }]
+            gpos = [{
+                "ObjectIdentifier": "{AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE}",
+                "Properties": {"name": "Workstation Baseline@CORP.LOCAL"},
+                "Aces": [{"PrincipalSID": svc_sid, "RightName": "WriteDacl"}],
+            }]
             for name, data in (
                 ("users", users), ("groups", groups), ("computers", computers),
-                ("domains", domains), ("certtemplates", templates),
+                ("domains", domains), ("certtemplates", templates), ("gpos", gpos),
             ):
                 (root / f"20260715_{name}.json").write_text(
                     json.dumps({"data": data}), encoding="utf-8",
@@ -253,15 +304,67 @@ class SharpHoundGraphMetadataTests(unittest.TestCase):
             self.assertTrue(any("DOMAIN ADMINS" in value for value in contexts))
             self.assertTrue(any("local administrator" in value for value in contexts))
             self.assertIn("gmsa_password_read_right_found", {item["name"] for item in findings})
+            laps = next(item for item in findings if item["name"] == "laps_password_read_right_found")
+            self.assertEqual(laps["attributes"]["target"], "FILE01.CORP.LOCAL")
             self.assertIn("delegation_abuse_edge", {item["name"] for item in findings})
             adcs = next(item for item in findings if item["name"] == "adcs_enrollment_right_found")
             self.assertTrue(adcs["attributes"]["template_vulnerable"])
+            rights = {
+                item["attributes"].get("right")
+                for item in findings if item["name"] == "acl_abuse_right_on_object"
+            }
+            self.assertTrue({"AddKeyCredentialLink", "WriteSPN", "AddSelf", "WriteDacl"}
+                            .issubset(rights))
+            self.assertEqual(
+                sum(1 for item in findings
+                    if item["attributes"].get("right") == "AddSelf"),
+                1,
+            )
+            gpo_edge = next(
+                item for item in findings
+                if item["attributes"].get("target") == "Workstation Baseline@CORP.LOCAL"
+            )
+            self.assertEqual(gpo_edge["attributes"]["target_type"], "GPO")
+            trust = next(item for item in findings if item["entity_type"] == "active_directory_trust")
+            self.assertEqual(trust["attributes"]["direction"], "Bidirectional")
+            self.assertTrue(trust["attributes"]["inventory_only"])
+            self.assertFalse(trust["attributes"]["allow_cross_domain_traversal"])
 
             correlated = correlate_bloodhound_ownership([_credential("svc_web"), *findings])
             names = {item["name"] for item in correlated}
             self.assertIn("bloodhound_owned_zero_hop_gmsa_read", names)
+            self.assertIn("bloodhound_owned_zero_hop_laps_read", names)
             self.assertIn("bloodhound_owned_zero_hop_adcs", names)
             self.assertIn("bloodhound_owned_delegation_edge", names)
+            direct_rights = {
+                item["attributes"].get("right")
+                for item in correlated if item["name"] == "bloodhound_owned_acl_edge"
+            }
+            self.assertTrue({"AddKeyCredentialLink", "WriteSPN", "AddSelf", "WriteDacl"}
+                            .issubset(direct_rights))
+
+    def test_trust_inventory_never_creates_owned_or_cross_domain_edges(self):
+        trust = _finding(
+            "sharphound", "active_directory_trust", "CORP.LOCAL -> PARTNER.LOCAL",
+            source_domain="CORP.LOCAL", target_domain="PARTNER.LOCAL",
+            direction="Bidirectional", trust_type="External", inventory_only=True,
+            allow_cross_domain_traversal=False,
+        )
+        findings = [
+            _credential("svc_web"),
+            trust,
+            _acl("svc_web@PARTNER.LOCAL", "administrator@PARTNER.LOCAL", "GenericAll"),
+        ]
+        correlated = correlate_bloodhound_ownership(findings)
+        derived = [item for item in correlated if item["source_tool"] == "bloodhound-correlation"]
+        self.assertEqual(derived, [])
+
+        paths = AttackPathSynthesizer(DEFAULT_RULES_FILE).generate_attack_paths(correlated)
+        trust_paths = [path for path in paths if path["name"] == "AD Trust Boundary - Manual Scope Review"]
+        self.assertEqual(len(trust_paths), 1)
+        rendered = json.dumps(trust_paths).lower()
+        self.assertIn("does not traverse", rendered)
+        self.assertNotIn("partner.local' as owned", rendered)
 
 
 class CertipyEnrollmentTests(unittest.TestCase):

@@ -51,6 +51,49 @@ class ScanAutodetectTests(unittest.TestCase):
 
         self.assertIs(inherited, record)
 
+    def test_recursive_ffuf_body_inherits_recursive_json_provenance(self):
+        record = {"tool": "ffuf-recursive", "command": "ffuf -recursion"}
+        provenance = {"10.0.0.5/ffuf_recursive_80.json": record}
+        inherited = _inherited_ffuf_provenance(
+            "10.0.0.5/ffuf_recursive_pages_http_80/a1b2c3", provenance,
+        )
+        self.assertIs(inherited, record)
+
+    def test_sniff_detects_json_response_inside_ffuf_capture(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pages = Path(directory) / "ffuf_recursive_pages_http_80"
+            pages.mkdir()
+            response = pages / "hash"
+            response.write_text(
+                "GET /config HTTP/1.1\r\n\r\n"
+                "---- ↑ Request ---- Response ↓ ----\n\n"
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n"
+                '{"username":"svc_web","password":"secret"}',
+                encoding="utf-8",
+            )
+            self.assertEqual(_sniff_file_type(str(response)), "webpage_html")
+
+    def test_sniff_skips_binary_ffuf_capture(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pages = Path(directory) / "ffuf_pages_http_80"
+            pages.mkdir()
+            response = pages / "hash"
+            response.write_text(
+                "GET /image HTTP/1.1\r\n\r\n"
+                "---- ↑ Request ---- Response ↓ ----\n\n"
+                "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\n\r\nPNGDATA",
+                encoding="utf-8",
+            )
+            self.assertIsNone(_sniff_file_type(str(response)))
+
+    def test_sniff_detects_dns_output(self):
+        with tempfile.NamedTemporaryFile(mode="w", prefix="dns_corp_", suffix=".txt",
+                                         delete=False, encoding="utf-8") as tmp:
+            tmp.write("corp.htb. 3600 IN NS dc01.corp.htb.\n")
+            path = tmp.name
+        self.addCleanup(lambda: Path(path).unlink(missing_ok=True))
+        self.assertEqual(_sniff_file_type(path), "dns_txt")
+
     def test_sniff_detects_sqlmap_with_ansi(self):
         content = (
             "\x1b[36m[INFO]\x1b[0m testing 'http://10.10.10.10/item.php?id=1'\n"

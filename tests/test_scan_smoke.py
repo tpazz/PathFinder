@@ -225,7 +225,7 @@ class ScanSmokeTests(unittest.TestCase):
         self.assertIn("OWNED DIRECT EDGE - ACL Abuse Now", result.stdout)
         self.assertIn("OWNED ONE-HOP - Take Over High-Value Principal", result.stdout)
         self.assertIn("You own 'SVC_WEB@CORP.LOCAL'", result.stdout)
-        self.assertNotIn("ACL Abuse Right - ForceChangePassword / WriteDacl / WriteOwner", result.stdout)
+        self.assertNotIn("ACL Abuse Right - Direct Object Control", result.stdout)
 
     def test_scan_cli_multihost_per_host_directories(self):
         """Per-host subdirectories: every file is ingested and stamped with the

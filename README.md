@@ -32,6 +32,7 @@ loot/
     nmap.xml
     webpage_http_80.html
     ffuf_80.json
+    dns_corp.htb_axfr.txt
     nikto_80.json
   10.10.10.20/
     nmap.xml
@@ -42,17 +43,23 @@ loot/
 
 `scan` auto-detects common network, web, Active Directory, credential,
 privilege-escalation, AI, and one-shot-enum loot. This includes SharpHound
-directories/ZIPs and pypykatz/lsassy JSON.
+directories/ZIPs, pypykatz/lsassy JSON, dig output, and textual ffuf response
+captures, plus raw or one-shot-enum OpenAPI inventories.
 
 PathFinder:
 
 - normalizes findings while retaining source files, evidence, and producer commands;
 - groups repeated leads into actionable attack paths;
 - correlates credentials, services, shares, web content, AD data, and AI surfaces;
+- extracts bounded response evidence and classifies high-signal web parameters
+  for traversal/LFI, SSRF, command injection, XXE, SQLi, IDOR, and SSTI triage;
+- routes confirmed passwords to read-only MySQL, PostgreSQL, and MSSQL capability
+  inventory, and gives unmatched services a generic protocol-triage fallback;
 - routes passwords and valid NT hashes to authentication actions while keeping
   NetNTLMv2, AS-REP, TGS, DCC2, and DPAPI material crack-first;
-- limits BloodHound reasoning to owned-principal zero-hop wins and one direct
-  high-value target hint—no transitive graph traversal;
+- loads direct GPO/ACL and trust inventory, while limiting BloodHound reasoning
+  to owned-principal zero-hop wins and one direct high-value target hint—no
+  transitive or cross-domain graph traversal;
 - maps versions to optional Searchsploit/GitHub enrichment; and
 - saves/reloads JSON findings and generates offline HTML reports.
 
@@ -127,6 +134,10 @@ python3 -m main.pathfinder --mini-peas-json mini-peas-loot.json \
 
 Place either report beneath `loot/<IP>/` for normal `scan` auto-detection. Use
 `--quiet` for JSON-only collection and `--help` for search-budget controls.
+Mini-PEAS interface, route, and listener checks are also promoted into
+`network_interface`, `reachable_subnet`, and `internal_service` findings tied to
+the originating foothold. PathFinder suggests only manual, scope-checked
+one-hop forwarding; it does not create tunnels or launch pivot scans.
 
 ### Frozen Linux collectors
 

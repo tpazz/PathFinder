@@ -386,6 +386,138 @@ class ManualPrivilegeEscalationLootTests(unittest.TestCase):
         self.assertIn("Mini-PEAS - Readable Windows Registry Hives", names)
         self.assertIn("Mini-PEAS - Writable Windows Machine PATH", names)
 
+    def test_linux_network_checks_promote_bounded_one_hop_topology(self):
+        payload = self._payload()
+        payload["checks"].extend([
+            {
+                "label": "interfaces",
+                "command": "ip address",
+                "stdout": (
+                    "1: lo: <LOOPBACK,UP> mtu 65536\n"
+                    "    inet 127.0.0.1/8 scope host lo\n"
+                    "2: eth0: <BROADCAST,MULTICAST,UP> mtu 1500\n"
+                    "    inet 10.10.10.20/24 brd 10.10.10.255 scope global eth0\n"
+                    "3: tun0: <POINTOPOINT,UP> mtu 1500\n"
+                    "    inet 172.16.5.10/24 scope global tun0\n"
+                ),
+            },
+            {
+                "label": "routes",
+                "command": "ip route",
+                "stdout": (
+                    "default via 10.10.10.1 dev eth0\n"
+                    "10.10.10.0/24 dev eth0 proto kernel scope link src 10.10.10.20\n"
+                    "10.20.0.0/16 via 172.16.5.1 dev tun0\n"
+                    "172.16.5.0/24 dev tun0 proto kernel scope link src 172.16.5.10\n"
+                    "blackhole 192.0.2.0/24\n"
+                    "198.51.100.0/24 dev eth9 linkdown\n"
+                ),
+            },
+            {
+                "label": "listening sockets",
+                "command": "ss -anp",
+                "stdout": (
+                    'tcp LISTEN 0 128 127.0.0.1:5432 0.0.0.0:* users:(("postgres",pid=812,fd=5))\n'
+                    'tcp LISTEN 0 128 10.10.10.20:8080 0.0.0.0:* users:(("java",pid=913,fd=6))\n'
+                    "tcp LISTEN 0 128 0.0.0.0:22 0.0.0.0:*\n"
+                    "tcp LISTEN 0 128 8.8.8.8:443 0.0.0.0:*\n"
+                ),
+            },
+        ])
+
+        findings = parse_manual_privesc_json(self._write(payload), target_host="10.10.10.20")
+        validate_findings(findings)
+        interfaces = [f for f in findings if f["entity_type"] == "network_interface"]
+        subnets = [f for f in findings if f["entity_type"] == "reachable_subnet"]
+        services = [f for f in findings if f["entity_type"] == "internal_service"]
+
+        self.assertEqual({f["attributes"]["address"] for f in interfaces},
+                         {"10.10.10.20", "172.16.5.10"})
+        self.assertEqual({f["name"] for f in subnets},
+                         {"10.10.10.0/24", "10.20.0.0/16", "172.16.5.0/24"})
+        self.assertEqual({f["port"] for f in services}, {5432, 8080})
+        postgres = next(f for f in services if f["port"] == 5432)
+        self.assertEqual(postgres["attributes"]["exposure"], "loopback_only")
+        self.assertEqual(postgres["attributes"]["process"], "postgres")
+        for finding in interfaces + subnets + services:
+            self.assertEqual(finding["host"], "10.10.10.20")
+            self.assertEqual(finding["attributes"]["pivot_origin"], "10.10.10.20")
+            self.assertTrue(finding["attributes"]["one_hop_only"])
+
+    def test_windows_network_checks_promote_routes_and_internal_listeners(self):
+        payload = self._payload()
+        payload["platform"] = "windows"
+        payload["checks"].extend([
+            {
+                "label": "network configuration",
+                "command": "ipconfig.exe /all",
+                "stdout": (
+                    "Ethernet adapter Ethernet 2:\n"
+                    "   IPv4 Address. . . . . . . . . . . : 192.168.56.20(Preferred)\n"
+                    "   Subnet Mask . . . . . . . . . . . : 255.255.255.0\n"
+                ),
+            },
+            {
+                "label": "routes",
+                "command": "route.exe print",
+                "stdout": (
+                    "          0.0.0.0          0.0.0.0     192.168.56.1    192.168.56.20     25\n"
+                    "       10.30.0.0      255.255.0.0     192.168.56.1    192.168.56.20      5\n"
+                    "     192.168.56.0    255.255.255.0         On-link    192.168.56.20    281\n"
+                    "  1    331 ::1/128 On-link\n"
+                    " 13    281 fd00:1234::/64 fe80::1\n"
+                ),
+            },
+            {
+                "label": "listening sockets",
+                "command": "netstat.exe -ano",
+                "stdout": (
+                    "  TCP    127.0.0.1:5985       0.0.0.0:0       LISTENING       444\n"
+                    "  TCP    192.168.56.20:8443   0.0.0.0:0       LISTENING       555\n"
+                    "  TCP    0.0.0.0:445          0.0.0.0:0       LISTENING       4\n"
+                ),
+            },
+        ])
+
+        findings = parse_manual_privesc_json(self._write(payload))
+        validate_findings(findings)
+        self.assertIn("Ethernet adapter Ethernet 2:192.168.56.20",
+                      {f["name"] for f in findings if f["entity_type"] == "network_interface"})
+        self.assertEqual(
+            {f["name"] for f in findings if f["entity_type"] == "reachable_subnet"},
+            {"10.30.0.0/16", "192.168.56.0/24", "fd00:1234::/64"},
+        )
+        self.assertEqual(
+            {f["port"] for f in findings if f["entity_type"] == "internal_service"},
+            {5985, 8443},
+        )
+
+    def test_topology_rules_are_manual_and_one_hop_only(self):
+        payload = self._payload()
+        payload["checks"].extend([
+            {"label": "interfaces", "command": "ip address", "stdout": ""},
+            {"label": "routes", "command": "ip route",
+             "stdout": "10.40.0.0/16 via 10.10.10.1 dev eth0\n"},
+            {"label": "listening sockets", "command": "ss -anp",
+             "stdout": "tcp LISTEN 0 128 127.0.0.1:9000 0.0.0.0:*\n"},
+        ])
+        findings = parse_manual_privesc_json(self._write(payload))
+        paths = AttackPathSynthesizer(rules_file_path=RULES_FILE).generate_attack_paths(findings)
+        topology_paths = [path for path in paths if path["name"].startswith("Mini-PEAS - ")
+                          and path["name"] in {
+                              "Mini-PEAS - One-Hop Reachable Subnet",
+                              "Mini-PEAS - Internal-Only Service",
+                          }]
+        self.assertEqual({path["name"] for path in topology_paths}, {
+            "Mini-PEAS - One-Hop Reachable Subnet",
+            "Mini-PEAS - Internal-Only Service",
+        })
+        rendered = json.dumps(topology_paths).lower()
+        self.assertIn("manually outside pathfinder", rendered)
+        self.assertIn("one-hop", rendered)
+        self.assertNotIn("chisel", rendered)
+        self.assertNotIn("ligolo", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

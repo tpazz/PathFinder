@@ -3,6 +3,28 @@ import re
 import json
 
 
+_FQDN = re.compile(
+    r"(?i)(?<![a-z0-9_.-])(?P<host>[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.[a-z][a-z0-9-]{1,62})(?![a-z0-9_.-])"
+)
+
+
+def _hostname_finding(host_ip, hostname, source, port=None):
+    return {
+        "host": host_ip,
+        "port": port,
+        "source_tool": "nmap",
+        "entity_type": "hostname_candidate",
+        "name": hostname.lower().rstrip("."),
+        "version": None,
+        "attributes": {
+            "hostname": hostname.lower().rstrip("."),
+            "confidence": "high",
+            "requires_manual_validation": True,
+            "extraction_source": source,
+        },
+    }
+
+
 def normalize_product_name(product_name):
     """
     Attempts to standardize common software product names for consistent rule matching.
@@ -70,6 +92,17 @@ def parse_nmap_xml(xml_file_path):
 
         if not host_ip:
             continue
+
+        seen_hostnames = set()
+        for hostname_node in host_node.findall('./hostnames/hostname'):
+            if len(seen_hostnames) >= 100:
+                break
+            hostname = str(hostname_node.get('name') or '').lower().rstrip('.')
+            if hostname and hostname not in seen_hostnames:
+                seen_hostnames.add(hostname)
+                findings.append(_hostname_finding(
+                    host_ip, hostname, f"nmap hostname ({hostname_node.get('type') or 'unknown'})",
+                ))
 
         # Extract OS Detection details from -A or -O scans.
         os_node = host_node.find('os')
@@ -192,6 +225,16 @@ def parse_nmap_xml(xml_file_path):
                         "version": None,
                         "attributes": attributes,
                     })
+                    for hostname_match in _FQDN.finditer(str(output_text)):
+                        if len(seen_hostnames) >= 100:
+                            break
+                        hostname = hostname_match.group("host").lower().rstrip(".")
+                        if hostname in seen_hostnames:
+                            continue
+                        seen_hostnames.add(hostname)
+                        findings.append(_hostname_finding(
+                            host_ip, hostname, f"nmap NSE script {script_id}", port_id,
+                        ))
     commandline = root.get("args")
     if commandline:
         for finding in findings:

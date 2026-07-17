@@ -1,13 +1,18 @@
 """Extract manual-triage identity and request candidates from collected HTML."""
 
 import html
+import ipaddress
 import json
 import os
 import re
 from html.parser import HTMLParser
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
-from parsers.initial_foothold.web_url_helpers import parameterized_url_finding
+from parsers.initial_foothold.web_url_helpers import (
+    classify_parameter_names,
+    parameter_triage_findings,
+    parameterized_url_finding,
+)
 
 
 _TOKEN = r"[A-Za-z][A-Za-z0-9._-]{2,63}"
@@ -24,6 +29,9 @@ _LABELLED = re.compile(
 _PORT_FROM_NAME = re.compile(r"(?:webpage|page|body)[_-](?:https?[_-])?(\d{1,5})", re.IGNORECASE)
 MAX_HTML_ANALYSIS_CHARS = 1_000_000
 MAX_QUERY_LITERAL_CHARS = 2_048
+MAX_EVIDENCE_FINDINGS = 200
+MAX_PARAMETER_FINDINGS = 500
+MAX_SECRET_CHARS = 4_096
 _QUERY_LITERAL = re.compile(
     rf"(?P<value>(?<![A-Za-z0-9_.~/-])(?:https?://[^\"'`\s<>]{{1,{MAX_QUERY_LITERAL_CHARS}}}|"
     rf"(?:/|\./|\.\./)?[A-Za-z0-9_.~/-]{{1,{MAX_QUERY_LITERAL_CHARS}}})"
@@ -49,6 +57,47 @@ _COMMON_FALSE_POSITIVES = {
     "user", "username", "website", "welcome",
 }
 
+_LABELLED_VALUE = re.compile(
+    r'''(?ix)(?<![A-Za-z0-9_])
+    ["'`]?\s*(?P<label>username|user(?:name)?|login|account|password|passwd|pwd)
+    \s*["'`]?\s*[:=]\s*["'`]?
+    (?P<value>[^\s"'`<>{},;&]{1,256})'''
+)
+_MATERIAL_VALUE = re.compile(
+    r'''(?ix)(?<![A-Za-z0-9_])
+    ["'`]?\s*(?P<label>api[_-]?key|access[_-]?token|auth[_-]?token|bearer[_-]?token|client[_-]?secret|secret[_-]?key)
+    \s*["'`]?\s*[:=]\s*["'`]?
+    (?P<value>[^\s"'`<>{},;&]{6,4096})'''
+)
+_HASH_VALUE = re.compile(
+    r'''(?ix)(?<![A-Za-z0-9_])
+    ["'`]?\s*(?P<label>password[_-]?hash|passwd[_-]?hash|ntlm|bcrypt|hash)
+    \s*["'`]?\s*[:=]\s*["'`]?
+    (?P<value>\$2[aby]\$[^\s"'`<>{},;&]{20,200}|\$[156]\$[^\s"'`<>{},;&]{20,300}|[A-Fa-f0-9]{32,128})'''
+)
+_CREDENTIAL_URI = re.compile(
+    r'''(?ix)\b(?P<scheme>mysql|mariadb|postgres(?:ql)?|mssql|sqlserver|mongodb|redis|ftp|sftp|ssh)
+    ://(?P<user>[^\s:/@]{1,64}):(?P<password>[^\s/@]{1,256})@
+    (?P<host>\[[0-9A-Fa-f:]+\]|[A-Za-z0-9._-]+)(?::(?P<port>\d{1,5}))?'''
+)
+_SERVICE_URL = re.compile(
+    r'''(?ix)\b(?P<url>(?:https?|mysql|mariadb|postgres(?:ql)?|mssql|sqlserver|mongodb|redis|ftp|sftp|ssh)
+    ://(?:[^\s/@:]+(?::[^\s/@]+)?@)?(?:\[[0-9A-Fa-f:]+\]|[A-Za-z0-9._-]+)(?::\d{1,5})?(?:/[^\s"'`<>]*)?)'''
+)
+_FQDN = re.compile(
+    r"(?<![A-Za-z0-9_.-])(?P<host>[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+)(?![A-Za-z0-9_.-])"
+)
+_PRIVATE_IP = re.compile(
+    r"(?<![0-9A-Fa-f:.])(?:127(?:\.\d{1,3}){3}|10(?:\.\d{1,3}){3}|192\.168(?:\.\d{1,3}){2}|172\.(?:1[6-9]|2\d|3[01])(?:\.\d{1,3}){2})(?![0-9A-Fa-f:.])"
+)
+_JWT = re.compile(r"(?<![A-Za-z0-9_-])eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?![A-Za-z0-9_-])")
+_PRIVATE_KEY = re.compile(
+    r"-----BEGIN (?:OPENSSH |RSA |EC |DSA )?PRIVATE KEY-----[\s\S]{1,8192}?-----END (?:OPENSSH |RSA |EC |DSA )?PRIVATE KEY-----"
+)
+_LABELLED_PATH = re.compile(
+    r'''(?ix)(?P<label>document[_ -]?root|web[_ -]?root|base[_ -]?path|upload[_ -]?(?:dir|path)|log[_ -]?path|config[_ -]?path)
+    \s*["'`]?\s*[:=]\s*["'`]?(?P<value>(?:/[A-Za-z0-9._~+@%/-]{2,512}|[A-Za-z]:\\[^\r\n"'`<>]{2,512}))'''
+)
 
 class _VisibleTextParser(HTMLParser):
     def __init__(self):
@@ -222,11 +271,16 @@ def _ffuf_result_source(path, target_host):
     """Resolve an ffuf -od response hash back to the URL recorded in its JSON."""
     response_path = os.path.abspath(path)
     parent_name = os.path.basename(os.path.dirname(response_path))
-    match = re.fullmatch(r"ffuf_pages_(?:https?)_(\d{1,5})", parent_name, re.IGNORECASE)
+    match = re.fullmatch(
+        r"ffuf_(?:(recursive)_)?pages_(?:https?)_(\d{1,5})",
+        parent_name,
+        re.IGNORECASE,
+    )
     if not match:
         return None
+    prefix = "ffuf_recursive" if match.group(1) else "ffuf"
     results_path = os.path.join(os.path.dirname(os.path.dirname(response_path)),
-                                f"ffuf_{match.group(1)}.json")
+                                f"{prefix}_{match.group(2)}.json")
     try:
         with open(results_path, "r", encoding="utf-8-sig") as handle:
             payload = json.load(handle)
@@ -286,6 +340,231 @@ def _valid_candidate(value):
     if value.lower().endswith((".css", ".js", ".html", ".php", ".png", ".jpg", ".svg")):
         return False
     return bool(re.fullmatch(_TOKEN, value))
+
+
+def _valid_secret(value):
+    value = str(value or "").strip()
+    if not value or len(value) > MAX_SECRET_CHARS:
+        return False
+    return value.lower().strip("<>[]{}()") not in {
+        "null", "none", "true", "false", "password", "passwd", "username",
+        "user", "example", "redacted", "changeme_here", "your_password",
+    } and not set(value) <= {"*", "x", "X", "-"}
+
+
+def _material_finding(host, port, url, material_type, value, evidence, confidence="high"):
+    return {
+        "host": host,
+        "port": port,
+        "source_tool": "web_response_evidence_extractor",
+        "entity_type": "credential_material",
+        "name": material_type,
+        "version": None,
+        "attributes": {
+            "material_type": material_type,
+            "secret": value[:MAX_SECRET_CHARS],
+            "candidate_only": True,
+            "requires_manual_validation": True,
+            "confidence": confidence,
+            "evidence": evidence,
+            "url": url,
+        },
+    }
+
+
+def _hostname_from_url(value):
+    try:
+        parsed = urlparse(value)
+        host = parsed.hostname
+        parsed_port = parsed.port
+    except ValueError:
+        return None
+    if not host:
+        return None
+    return host.lower().rstrip("."), parsed_port, parsed.scheme.lower()
+
+
+def extract_response_evidence(content, target_host, port, url):
+    """Extract bounded, provenance-rich evidence from textual web responses."""
+    text = html.unescape(str(content or "")[:MAX_HTML_ANALYSIS_CHARS])
+    findings = []
+    seen = set()
+
+    def add(finding, secret_key=None):
+        if len(findings) >= MAX_EVIDENCE_FINDINGS:
+            return
+        attributes = finding.get("attributes") or {}
+        key = (
+            finding.get("entity_type"), finding.get("name"),
+            attributes.get(secret_key) if secret_key else attributes.get("url") or attributes.get("value"),
+        )
+        if key in seen:
+            return
+        seen.add(key)
+        findings.append(finding)
+
+    labelled = []
+    for match in _LABELLED_VALUE.finditer(text):
+        value = match.group("value").strip()
+        if _valid_secret(value):
+            labelled.append((match.group("label").lower(), value, match.start(), match.end()))
+
+    usernames = [item for item in labelled if item[0] in {"username", "user", "login", "account"}]
+    password_labels = {"password", "passwd", "pwd"}
+    for label, password, start, end in labelled:
+        if label not in password_labels:
+            continue
+        nearby = [item for item in usernames if abs(item[2] - start) <= 512]
+        if nearby:
+            user_label, username, user_start, user_end = min(nearby, key=lambda item: abs(item[2] - start))
+            if _valid_candidate(username):
+                evidence = _snippet(text, min(start, user_start), max(end, user_end))
+                add({
+                    "host": target_host,
+                    "port": port,
+                    "source_tool": "web_response_evidence_extractor",
+                    "entity_type": "credential",
+                    "name": username,
+                    "version": None,
+                    "attributes": {
+                        "username": username,
+                        "password": password,
+                        "validated": False,
+                        "confidence": "high",
+                        "source_of_credential": f"web response {url}",
+                        "evidence": evidence,
+                        "url": url,
+                    },
+                }, "password")
+                continue
+        add({
+            "host": target_host,
+            "port": port,
+            "source_tool": "web_response_evidence_extractor",
+            "entity_type": "password_candidate",
+            "name": "web_response_password_candidate",
+            "version": None,
+            "attributes": {
+                "password": password,
+                "confidence": "medium",
+                "candidate_only": True,
+                "requires_manual_validation": True,
+                "source_of_credential": f"web response {url}",
+                "evidence": _snippet(text, start, end),
+                "url": url,
+            },
+        }, "password")
+
+    for match in _CREDENTIAL_URI.finditer(text):
+        username = match.group("user")
+        password = match.group("password")
+        if not _valid_candidate(username) or not _valid_secret(password):
+            continue
+        parsed_port = None
+        try:
+            raw_port = match.group("port")
+            parsed_port = int(raw_port) if raw_port and 0 < int(raw_port) <= 65535 else None
+        except (TypeError, ValueError):
+            parsed_port = None
+        add({
+            "host": match.group("host").strip("[]"),
+            "port": parsed_port,
+            "source_tool": "web_response_evidence_extractor",
+            "entity_type": "credential",
+            "name": username,
+            "version": None,
+            "attributes": {
+                "username": username,
+                "password": password,
+                "protocol": match.group("scheme").lower(),
+                "validated": False,
+                "confidence": "high",
+                "source_of_credential": f"connection string in {url}",
+                "evidence": _snippet(text, match.start(), match.end()),
+                "url": url,
+            },
+        }, "password")
+
+    for match in _MATERIAL_VALUE.finditer(text):
+        value = match.group("value")
+        if _valid_secret(value):
+            add(_material_finding(target_host, port, url, match.group("label").lower(), value,
+                                  _snippet(text, match.start(), match.end())), "secret")
+    for match in _HASH_VALUE.finditer(text):
+        value = match.group("value")
+        add(_material_finding(target_host, port, url, "password_hash", value,
+                              _snippet(text, match.start(), match.end())), "secret")
+    for match in _JWT.finditer(text):
+        add(_material_finding(target_host, port, url, "jwt", match.group(0),
+                              _snippet(text, match.start(), match.end())), "secret")
+    for match in _PRIVATE_KEY.finditer(text):
+        add(_material_finding(target_host, port, url, "private_key", match.group(0),
+                              "PEM private key block exposed in response"), "secret")
+
+    referenced_urls = {}
+    for match in _SERVICE_URL.finditer(text):
+        value = match.group("url").rstrip(".,;)")
+        details = _hostname_from_url(value)
+        if details:
+            referenced_urls.setdefault(details[0], (value, details[1], details[2]))
+    for match in _PRIVATE_IP.finditer(text):
+        referenced_urls.setdefault(match.group(0), (None, None, None))
+    for match in _FQDN.finditer(text):
+        hostname = match.group("host").lower().rstrip(".")
+        labels = hostname.split(".")
+        lab_suffix = hostname.endswith((".local", ".lan", ".internal", ".corp", ".test", ".htb"))
+        if (len(labels) >= 3 or lab_suffix) and re.search(r"[a-z]", labels[-1]) and not hostname.endswith(
+                (".css", ".js", ".png", ".jpg", ".svg")):
+            referenced_urls.setdefault(hostname, (None, None, None))
+
+    current_host = str(target_host or "").lower().strip("[]")
+    for hostname, (referenced_url, referenced_port, scheme) in referenced_urls.items():
+        if hostname == current_host:
+            continue
+        private = False
+        try:
+            address = ipaddress.ip_address(hostname)
+            private = address.is_private or address.is_loopback or address.is_link_local
+        except ValueError:
+            private = hostname == "localhost" or hostname.endswith(
+                (".local", ".lan", ".internal", ".corp", ".test", ".htb")
+            )
+        add({
+            "host": target_host,
+            "port": port,
+            "source_tool": "web_response_evidence_extractor",
+            "entity_type": "hostname_candidate",
+            "name": hostname,
+            "version": None,
+            "attributes": {
+                "hostname": hostname,
+                "referenced_url": referenced_url,
+                "referenced_port": referenced_port,
+                "scheme": scheme,
+                "private_or_lab_address": private,
+                "confidence": "high" if private else "medium",
+                "requires_manual_validation": True,
+                "source_page": url,
+            },
+        })
+
+    for match in _LABELLED_PATH.finditer(text):
+        add({
+            "host": target_host,
+            "port": port,
+            "source_tool": "web_response_evidence_extractor",
+            "entity_type": "filesystem_path_candidate",
+            "name": match.group("value"),
+            "version": None,
+            "attributes": {
+                "path": match.group("value"),
+                "label": match.group("label"),
+                "confidence": "high",
+                "evidence": _snippet(text, match.start(), match.end()),
+                "url": url,
+            },
+        })
+    return findings
 
 
 def extract_username_candidates(content):
@@ -404,6 +683,8 @@ def extract_parameter_candidates(content, target_host, port, base_url):
     seen = set()
 
     def add_get(candidate, source):
+        if len(records) >= MAX_PARAMETER_FINDINGS:
+            return
         url = _same_target_url(candidate, base_url, target_host)
         if not url or not _useful_query(url):
             return
@@ -425,6 +706,7 @@ def extract_parameter_candidates(content, target_host, port, base_url):
             "source_page": base_url,
         })
         records.append(finding)
+        records.extend(parameter_triage_findings(finding)[:MAX_PARAMETER_FINDINGS - len(records)])
 
     for reference, source in parser.references:
         add_get(reference, source)
@@ -432,6 +714,8 @@ def extract_parameter_candidates(content, target_host, port, base_url):
         add_get(match.group("value"), "HTML/JavaScript URL literal")
 
     for form in parser.forms:
+        if len(records) >= MAX_PARAMETER_FINDINGS:
+            break
         if not form["fields"]:
             continue
         action_url = _same_target_url(form["action"] or base_url, base_url, target_host)
@@ -448,7 +732,7 @@ def extract_parameter_candidates(content, target_host, port, base_url):
             continue
         seen.add(key)
         parsed = urlparse(action_url)
-        records.append({
+        finding = {
             "host": parsed.hostname or target_host,
             "port": parsed.port or port,
             "source_tool": "webpage_parameter_extractor",
@@ -466,17 +750,19 @@ def extract_parameter_candidates(content, target_host, port, base_url):
                 "extraction_source": "HTML POST form",
                 "source_page": base_url,
             },
-        })
+        }
+        records.append(finding)
+        records.extend(parameter_triage_findings(finding)[:MAX_PARAMETER_FINDINGS - len(records)])
     return records
 
 
 def parse_webpage_html(path, target_host):
     with open(path, "r", encoding="utf-8", errors="ignore") as handle:
-        content = handle.read(5_000_000)
+        content = handle.read(MAX_HTML_ANALYSIS_CHARS + 1)
     content = _response_body(content)
     content = content[:MAX_HTML_ANALYSIS_CHARS]
     port, url = _source_details(path, target_host)
-    findings = []
+    findings = extract_response_evidence(content, target_host, port, url)
     for candidate in extract_username_candidates(content):
         findings.append({
             "host": target_host,

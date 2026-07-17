@@ -14,6 +14,7 @@ from parsers.active_directory.sharphound_parser import parse_sharphound_dir
 from parsers.active_directory.certipy_parser import parse_certipy_json
 from parsers.active_directory.secretsdump_parser import parse_secretsdump
 from parsers.initial_foothold.enum4linux_parser import parse_enum4linux_json
+from parsers.initial_foothold.dns_parser import parse_dns_output
 from parsers.initial_foothold.ffuf_parser import parse_ffuf_json
 from parsers.initial_foothold.gobuster_parser import parse_gobuster_output
 from parsers.initial_foothold.llm_enum_parser import parse_llm_enum_json
@@ -22,6 +23,7 @@ from parsers.initial_foothold.nfs_parser import parse_nfs_output
 from parsers.initial_foothold.nikto_parser import parse_nikto_json
 from parsers.initial_foothold.nmap_parser import parse_nmap_xml
 from parsers.initial_foothold.nuclei_parser import parse_nuclei_jsonl
+from parsers.initial_foothold.openapi_parser import parse_openapi_json
 from parsers.initial_foothold.redis_parser import parse_redis_output
 from parsers.initial_foothold.rsync_parser import parse_rsync_output
 from parsers.initial_foothold.smbmap_parser import parse_smbmap_output
@@ -62,6 +64,8 @@ ParserSpec = namedtuple(
 PARSER_SPECS = [
     ParserSpec("nmap_xml", "--nmap-xml", "Path to Nmap XML output file.",
                False, lambda p, ctx: parse_nmap_xml(p)),
+    ParserSpec("dns_txt", "--dns-txt", "Path to dig DNS record or AXFR output.",
+               True, lambda p, ctx: parse_dns_output(p, ctx.target_host)),
     ParserSpec("gobuster_txt", "--gobuster-txt", "Path to Gobuster text output file.",
                True, lambda p, ctx: parse_gobuster_output(p, ctx.gobuster_host, ctx.gobuster_port, ctx.gobuster_mode)),
     ParserSpec("nikto_json", "--nikto-json", "Path to Nikto JSON output file.",
@@ -74,10 +78,12 @@ PARSER_SPECS = [
                False, lambda p, ctx: parse_nuclei_jsonl(p)),
     ParserSpec("wpscan_json", "--wpscan-json", "Path to wpscan JSON output file (--format json).",
                False, lambda p, ctx: parse_wpscan_json(p)),
-    ParserSpec("webpage_html", "--webpage-html", "Path to a saved webpage body for username-candidate extraction.",
+    ParserSpec("webpage_html", "--webpage-html", "Path to a saved textual web response for evidence and parameter extraction.",
                True, lambda p, ctx: parse_webpage_html(p, ctx.target_host)),
     ParserSpec("llm_enum_json", "--llm-enum-json", "Path to one-shot-enum LLM/AI enumeration JSON.",
                False, lambda p, ctx: parse_llm_enum_json(p)),
+    ParserSpec("openapi_json", "--openapi-json", "Path to one-shot-enum or raw OpenAPI/Swagger JSON.",
+               False, lambda p, ctx: parse_openapi_json(p, ctx.target_host)),
     ParserSpec("ai_loot_json", "--ai-peas-json", "Path to AI-PEAS post-exploitation loot JSON.",
                False, lambda p, ctx: parse_ai_loot_json(p, ctx.target_host),
                ("--ai-loot-json",)),

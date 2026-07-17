@@ -105,6 +105,21 @@ def _merge_owned_records(matches, graph_name):
     }
 
 
+def _domains_compatible(left, right):
+    """Match exact domains or an unambiguous NetBIOS-to-DNS domain spelling."""
+    left = str(left or "").strip().lower().rstrip(".")
+    right = str(right or "").strip().lower().rstrip(".")
+    if not left or not right:
+        return True
+    if left == right:
+        return True
+    if "." not in left:
+        return right.split(".", 1)[0] == left
+    if "." not in right:
+        return left.split(".", 1)[0] == right
+    return False
+
+
 def _match_owned(values, records, by_account):
     for value in values:
         parts = _principal_parts(value)
@@ -114,6 +129,11 @@ def _match_owned(values, records, by_account):
         if domain and (domain, account) in records:
             return _merge_owned_records([((domain, account), records[(domain, account)])], value)
         candidates = by_account.get(account, [])
+        if domain:
+            candidates = [
+                candidate for candidate in candidates
+                if _domains_compatible(domain, candidate[0][0])
+            ]
         merged = _merge_owned_records(candidates, value)
         if merged:
             return merged
@@ -209,7 +229,8 @@ def correlate_bloodhound_ownership(findings):
             finding.get("source_tool") == "sharphound"
             and name in {
                 "genericwrite_on_sensitive_group", "acl_abuse_right_on_object",
-                "gmsa_password_read_right_found", "adcs_enrollment_right_found",
+                "gmsa_password_read_right_found", "laps_password_read_right_found",
+                "adcs_enrollment_right_found",
                 "delegation_abuse_edge",
             }
         )
@@ -235,6 +256,17 @@ def correlate_bloodhound_ownership(findings):
                     description=(
                         f"You own '{principal}', which can immediately read the gMSA "
                         f"password for '{target}'."
+                    ), score=100,
+                ))
+                continue
+
+            if name == "laps_password_read_right_found" or str(right).lower() == "readlapspassword":
+                append(_derived(
+                    "bloodhound_owned_zero_hop_laps_read", finding, owned,
+                    right="ReadLAPSPassword", target=target,
+                    description=(
+                        f"You own '{principal}', which can immediately read the managed "
+                        f"local administrator password for '{target}'."
                     ), score=100,
                 ))
                 continue

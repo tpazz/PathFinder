@@ -8,20 +8,25 @@ from parsers.active_directory.certipy_parser import parse_certipy_json
 from parsers.active_directory.kerberos_parser import parse_getuserspns_output
 from parsers.active_directory.secretsdump_parser import parse_secretsdump
 from parsers.initial_foothold.ffuf_parser import parse_ffuf_json
+from parsers.initial_foothold.dns_parser import parse_dns_output
 from parsers.initial_foothold.gobuster_parser import parse_gobuster_output
 from parsers.initial_foothold.nikto_parser import parse_nikto_json
 from parsers.initial_foothold.netexec_parser import parse_netexec_output
+from parsers.initial_foothold.nmap_parser import parse_nmap_xml
 from parsers.initial_foothold.nuclei_parser import parse_nuclei_jsonl
+from parsers.initial_foothold.openapi_parser import parse_openapi_json
 from parsers.initial_foothold.smbmap_parser import parse_smbmap_output
-from parsers.initial_foothold.web_url_helpers import parameterized_url_finding
+from parsers.initial_foothold.web_url_helpers import classify_parameter_names, parameterized_url_finding
 from parsers.initial_foothold.whatweb_parser import parse_whatweb_json
 from parsers.initial_foothold.wpscan_parser import parse_wpscan_json
 from parsers.initial_foothold.webpage_identity_parser import (
     MAX_HTML_ANALYSIS_CHARS,
     _ffuf_result_source,
     extract_parameter_candidates,
+    extract_response_evidence,
     parse_webpage_html,
 )
+from main.pathfinder import _sniff_file_type
 
 
 class NewParserTests(unittest.TestCase):
@@ -56,6 +61,200 @@ class NewParserTests(unittest.TestCase):
         )
         self.assertEqual(findings, [])
 
+    def test_generic_response_extracts_credentials_material_hosts_and_paths(self):
+        body = json.dumps({
+            "username": "svc_web",
+            "password": "CorrectHorse!",
+            "api_key": "token-value-123456",
+            "database_url": "postgresql://db_user:DbPass!@db.internal:5432/app",
+            "callback": "http://admin.lab.htb:8080/hook",
+            "document_root": "/srv/www/app",
+        })
+        findings = extract_response_evidence(body, "10.0.0.5", 80, "http://10.0.0.5/config")
+        validate_findings(findings)
+        credentials = {(f["name"], f["attributes"].get("password"))
+                       for f in findings if f["entity_type"] == "credential"}
+        self.assertIn(("svc_web", "CorrectHorse!"), credentials)
+        self.assertIn(("db_user", "DbPass!"), credentials)
+        self.assertTrue(any(f["entity_type"] == "credential_material"
+                            and f["name"] == "api_key" for f in findings))
+        self.assertTrue(any(f["entity_type"] == "hostname_candidate"
+                            and f["name"] == "db.internal" for f in findings))
+        self.assertTrue(any(f["entity_type"] == "filesystem_path_candidate"
+                            and f["name"] == "/srv/www/app" for f in findings))
+
+    def test_context_aware_parameter_classification(self):
+        categories = set(classify_parameter_names([
+            "file", "callback_url", "ping_host", "xml_payload", "search_query",
+            "account_id", "template",
+        ]))
+        self.assertIn(("file", "path_traversal_lfi"), categories)
+        self.assertIn(("callback_url", "ssrf"), categories)
+        self.assertIn(("ping_host", "command_injection"), categories)
+        self.assertIn(("xml_payload", "xxe"), categories)
+        self.assertIn(("search_query", "sqli"), categories)
+        self.assertIn(("account_id", "idor"), categories)
+        self.assertIn(("template", "ssti"), categories)
+
+    def test_openapi_envelope_promotes_bounded_endpoints_and_parameter_triage(self):
+        payload = {
+            "tool": "one-shot-enum",
+            "type": "openapi_enum",
+            "host": "10.0.0.5",
+            "port": 8080,
+            "base_url": "http://10.0.0.5:8080",
+            "openapi_url": "http://10.0.0.5:8080/openapi.json",
+            "openapi_title": "Lab API",
+            "openapi_version": "3.0.3",
+            "discovery_command": "python one-shot-enum.py 10.0.0.5 --power --pathfinder",
+            "endpoints": [{
+                "method": "POST",
+                "path": "/api/files/{account_id}",
+                "operation_id": "uploadFile",
+                "security_declared": True,
+                "parameters": [
+                    {"name": "account_id", "location": "path", "required": True, "type": "string"},
+                    {"name": "file", "location": "body", "required": True, "type": "string"},
+                    {"name": "callback_url", "location": "body", "required": False, "type": "string"},
+                ],
+            }],
+        }
+        path = self._write(json.dumps(payload), ".json")
+        self.assertEqual(_sniff_file_type(path), "openapi_json")
+        findings = parse_openapi_json(path)
+        validate_findings(findings)
+        self.assertEqual(findings[0]["entity_type"], "api_surface")
+        endpoint = next(item for item in findings if item["entity_type"] == "api_endpoint")
+        self.assertEqual(endpoint["name"], "POST /api/files/{account_id}")
+        self.assertEqual(endpoint["attributes"]["parameters"],
+                         ["account_id", "file", "callback_url"])
+        candidates = {item["name"] for item in findings
+                      if item["entity_type"] == "web_parameter_candidate"}
+        self.assertIn("idor:account_id", candidates)
+        self.assertIn("path_traversal_lfi:file", candidates)
+        self.assertIn("ssrf:callback_url", candidates)
+
+    def test_raw_openapi_document_is_supported_without_calling_operations(self):
+        payload = {
+            "openapi": "3.0.0",
+            "info": {"title": "Raw API"},
+            "servers": [{"url": "https://api.corp.htb"}],
+            "paths": {
+                "/users/{id}": {
+                    "parameters": [{"name": "id", "in": "path", "required": True,
+                                    "schema": {"type": "integer"}}],
+                    "get": {"operationId": "getUser", "responses": {"200": {}}},
+                },
+            },
+        }
+        path = self._write(json.dumps(payload), ".json")
+        self.assertEqual(_sniff_file_type(path), "openapi_json")
+        findings = parse_openapi_json(path)
+        endpoint = next(item for item in findings if item["name"] == "GET /users/{id}")
+        self.assertEqual(endpoint["host"], "api.corp.htb")
+        self.assertEqual(endpoint["port"], 443)
+        self.assertTrue(any(item["name"] == "idor:id" for item in findings))
+
+    def test_raw_openapi_resolves_refs_and_operation_parameter_overrides(self):
+        payload = {
+            "openapi": "3.0.3",
+            "servers": [{"url": "https://{tenant}.corp.htb/v1",
+                         "variables": {"tenant": {"default": "api"}}}],
+            "components": {
+                "parameters": {
+                    "Filter": {"name": "filter", "in": "query", "required": False,
+                               "schema": {"type": "string"}},
+                },
+                "schemas": {
+                    "Update": {
+                        "type": "object",
+                        "required": ["id"],
+                        "properties": {
+                            "id": {"type": "integer"},
+                            "callback_url": {"type": "string"},
+                        },
+                    },
+                },
+            },
+            "paths": {
+                "/users/{id}": {
+                    "parameters": [
+                        {"name": "id", "in": "path", "required": True,
+                         "schema": {"type": "string"}},
+                        {"$ref": "#/components/parameters/Filter"},
+                    ],
+                    "patch": {
+                        "parameters": [
+                            {"name": "filter", "in": "query", "required": True,
+                             "schema": {"type": "integer"}},
+                        ],
+                        "requestBody": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {"$ref": "#/components/schemas/Update"},
+                                },
+                            },
+                        },
+                    },
+                },
+            },
+        }
+        findings = parse_openapi_json(self._write(json.dumps(payload), ".json"))
+        endpoint = next(item for item in findings if item["entity_type"] == "api_endpoint")
+        details = {(item["name"], item["location"]): item
+                   for item in endpoint["attributes"]["parameter_details"]}
+        self.assertEqual(endpoint["attributes"]["url"],
+                         "https://api.corp.htb/v1/users/{id}")
+        self.assertEqual(details[("filter", "query")]["type"], "integer")
+        self.assertTrue(details[("filter", "query")]["required"])
+        self.assertIn(("id", "path"), details)
+        self.assertIn(("id", "body"), details)
+        self.assertIn(("callback_url", "body"), details)
+
+    def test_raw_swagger_uses_scheme_host_port_and_base_path(self):
+        payload = {
+            "swagger": "2.0",
+            "info": {"title": "Legacy API"},
+            "schemes": ["https"],
+            "host": "legacy.corp.htb:8443",
+            "basePath": "/api/v2",
+            "paths": {"/users": {"get": {"responses": {"200": {}}}}},
+        }
+        findings = parse_openapi_json(self._write(json.dumps(payload), ".json"))
+        endpoint = next(item for item in findings if item["entity_type"] == "api_endpoint")
+        self.assertEqual(endpoint["host"], "legacy.corp.htb")
+        self.assertEqual(endpoint["port"], 8443)
+        self.assertEqual(endpoint["attributes"]["url"],
+                         "https://legacy.corp.htb:8443/api/v2/users")
+
+    def test_dns_parser_emits_records_and_hostname_candidates(self):
+        content = (
+            "corp.htb. 3600 IN NS dc01.corp.htb.\n"
+            "dc01.corp.htb. 300 IN A 10.10.10.10\n"
+            "_ldap._tcp.dc._msdcs.corp.htb. 300 IN SRV 0 100 389 dc01.corp.htb.\n"
+        )
+        findings = parse_dns_output(self._write(content, "_dns_corp.txt"), "10.10.10.10")
+        validate_findings(findings)
+        self.assertEqual(len([f for f in findings if f["entity_type"] == "dns_record"]), 3)
+        names = {f["name"] for f in findings if f["entity_type"] == "hostname_candidate"}
+        self.assertIn("dc01.corp.htb", names)
+        self.assertIn("corp.htb", names)
+
+    def test_nmap_hostnames_redirects_and_tls_names_feed_hostname_candidates(self):
+        xml = """<?xml version='1.0'?>
+        <nmaprun args='nmap -sC -sV 10.0.0.5'><host>
+          <address addr='10.0.0.5' addrtype='ipv4'/>
+          <hostnames><hostname name='web.corp.htb' type='PTR'/></hostnames>
+          <ports><port protocol='tcp' portid='443'><state state='open'/>
+            <service name='https'/>
+            <script id='ssl-cert' output='Subject: CN=admin.corp.htb&#10;Subject Alternative Name: DNS:api.corp.htb'/>
+          </port></ports>
+        </host></nmaprun>"""
+        findings = parse_nmap_xml(self._write(xml, ".xml"))
+        validate_findings(findings)
+        names = {f["name"] for f in findings if f["entity_type"] == "hostname_candidate"}
+        self.assertEqual(names, {"web.corp.htb", "admin.corp.htb", "api.corp.htb"})
+
     def test_ffuf(self):
         payload = {
             "commandline": "ffuf -u http://10.10.10.10/FUZZ -w wl",
@@ -76,6 +275,20 @@ class NewParserTests(unittest.TestCase):
         self.assertEqual(admin["attributes"]["discovery_command"], payload["commandline"])
         self.assertFalse(next(f for f in findings if f["name"] == "/index.html")["attributes"]["is_directory_guess"])
 
+    def test_ffuf_vhost_results_become_virtual_hosts(self):
+        payload = {
+            "commandline": "ffuf -u http://10.0.0.5/ -H 'Host: FUZZ.corp.htb' -w wl",
+            "results": [{
+                "input": {"FUZZ": "admin"}, "status": 200, "length": 321,
+                "url": "http://10.0.0.5/", "host": "10.0.0.5:80",
+            }],
+        }
+        findings = parse_ffuf_json(self._write(json.dumps(payload), ".json"))
+        validate_findings(findings)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["entity_type"], "virtual_host")
+        self.assertEqual(findings[0]["name"], "admin.corp.htb")
+
     def test_webpage_extracts_candidates_without_promoting_them_to_users(self):
         page = """
         <html><body>
@@ -91,7 +304,9 @@ class NewParserTests(unittest.TestCase):
         self.assertIn("ts_svc", names)
         self.assertIn("jane.doe", names)
         self.assertNotIn("ignored_svc", names)
-        self.assertTrue(all(finding["entity_type"] == "username_candidate" for finding in findings))
+        identity_findings = [f for f in findings if f["entity_type"] == "username_candidate"]
+        self.assertTrue(all(finding["entity_type"] == "username_candidate"
+                            for finding in identity_findings))
         candidate = next(finding for finding in findings if finding["name"] == "ts_svc")
         self.assertEqual(candidate["port"], 8080)
         self.assertEqual(candidate["attributes"]["confidence"], "high")
@@ -147,6 +362,21 @@ class NewParserTests(unittest.TestCase):
         self.assertEqual(candidate["port"], 8080)
         self.assertEqual(candidate["attributes"]["url"],
                          "http://192.168.129.14:8080/dashboard")
+
+    def test_ffuf_request_headers_are_not_treated_as_response_evidence(self):
+        capture = (
+            "GET / HTTP/1.1\r\nPassword: request-only-secret\r\n\r\n"
+            "---- ↑ Request ---- Response ↓ ----\n\n"
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n"
+            '{"status":"ok"}'
+        )
+        findings = parse_webpage_html(
+            self._write(capture, "_webpage_http_80.html"), "10.0.0.5",
+        )
+        self.assertFalse(any(
+            (f.get("attributes") or {}).get("password") == "request-only-secret"
+            for f in findings
+        ))
 
     def test_webpage_extracts_same_target_parameter_candidates(self):
         page = """

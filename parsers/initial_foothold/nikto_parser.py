@@ -1,7 +1,7 @@
 import json
 from parsers.ansi import warn
 import re
-from parsers.initial_foothold.web_url_helpers import parameterized_url_finding
+from parsers.initial_foothold.web_url_helpers import parameter_triage_findings, parameterized_url_finding
 
 
 NIKTO_CLASSIFICATION_RULES = [
@@ -145,6 +145,7 @@ def parse_nikto_json(json_file_path):
                 )
                 if param_finding:
                     findings.append(param_finding)
+                    findings.extend(parameter_triage_findings(param_finding))
 
     except FileNotFoundError:
         warn(f"[!] Error: Nikto JSON file not found at {json_file_path}")

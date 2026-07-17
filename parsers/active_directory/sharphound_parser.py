@@ -21,9 +21,11 @@ DCSYNC_RIGHTS = {
 ACL_ABUSE_RIGHTS = {
     "WriteDacl", "WriteOwner", "AddMember", "ForceChangePassword",
     "GenericAll", "GenericWrite", "ReadGMSAPassword", "Enroll", "AutoEnroll",
+    "AddKeyCredentialLink", "WriteSPN", "ReadLAPSPassword", "AddSelf",
 }
 MAX_SHARPHOUND_MEMBER_BYTES = 256 * 1024 * 1024
 MAX_DELEGATION_EDGES = 500
+MAX_TRUST_FINDINGS = 100
 _RIGHT_NAMES = {right.lower(): right for right in ACL_ABUSE_RIGHTS | DCSYNC_RIGHTS}
 
 
@@ -161,25 +163,43 @@ def _canonical_right(value):
     return _RIGHT_NAMES.get(text.lower(), text)
 
 
+def _right_applies_to_object(right, object_type):
+    """Reject schema-drift rights that are not meaningful for the target type."""
+    if right == "AddSelf":
+        return object_type == "Group"
+    if right == "ReadLAPSPassword":
+        return object_type == "Computer"
+    if right in {"AddKeyCredentialLink", "WriteSPN"}:
+        return object_type in {"User", "Computer"}
+    return True
+
+
 def _normalize_sharphound_object(obj):
     """Normalizes object keys for schema variance tolerance (BloodHound v4 and v5/CE)."""
     if not isinstance(obj, dict):
         return {}
 
     normalized = dict(obj)
+    props = _ci_get(obj, 'Properties', 'properties', default={})
+    props = props if isinstance(props, dict) else {}
     normalized.setdefault('ObjectIdentifier',
-                          _ci_get(obj, 'ObjectIdentifier', 'ObjectID', 'ObjectSid', 'objectid'))
+                          _ci_get(obj, 'ObjectIdentifier', 'ObjectID', 'ObjectSid', 'objectid',
+                                  default=_ci_get(props, 'ObjectIdentifier', 'ObjectID', 'ObjectSid')))
     normalized.setdefault('Name',
-                          _ci_get(obj, 'Name', 'name', 'DisplayName', 'samaccountname', default='UNKNOWN'))
+                          _ci_get(obj, 'Name', 'name', 'DisplayName', 'samaccountname',
+                                  default=_ci_get(props, 'Name', 'DisplayName',
+                                                  'samaccountname', default='UNKNOWN')))
     normalized.setdefault('Aces',
                           _ci_get(obj, 'Aces', 'aces', default=[]))
     normalized.setdefault('ObjectType',
                           _ci_get(obj, 'ObjectType', 'objectType', 'objecttype'))
     normalized.setdefault('Members', _ci_get(obj, 'Members', 'members', default=[]))
     normalized.setdefault('LocalAdmins', _ci_get(obj, 'LocalAdmins', 'localadmins', default=[]))
+    normalized.setdefault('Trusts', _ci_get(
+        obj, 'Trusts', 'trusts', default=_ci_get(props, 'Trusts', 'trusts', default=[]),
+    ))
     # BloodHound v5/CE uses 'Properties' sub-object for many fields.
-    props = _ci_get(obj, 'Properties', 'properties', default={})
-    if isinstance(props, dict):
+    if props:
         for key in ['DontReqPreAuth', 'HasSPN', 'IsAdmin', 'UnconstrainedDelegation',
                      'AllowedToAct', 'AllowedToDelegate', 'Members', 'LocalAdmins']:
             if key not in normalized:
@@ -207,6 +227,7 @@ def parse_sharphound_dir(dir_path):
         _normalize_sharphound_object(t)
         for t in _load_sharphound_json(dir_path, 'certtemplates')
     ]
+    gpos = [_normalize_sharphound_object(g) for g in _load_sharphound_json(dir_path, 'gpos')]
     sessions = _load_sharphound_json(dir_path, 'sessions')
 
     if not users and not domains:
@@ -216,7 +237,7 @@ def parse_sharphound_dir(dir_path):
     sid_to_type_map = {}
     typed_collections = (
         (users, "User"), (groups, "Group"), (computers, "Computer"),
-        (domains, "Domain"), (certtemplates, "CertTemplate"),
+        (domains, "Domain"), (certtemplates, "CertTemplate"), (gpos, "GPO"),
     )
     for collection, object_type in typed_collections:
         for obj in collection:
@@ -292,6 +313,55 @@ def parse_sharphound_dir(dir_path):
                 "attributes": {"user": user_fqdn, "description": f"User {user_fqdn} has AdminCount=true, indicating high privileges."}
             })
 
+    trust_count = 0
+    direction_names = {0: "Disabled", 1: "Inbound", 2: "Outbound", 3: "Bidirectional"}
+    for domain in domains:
+        source_domain = str(domain.get('Name') or domain_name)
+        for trust in _relationship_entries(domain.get('Trusts')):
+            if trust_count >= MAX_TRUST_FINDINGS:
+                break
+            target_domain = _ci_get(
+                trust, 'TargetDomainName', 'TargetDomain', 'Name', 'DomainName',
+            )
+            if not target_domain:
+                continue
+            target_domain = str(target_domain)
+            raw_direction = _ci_get(trust, 'TrustDirection', 'Direction')
+            try:
+                direction = direction_names.get(int(raw_direction), str(raw_direction))
+            except (TypeError, ValueError):
+                direction = str(raw_direction or "Unknown")
+            trust_type = str(_ci_get(trust, 'TrustType', 'Type', default="Unknown"))
+            findings.append({
+                "host": source_domain,
+                "port": None,
+                "source_tool": "sharphound",
+                "entity_type": "active_directory_trust",
+                "name": f"{source_domain} -> {target_domain}",
+                "version": None,
+                "attributes": {
+                    "source_domain": source_domain,
+                    "source_domain_sid": domain.get('ObjectIdentifier'),
+                    "target_domain": target_domain,
+                    "target_domain_sid": _ci_get(
+                        trust, 'TargetDomainSid', 'TargetDomainSID', 'TargetSid',
+                    ),
+                    "direction": direction,
+                    "trust_type": trust_type,
+                    "is_transitive": _ci_get(trust, 'IsTransitive', 'Transitive'),
+                    "sid_filtering_enabled": _ci_get(
+                        trust, 'SidFilteringEnabled', 'SIDFilteringEnabled', 'SidFiltering',
+                    ),
+                    "inventory_only": True,
+                    "allow_cross_domain_traversal": False,
+                    "description": (
+                        f"{source_domain} has a {direction} {trust_type} trust with "
+                        f"{target_domain}."
+                    ),
+                },
+            })
+            trust_count += 1
+
     # Domain collection objects frequently omit ObjectType.  The collection itself
     # is authoritative, so do not gate DCSync extraction on that optional field.
     for obj in domains:
@@ -319,7 +389,7 @@ def parse_sharphound_dir(dir_path):
                     }
                 })
 
-    all_objects = users + groups + computers + domains + certtemplates
+    all_objects = users + groups + computers + domains + certtemplates + gpos
     for obj in all_objects:
         obj_sid = obj.get('ObjectIdentifier')
         obj_name = obj.get('Name', 'UNKNOWN_OBJECT')
@@ -363,11 +433,14 @@ def parse_sharphound_dir(dir_path):
                         "description": f"'{principal_name}' has {right} rights on the high-value group '{obj_name}'.",
                     }
                 })
-            elif right in ACL_ABUSE_RIGHTS:
+            elif right in ACL_ABUSE_RIGHTS and _right_applies_to_object(
+                    right, obj.get("CollectionType")):
                 principal_name = sid_to_name_map.get(principal_sid, principal_sid)
                 finding_name = "acl_abuse_right_on_object"
                 if right == "ReadGMSAPassword":
                     finding_name = "gmsa_password_read_right_found"
+                elif right == "ReadLAPSPassword" and obj.get("CollectionType") == "Computer":
+                    finding_name = "laps_password_read_right_found"
                 elif right in {"Enroll", "AutoEnroll"} and obj.get("CollectionType") == "CertTemplate":
                     finding_name = "adcs_enrollment_right_found"
                 findings.append({

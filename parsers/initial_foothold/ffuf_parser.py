@@ -1,7 +1,14 @@
 import json
+import re
 from parsers.ansi import warn
 from urllib.parse import urlparse
-from parsers.initial_foothold.web_url_helpers import parameterized_url_finding
+from parsers.initial_foothold.web_url_helpers import parameter_triage_findings, parameterized_url_finding
+
+
+_VHOST_HEADER = re.compile(
+    r"(?:^|\s)(?:-H|--header)(?:=|\s+)[\"']?Host:\s*FUZZ\.(?P<suffix>[A-Za-z0-9.-]+)",
+    re.IGNORECASE,
+)
 
 
 def _result_path(result):
@@ -18,8 +25,11 @@ def _result_host_port(result):
     """Extract (host, port) from an ffuf result, preferring the full URL."""
     url = result.get("url") or ""
     parsed = urlparse(url)
-    host = parsed.hostname
-    port = parsed.port
+    try:
+        host = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        host, port = None, None
     if not port:
         port = 443 if parsed.scheme == "https" else 80
     # Fall back to ffuf's "host" field (e.g. "10.10.10.10:80") if the URL lacked a host.
@@ -34,6 +44,23 @@ def _result_host_port(result):
         elif raw_host:
             host = raw_host
     return host, port
+
+
+def _vhost_suffix(commandline):
+    match = _VHOST_HEADER.search(commandline or "")
+    return match.group("suffix").lower().rstrip(".") if match else None
+
+
+def _vhost_input(result):
+    values = result.get("input")
+    if not isinstance(values, dict):
+        return None
+    value = values.get("FUZZ")
+    if isinstance(value, str):
+        value = value.strip().strip(".")
+        if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9.-]{0,252}", value):
+            return value.lower()
+    return None
 
 
 def parse_ffuf_json(json_file_path):
@@ -59,6 +86,7 @@ def parse_ffuf_json(json_file_path):
         return findings
 
     commandline = data.get("commandline") if isinstance(data.get("commandline"), str) else None
+    vhost_suffix = _vhost_suffix(commandline)
     seen = set()
     for result in data.get("results", []):
         if not isinstance(result, dict):
@@ -77,6 +105,31 @@ def parse_ffuf_json(json_file_path):
         redirect_url = result.get("redirectlocation") or None
         size = result.get("length")
         size = size if isinstance(size, int) else None
+
+        fuzz_value = _vhost_input(result)
+        if vhost_suffix and fuzz_value:
+            vhost_name = fuzz_value if fuzz_value.endswith("." + vhost_suffix) else f"{fuzz_value}.{vhost_suffix}"
+            identifier = (host, port, "virtual_host", vhost_name, status_code)
+            if identifier not in seen:
+                seen.add(identifier)
+                attributes = {
+                    "status_code": status_code,
+                    "size_bytes": size,
+                    "fuzz_input": result.get("input"),
+                    "discovery_command": commandline,
+                }
+                if redirect_url:
+                    attributes["redirect_url"] = redirect_url
+                findings.append({
+                    "host": host,
+                    "port": port,
+                    "source_tool": "ffuf",
+                    "entity_type": "virtual_host",
+                    "name": vhost_name,
+                    "version": None,
+                    "attributes": attributes,
+                })
+            continue
 
         # Same directory heuristic as the Gobuster parser.
         is_directory_guess = path.endswith("/")
@@ -114,5 +167,6 @@ def parse_ffuf_json(json_file_path):
             if commandline:
                 param_finding.setdefault("attributes", {})["discovery_command"] = commandline
             findings.append(param_finding)
+            findings.extend(parameter_triage_findings(param_finding))
 
     return findings

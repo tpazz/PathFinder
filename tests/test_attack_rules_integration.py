@@ -321,7 +321,7 @@ class TestADLabScenario(unittest.TestCase):
         self.assertIn("DCSync Rights - Dump All Domain Hashes", names)
         self.assertIn("Unconstrained Delegation - Coerce DC Authentication", names)
         self.assertIn("GenericWrite/GenericAll on High-Value Group", names)
-        self.assertIn("ACL Abuse Right - ForceChangePassword / WriteDacl / WriteOwner", names)
+        self.assertIn("ACL Abuse Right - Direct Object Control", names)
         self.assertIn("Resource-Based Constrained Delegation (RBCD) Abuse", names)
         self.assertIn("Privileged User Session on Computer - Credential Theft Target", names)
         self.assertIn("High-Privilege Admin User Identified", names)
@@ -499,6 +499,96 @@ class TestSNMPIntelligenceLab(unittest.TestCase):
         paths = self.synth.generate_attack_paths(self.findings)
         spray = [p for p in paths if "Spray" in p["name"]]
         self.assertGreaterEqual(len(spray), 1)
+
+
+class TestDatabaseCredentialRouting(unittest.TestCase):
+    def setUp(self):
+        self.synth = _synth()
+        self.password = _f(
+            "loot-source", None, "secretsdump", "credential", "db_user",
+            username="db_user", password="LabPassword!", domain="CORP.LOCAL",
+        )
+
+    def test_confirmed_password_routes_to_each_database_with_read_only_inventory(self):
+        services = [
+            _f("10.0.0.10", 3306, "nmap", "service", "mysql"),
+            _f("10.0.0.11", 5432, "nmap", "service", "postgresql"),
+            _f("10.0.0.12", 1433, "nmap", "service", "ms-sql-s"),
+        ]
+        paths = self.synth.generate_attack_paths([self.password, *services])
+        names = set(_path_names(paths))
+        expected = {
+            "Confirmed MySQL Credential - Read-Only Capability Inventory",
+            "Confirmed PostgreSQL Credential - Read-Only Capability Inventory",
+            "Confirmed MSSQL Credential - Read-Only Capability Inventory",
+        }
+        self.assertTrue(expected.issubset(names))
+        rendered = json.dumps([path for path in paths if path["name"] in expected]).lower()
+        self.assertIn("show grants", rendered)
+        self.assertIn("pg_roles", rendered)
+        self.assertIn("sp_linkedservers", rendered)
+        self.assertIn("do not enable xp_cmdshell", rendered)
+        self.assertNotIn("sp_configure 'xp_cmdshell', 1", rendered)
+
+    def test_nt_hash_never_routes_to_database_password_login(self):
+        nt_hash = _f(
+            "loot-source", None, "pypykatz", "credential", "db_user",
+            username="db_user", nt_hash="31d6cfe0d16ae931b73c59d7e0c089c0",
+            hash="31d6cfe0d16ae931b73c59d7e0c089c0", hash_type="NTLM",
+        )
+        paths = self.synth.generate_attack_paths([
+            nt_hash, _f("10.0.0.10", 3306, "nmap", "service", "mysql"),
+        ])
+        self.assertFalse(any("Read-Only Capability Inventory" in path["name"] for path in paths))
+
+
+class TestGenericApiAndServiceFallback(unittest.TestCase):
+    def test_openapi_surface_gets_one_bounded_manual_inventory_path(self):
+        finding = _f(
+            "10.0.0.5", 8080, "one-shot-enum-openapi", "api_surface", "Lab API", "3.0.3",
+            description="Lab API exposes 12 documented API operation(s).",
+            schema_url="http://10.0.0.5:8080/openapi.json",
+        )
+        paths = _synth().generate_attack_paths([finding])
+        api = [path for path in paths if path["name"] == "OpenAPI Surface - Bounded Manual Triage"]
+        self.assertEqual(len(api), 1)
+        rendered = json.dumps(api).lower()
+        self.assertIn("do not automatically call post", rendered)
+
+    def test_fallback_only_flags_services_with_no_existing_workflow(self):
+        synth = _synth()
+        uncommon = _f("10.0.0.5", 8009, "nmap", "service", "ajp13")
+        ftp = _f("10.0.0.5", 21, "nmap", "service", "ftp")
+        paths = synth.generate_attack_paths([uncommon, ftp])
+        fallback = [path for path in paths
+                    if path["name"] == "Unhandled Open Service - Manual Protocol Triage"]
+        self.assertEqual(len(fallback), 1)
+        self.assertEqual(fallback[0]["host"], "10.0.0.5")
+        self.assertIn("ajp13", fallback[0]["suggestion"]["description"])
+
+    def test_fallback_remains_when_only_part_of_a_prerequisite_rule_matches(self):
+        synth = _synth()
+        services = [
+            _f("10.0.0.5", 22, "nmap", "service", "ssh"),
+            _f("10.0.0.5", 5432, "nmap", "service", "postgresql"),
+            _f("10.0.0.5", 3306, "nmap", "service", "mysql"),
+        ]
+        paths = synth.generate_attack_paths(services)
+        fallback = [path for path in paths
+                    if path["name"] == "Unhandled Open Service - Manual Protocol Triage"]
+        self.assertEqual(len(fallback), 3)
+
+    def test_fallback_is_suppressed_when_full_credential_workflow_matches(self):
+        synth = _synth()
+        findings = [
+            _f("GLOBAL", None, "manual", "credential", "alice",
+               username="alice", password="secret"),
+            _f("10.0.0.5", 22, "nmap", "service", "ssh"),
+        ]
+        paths = synth.generate_attack_paths(findings)
+        names = _path_names(paths)
+        self.assertIn("Credential Reuse on Login Service", names)
+        self.assertNotIn("Unhandled Open Service - Manual Protocol Triage", names)
 
 
 if __name__ == "__main__":

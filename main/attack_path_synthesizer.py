@@ -215,6 +215,12 @@ class AttackPathSynthesizer:
                                       or not 1 <= max_paths <= 5000):
             return False, "Rule 'max_paths_per_host' must be an integer from 1 to 5000"
 
+        fallback_only = rule.get("fallback_only", False)
+        if not isinstance(fallback_only, bool):
+            return False, "Rule 'fallback_only' must be a boolean"
+        if fallback_only and len(triggers) != 1:
+            return False, "A fallback_only rule must have exactly one trigger"
+
         suppress_conditions = rule.get("suppress_if_host_has", [])
         if not isinstance(suppress_conditions, list):
             return False, "Rule 'suppress_if_host_has' must be a list"
@@ -432,6 +438,47 @@ class AttackPathSynthesizer:
                 return True
         return False
 
+    def _finding_has_nonfallback_workflow(self, target_finding, findings, fallback_rule):
+        """Return whether a complete dedicated workflow can use target_finding."""
+        for other_rule in self.rules:
+            if (other_rule is fallback_rule or other_rule.get("fallback_only")
+                    or "suggestion" not in other_rule):
+                continue
+
+            triggers = other_rule.get("triggers") or []
+            matching_positions = [
+                index for index, trigger in enumerate(triggers)
+                if self._check_finding_against_trigger(target_finding, trigger)
+            ]
+            if not matching_positions:
+                continue
+
+            for fixed_index in matching_positions:
+                candidate_lists = []
+                for index, trigger in enumerate(triggers):
+                    if index == fixed_index:
+                        candidates = [target_finding]
+                    else:
+                        candidates = [
+                            finding for finding in findings
+                            if self._check_finding_against_trigger(finding, trigger)
+                        ]
+                    if not candidates:
+                        candidate_lists = []
+                        break
+                    candidate_lists.append(candidates)
+                if not candidate_lists:
+                    continue
+
+                for examined, combination in enumerate(itertools.product(*candidate_lists), start=1):
+                    if examined > MAX_COMBINATIONS_PER_RULE:
+                        break
+                    if not self._combination_satisfies_host_scope(
+                            other_rule, triggers, combination):
+                        continue
+                    return True
+        return False
+
     def generate_attack_paths(self, prioritized_findings):
         """
         Analyzes findings against rules to generate suggested attack paths,
@@ -440,6 +487,15 @@ class AttackPathSynthesizer:
         prioritized_findings = correlate_bloodhound_ownership(prioritized_findings)
         suggested_paths = []
         seen = set()  # dedup by (rule name, host, resolved description + commands)
+        nonfallback_workflow_cache = {}
+
+        def has_nonfallback_workflow(finding, fallback_rule):
+            key = (id(finding), id(fallback_rule))
+            if key not in nonfallback_workflow_cache:
+                nonfallback_workflow_cache[key] = self._finding_has_nonfallback_workflow(
+                    finding, prioritized_findings, fallback_rule,
+                )
+            return nonfallback_workflow_cache[key]
 
         for rule in self.rules:
             triggers = rule['triggers']
@@ -448,6 +504,11 @@ class AttackPathSynthesizer:
             # For each trigger in the rule, find all matching findings from the main list.
             for trigger in triggers:
                 candidates = [f for f in prioritized_findings if self._check_finding_against_trigger(f, trigger)]
+                if rule.get("fallback_only"):
+                    candidates = [
+                        finding for finding in candidates
+                        if not has_nonfallback_workflow(finding, rule)
+                    ]
                 # If any trigger has zero matching candidates, this rule cannot be satisfied.
                 if not candidates:
                     candidate_lists = []

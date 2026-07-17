@@ -49,13 +49,15 @@ python3 -m main.pathfinder scan loot/ --show-all
 | Detected Content | Parser Used |
 |---|---|
 | XML with `<nmaprun` | Nmap |
-| Saved HTML (`.html`/`.htm` or HTML document signature) | Webpage username-candidate extractor |
+| Saved HTML or textual ffuf response capture | Web response evidence/parameter extractor |
+| `dns_*.txt` with dig answer records | DNS record/hostname extractor |
 | JSON with `"vulnerabilities"` + `"msg"` | Nikto |
 | JSON with `"plugins"` | WhatWeb |
 | JSON with `"results"` + `"commandline"` | ffuf |
 | JSONL with `"template-id"` / `"matched-at"` | nuclei |
 | JSON with `"target_url"` + `"plugins"` | wpscan |
 | JSON with `"ai_surfaces"` / `"type":"llm_enum"` | one-shot-enum AI/LLM enumeration |
+| JSON with `"type":"openapi_enum"` or raw OpenAPI/Swagger `paths` | OpenAPI endpoint/parameter extractor |
 | JSON with `"type":"ai_post_exploitation_loot"` | PathFinder AI loot collector |
 | JSON with `"users"` + `"groups"` | enum4linux-ng |
 | JSON with `"Certificate Templates"` | certipy |
@@ -165,18 +167,39 @@ nikto -h http://TARGET_HOST:PORT -o nikto.json -Format json
 python3 -m main.pathfinder --nikto-json nikto.json
 ```
 
-#### 3b. Saved webpage identity extraction
+#### 3b. Saved web response evidence
 
-PathFinder scans saved HTML text and comments for labelled identities, email
-local-parts, and service-account patterns such as `svc_backup` or `ts_svc`.
-Every match remains a `username_candidate` with its evidence and source URL; it
-is shown under `Password Spray Discovered Users Against Services` for manual
-triage but never becomes a confirmed `user` automatically.
+PathFinder scans a bounded response body for labelled identities, paired
+credentials, password-only candidates, tokens/keys/hashes, internal hosts,
+server paths, forms, and parameterized URLs. Username-only matches remain
+manual-review candidates and are never promoted automatically.
 
 ```bash
 curl -ksSL http://TARGET_HOST:PORT/ -o webpage_http_PORT.html
 python3 -m main.pathfinder --webpage-html webpage_http_PORT.html --target-host TARGET_HOST
 ```
+
+Textual bodies saved by `ffuf -od` are auto-detected with their originating URL.
+
+#### 3c. DNS records
+
+```bash
+dig @TARGET_DNS ZONE AXFR +noall +answer > dns_ZONE_axfr.txt
+python3 -m main.pathfinder --dns-txt dns_ZONE_axfr.txt --target-host TARGET_DNS
+```
+
+#### 3d. OpenAPI/Swagger
+
+`one-shot-enum --power --pathfinder` writes a bounded generic OpenAPI inventory
+when an HTTP service exposes a schema. Raw JSON schemas are also accepted:
+
+```bash
+python3 -m main.pathfinder --openapi-json openapi.json --target-host TARGET_HOST
+```
+
+PathFinder records at most 500 operations and 50 parameters per operation,
+feeds parameter names into the normal LFI/SSRF/SQLi/IDOR/etc. triage rules, and
+does not automatically invoke documented state-changing operations.
 
 #### 4. WhatWeb
 
@@ -453,6 +476,13 @@ SAM/SYSTEM/SECURITY hives and writable machine PATH entries. Checks are
 read-only and progressively print completion status, duration and promoted
 findings. Their only intended write is the report.
 
+During ingestion, collected interfaces, explicit routes, and specifically
+bound TCP listeners become `network_interface`, `reachable_subnet`, and
+`internal_service` findings. Each records the compromised host as its
+`pivot_origin`. The corresponding paths stop at one hop and provide manual,
+scope-checked tunnel or port-forward guidance only; PathFinder does not create
+a tunnel or start a scan.
+
 `--max-files` counts relevant credential/configuration candidates rather than
 every encountered filesystem entry, prioritises high-value named files and
 excludes the selected report itself. Explicit discovery operations such as
@@ -558,14 +588,18 @@ python3 -m main.pathfinder --sharphound-dir 20260715120000_BloodHound.zip
 
 > Supports BloodHound v4 (flat JSON keys) and v5/CE (`Properties` sub-object)
 > formats. Exact and timestamp-prefixed filenames are accepted; the newest
-> collection of each type is selected.
+> collection of each type is selected. Users, groups, computers, domains,
+> sessions, certificate templates, and GPO collections are loaded when present.
 
 When the same run also contains recovered credentials, PathFinder correlates
 their identities against direct SharpHound ACL/delegation edges. Owned DCSync,
-gMSA password-read, and vulnerable AD CS enrollment rights are promoted as
-zero-hop actions. Direct targets receive at most one high-value hint; PathFinder
-does not perform transitive graph traversal. Ambiguous short account names fail
-closed, and correlation is capped at 5,000 owned principals / 250 results.
+gMSA/LAPS password-read, and vulnerable AD CS enrollment rights are promoted as
+zero-hop actions. Direct `AddKeyCredentialLink`, `WriteSPN`,
+`ReadLAPSPassword`, and group-targeted `AddSelf` rights are retained. Domain
+trusts are inventory-only scope boundaries and are never traversed. Direct
+targets receive at most one high-value hint; PathFinder does not perform
+transitive graph traversal. Ambiguous short account names fail closed, and
+correlation is capped at 5,000 owned principals / 250 results.
 
 #### 11. ldapdomaindump
 
@@ -616,6 +650,13 @@ python3 -m main.pathfinder --getuserspns-hashes kerberoast.txt
 
 Recovered cleartext passwords route to password reuse. Valid NT hashes route to
 pass-the-hash only on compatible Windows services.
+
+Confirmed passwords also correlate with MySQL/MariaDB, PostgreSQL, and MSSQL.
+Those paths begin with authentication plus read-only identity, role/grant,
+database, impersonation/linked-server, and feature-state inventory. They never
+enable `xp_cmdshell`, OLE, CLR, extensions/UDFs, file-write primitives, or other
+database escape capabilities automatically. NT hashes and crack-first captures
+do not enter database password-login routes.
 
 ```bash
 impacket-secretsdump DOMAIN.COM/USER:PASS@TARGET_IP | tee secretsdump.txt

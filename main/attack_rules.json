@@ -33,6 +33,22 @@
         }
     },
     {
+        "name": "OWNED ZERO-HOP - Read LAPS Password Now",
+        "priority": 100,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "privilege_escalation", "name_match": { "type": "exact", "value": "bloodhound_owned_zero_hop_laps_read" } }
+        ],
+        "suggestion": {
+            "description": "ZERO-HOP: {trigger.1.attributes.description}",
+            "rationale": "The owned principal directly holds ReadLAPSPassword over the target computer, so its managed local administrator credential can be retrieved without traversing another graph edge.",
+            "commands": [
+                "nxc ldap <DC_IP> -u '{trigger.1.attributes.owned_principal}' -p '<PASSWORD>' --laps",
+                "Validate the recovered credential only against '{trigger.1.attributes.target}' and add it back to PathFinder with that host scope"
+            ]
+        }
+    },
+    {
         "name": "OWNED ZERO-HOP - Vulnerable AD CS Enrollment",
         "priority": 100,
         "host_scope": "same_host",
@@ -78,6 +94,10 @@
             "commands": [
                 "If ForceChangePassword: bloodyAD -d '{trigger.1.host}' --host <DC_IP> -u '{trigger.1.attributes.owned_principal}' -p '<PASSWORD>' set password '{trigger.1.attributes.target}' '<NEW_PASSWORD>'",
                 "If AddMember/GenericAll on a group: add the owned principal to '{trigger.1.attributes.target}'",
+                "If AddSelf on a group: add only the owned principal to '{trigger.1.attributes.target}', then verify membership",
+                "If AddKeyCredentialLink: validate shadow-credential prerequisites and write only to '{trigger.1.attributes.target}'",
+                "If WriteSPN: set a temporary unique SPN on '{trigger.1.attributes.target}', request its service ticket, and restore the original SPNs",
+                "If GenericAll/GenericWrite/WriteDacl/WriteOwner applies to a GPO: verify its live links and affected scope before changing it",
                 "If WriteDacl/WriteOwner: grant only the minimum controlled right required, then verify and record the change"
             ]
         }
@@ -100,6 +120,24 @@
         }
     },
     {
+        "name": "AD Trust Boundary - Manual Scope Review",
+        "priority": 62,
+        "host_scope": "same_host",
+        "max_paths_per_host": 25,
+        "triggers": [
+            { "id": 1, "entity_type": "active_directory_trust" }
+        ],
+        "suggestion": {
+            "description": "TRUST INVENTORY: {trigger.1.attributes.description}",
+            "rationale": "A domain trust is a security and scope boundary, not an inferred attack path. PathFinder records its direction, type, transitivity, and SID-filtering state but does not traverse into the trusted domain.",
+            "commands": [
+                "Confirm that both {trigger.1.attributes.source_domain} and {trigger.1.attributes.target_domain} are explicitly in scope before testing the trust.",
+                "From an authorized domain context, inventory the relationship with Get-ADTrust -Filter * or nltest /domain_trusts /all_trusts /v.",
+                "Do not treat principals or edges in {trigger.1.attributes.target_domain} as owned; ingest independently collected evidence for that domain instead."
+            ]
+        }
+    },
+    {
         "_comment": "=== CREDENTIAL REUSE (highest priority - instant wins) ===",
         "name": "Credential Reuse on Login Service",
         "priority": 98,
@@ -112,6 +150,74 @@
             "rationale": "A recovered cleartext password can be tested against compatible login services with lockout awareness.",
             "commands": [
                 "nxc <PROTOCOL> <TARGET> -u '<USERNAME>' -p '<PASSWORD>'"
+            ]
+        }
+    },
+    {
+        "name": "Confirmed MySQL Credential - Read-Only Capability Inventory",
+        "priority": 93,
+        "host_scope": "any_host",
+        "max_paths_per_host": 50,
+        "triggers": [
+            { "id": 1, "entity_type": "credential", "name_match": { "type": "regex", "value": ".*" }, "attributes_match": { "credential_usage": "password_reuse" }, "host_scope": "any_host" },
+            { "id": 2, "entity_type": "service", "name_match": { "type": "regex", "value": "^(?:mysql|mariadb)$" } }
+        ],
+        "suggestion": {
+            "description": "Confirmed password credential for '{trigger.1.name}' can be tested against {trigger.2.name} on {trigger.2.host}:{trigger.2.port}.",
+            "rationale": "Authenticated database access can expose application data, password material, file privileges, and administrative roles. Begin with identity and grants; do not write data or invoke operating-system features.",
+            "commands": [
+                "mysql -h '{trigger.2.host}' -P {trigger.2.port} -u '{trigger.1.name}' -p",
+                "SELECT USER(), CURRENT_USER(), VERSION();",
+                "SHOW DATABASES;",
+                "SHOW GRANTS FOR CURRENT_USER;",
+                "Read-only only: do not use INTO OUTFILE, install plugins/UDFs, change grants, or modify data."
+            ]
+        }
+    },
+    {
+        "name": "Confirmed PostgreSQL Credential - Read-Only Capability Inventory",
+        "priority": 93,
+        "host_scope": "any_host",
+        "max_paths_per_host": 50,
+        "triggers": [
+            { "id": 1, "entity_type": "credential", "name_match": { "type": "regex", "value": ".*" }, "attributes_match": { "credential_usage": "password_reuse" }, "host_scope": "any_host" },
+            { "id": 2, "entity_type": "service", "name_match": { "type": "regex", "value": "^(?:postgres|postgresql)$" } }
+        ],
+        "suggestion": {
+            "description": "Confirmed password credential for '{trigger.1.name}' can be tested against PostgreSQL on {trigger.2.host}:{trigger.2.port}.",
+            "rationale": "Role membership, database CONNECT rights, and server settings determine the useful authenticated surface. Inventory them without creating objects, changing roles, reading server files, or executing programs.",
+            "commands": [
+                "psql -h '{trigger.2.host}' -p {trigger.2.port} -U '{trigger.1.name}' -d postgres",
+                "SELECT current_user, session_user, version();",
+                "\\du",
+                "\\l",
+                "SELECT rolname, rolsuper, rolcreaterole, rolcreatedb, rolcanlogin FROM pg_roles ORDER BY rolname;",
+                "Read-only only: do not use COPY ... PROGRAM, large-object/file functions, CREATE EXTENSION, role changes, or data modification."
+            ]
+        }
+    },
+    {
+        "name": "Confirmed MSSQL Credential - Read-Only Capability Inventory",
+        "priority": 94,
+        "host_scope": "any_host",
+        "max_paths_per_host": 50,
+        "triggers": [
+            { "id": 1, "entity_type": "credential", "name_match": { "type": "regex", "value": ".*" }, "attributes_match": { "credential_usage": "password_reuse" }, "host_scope": "any_host" },
+            { "id": 2, "entity_type": "service", "name_match": { "type": "regex", "value": "^(?:mssql|ms-sql|ms-sql-s)$" } }
+        ],
+        "suggestion": {
+            "description": "Confirmed password credential for '{trigger.1.name}' can be tested against MSSQL on {trigger.2.host}:{trigger.2.port}.",
+            "rationale": "MSSQL impersonation, linked servers, server roles, and dangerous feature state are valuable even when command execution is disabled. Inventory only; never enable a feature automatically.",
+            "commands": [
+                "For Windows authentication: impacket-mssqlclient -windows-auth '<DOMAIN>/{trigger.1.name}:<PASSWORD>@{trigger.2.host}' -port {trigger.2.port}",
+                "For a SQL login: impacket-mssqlclient '{trigger.1.name}:<PASSWORD>@{trigger.2.host}' -port {trigger.2.port}",
+                "SELECT SYSTEM_USER, USER_NAME(), @@VERSION;",
+                "SELECT name FROM sys.databases ORDER BY name;",
+                "SELECT IS_SRVROLEMEMBER('sysadmin') AS is_sysadmin;",
+                "SELECT grantee.name, target.name AS impersonation_target FROM sys.server_permissions p JOIN sys.server_principals grantee ON p.grantee_principal_id=grantee.principal_id JOIN sys.server_principals target ON p.major_id=target.principal_id WHERE p.permission_name='IMPERSONATE';",
+                "EXEC sp_linkedservers;",
+                "SELECT name, value_in_use FROM sys.configurations WHERE name IN ('xp_cmdshell','Ole Automation Procedures','clr enabled');",
+                "Read-only only: do not enable xp_cmdshell/OLE/CLR, impersonate, alter logins, or modify data."
             ]
         }
     },
@@ -299,38 +405,117 @@
     },
 
     {
-        "_comment": "=== SQL INJECTION ===",
-        "name": "Parameterized URL - SQLi Triage Candidate",
+        "_comment": "=== CONTEXT-AWARE WEB PARAMETER TRIAGE ===",
+        "name": "File/Path Parameter - Traversal or LFI Triage",
+        "priority": 78,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "web_parameter_candidate", "name_match": { "type": "regex", "value": "^path_traversal_lfi:" } }
+        ],
+        "suggestion": {
+            "description": "Parameter '{trigger.1.attributes.parameter}' at {trigger.1.attributes.url} looks file/path-oriented.",
+            "rationale": "File, page, include, language, download, and path parameters are higher-signal traversal/LFI candidates than arbitrary form fields.",
+            "commands": [
+                "Capture a baseline response, then manually replace only '{trigger.1.attributes.parameter}' with a benign missing-file value.",
+                "If behaviour is file-backed, test normalized and encoded traversal variants within scope; preserve the original method and authentication context."
+            ]
+        }
+    },
+    {
+        "name": "URL/Host Parameter - SSRF Triage",
+        "priority": 80,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "web_parameter_candidate", "name_match": { "type": "regex", "value": "^ssrf:" } }
+        ],
+        "suggestion": {
+            "description": "Parameter '{trigger.1.attributes.parameter}' at {trigger.1.attributes.url} looks like a server-side destination.",
+            "rationale": "URL, callback, webhook, host, proxy, and redirect inputs commonly reach server-side network clients.",
+            "commands": [
+                "Use an engagement-controlled callback URL in '{trigger.1.attributes.parameter}' and verify server-side resolution or connection evidence.",
+                "Only after confirming server-side fetching, compare loopback/private-address handling and redirect validation within scope."
+            ]
+        }
+    },
+    {
+        "name": "Command/Diagnostic Parameter - Command Injection Triage",
+        "priority": 82,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "web_parameter_candidate", "name_match": { "type": "regex", "value": "^command_injection:" } }
+        ],
+        "suggestion": {
+            "description": "Parameter '{trigger.1.attributes.parameter}' at {trigger.1.attributes.url} looks command or diagnostic-oriented.",
+            "rationale": "Command, exec, shell, ping, lookup, host, and IP inputs are common wrappers around operating-system utilities.",
+            "commands": [
+                "Compare a normal value with a harmless metacharacter/timing canary in '{trigger.1.attributes.parameter}'.",
+                "Require repeatable output or timing evidence before escalating beyond a benign canary."
+            ]
+        }
+    },
+    {
+        "name": "XML/SOAP Parameter - XXE Triage",
+        "priority": 76,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "web_parameter_candidate", "name_match": { "type": "regex", "value": "^xxe:" } }
+        ],
+        "suggestion": {
+            "description": "Parameter '{trigger.1.attributes.parameter}' at {trigger.1.attributes.url} appears to carry XML/document content.",
+            "rationale": "XML, SOAP, SVG, document, and payload inputs warrant entity-expansion and external-entity validation when the server parses XML.",
+            "commands": [
+                "Confirm the accepted content type and parser behaviour with well-formed benign XML.",
+                "If XML parsing is confirmed, use a controlled external-entity callback and avoid destructive local-file payloads until scope is verified."
+            ]
+        }
+    },
+    {
+        "name": "Query/Filter Parameter - SQLi Triage",
         "priority": 74,
         "host_scope": "same_host",
         "triggers": [
-            { "id": 1, "entity_type": "web_parameterized_url", "name_match": { "type": "regex", "value": ".*" } }
+            { "id": 1, "entity_type": "web_parameter_candidate", "name_match": { "type": "regex", "value": "^sqli:" } }
         ],
         "suggestion": {
-            "description": "Parameterized URL discovered on {trigger.1.host}:{trigger.1.port}: {trigger.1.attributes.url}",
-            "rationale": "A discovered URL with query parameters is a targeted SQLi triage candidate. Run sqlmap only against concrete parameterized URLs rather than crawling the whole site blindly.",
+            "description": "Parameter '{trigger.1.attributes.parameter}' at {trigger.1.attributes.url} looks query/filter-oriented.",
+            "rationale": "Query, search, filter, sort, column, and table parameters are stronger SQLi candidates than every parameter on the page.",
             "commands": [
-                "sqlmap -u '{trigger.1.attributes.url}' --batch --smart --level=1 --risk=1",
-                "Parameters observed: {trigger.1.attributes.parameters}"
+                "Manually compare quote, boolean, and type-error responses for '{trigger.1.attributes.parameter}'.",
+                "sqlmap -u '{trigger.1.attributes.url}' -p '{trigger.1.attributes.parameter}' --batch --smart --level=1 --risk=1"
             ],
             "references": ["https://github.com/sqlmapproject/sqlmap/wiki/Usage"]
         }
     },
     {
-        "name": "Parameterized POST Form - SQLi Triage Candidate",
-        "priority": 72,
+        "name": "Object Identifier Parameter - IDOR Triage",
+        "priority": 75,
         "host_scope": "same_host",
         "triggers": [
-            { "id": 1, "entity_type": "web_parameterized_request", "name_match": { "type": "regex", "value": ".*" } }
+            { "id": 1, "entity_type": "web_parameter_candidate", "name_match": { "type": "regex", "value": "^idor:" } }
         ],
         "suggestion": {
-            "description": "POST form discovered on {trigger.1.host}:{trigger.1.port}: {trigger.1.attributes.url} with fields {trigger.1.attributes.parameters}",
-            "rationale": "A same-target HTML form with named POST fields is a concrete manual SQLi triage candidate. Placeholder values may need adjustment, and authentication or anti-CSRF handling may be required.",
+            "description": "Parameter '{trigger.1.attributes.parameter}' at {trigger.1.attributes.url} looks like an object identifier.",
+            "rationale": "IDs for users, accounts, orders, invoices, records, and products should be checked for object-level authorization.",
             "commands": [
-                "sqlmap -u '{trigger.1.attributes.url}' --data='{trigger.1.attributes.data}' --batch --smart --level=1 --risk=1",
-                "Parameters observed: {trigger.1.attributes.parameters}"
-            ],
-            "references": ["https://github.com/sqlmapproject/sqlmap/wiki/Usage"]
+                "With two authorized test identities where possible, compare adjacent or alternate values for '{trigger.1.attributes.parameter}'.",
+                "Distinguish existence leakage from unauthorized read/write access and record the affected object class."
+            ]
+        }
+    },
+    {
+        "name": "Template/Render Parameter - SSTI Triage",
+        "priority": 78,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "web_parameter_candidate", "name_match": { "type": "regex", "value": "^ssti:" } }
+        ],
+        "suggestion": {
+            "description": "Parameter '{trigger.1.attributes.parameter}' at {trigger.1.attributes.url} looks template/render-oriented.",
+            "rationale": "Template, render, layout, preview, theme, and engine inputs may cross a server-side template boundary.",
+            "commands": [
+                "Use non-destructive arithmetic probes for the likely template family and compare rendered output.",
+                "Do not attempt command execution until template evaluation is confirmed and the engine is identified."
+            ]
         }
     },
     {
@@ -698,6 +883,55 @@
                 "smbmap -H {trigger.1.host} -r '{trigger.1.name}'",
                 "Look for: .ps1, .bat, .vbs scripts, .xml config files, .txt notes, .bak backups",
                 "Download all: smbclient //{trigger.1.host}/'{trigger.1.name}' -N -c 'recurse ON; prompt OFF; mget *'"
+            ]
+        }
+    },
+    {
+        "name": "Web Response Credential Material - Review and Route",
+        "priority": 84,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "credential_material", "name_match": { "type": "regex", "value": ".*" } }
+        ],
+        "suggestion": {
+            "description": "A web response at {trigger.1.attributes.url} exposed candidate {trigger.1.attributes.material_type} material.",
+            "rationale": "Tokens, API keys, hashes, and private keys require type-specific validation before they are treated as reusable credentials.",
+            "commands": [
+                "Confirm the material type and intended consumer from the surrounding response evidence.",
+                "For hashes, identify the format and crack-first route; for tokens/keys, validate only against the in-scope service named by the response."
+            ]
+        }
+    },
+    {
+        "name": "Hostname or Internal Service Reference Discovered",
+        "priority": 72,
+        "host_scope": "same_host",
+        "max_paths_per_host": 100,
+        "triggers": [
+            { "id": 1, "entity_type": "hostname_candidate", "name_match": { "type": "regex", "value": ".*" } }
+        ],
+        "suggestion": {
+            "description": "Hostname '{trigger.1.name}' was referenced by evidence from {trigger.1.host}.",
+            "rationale": "DNS records, redirects, application responses, and connection strings frequently reveal virtual hosts or internal-only services that IP-only enumeration misses.",
+            "commands": [
+                "dig +short '{trigger.1.name}'",
+                "Verify scope and resolution before adding '{trigger.1.name}' to hosts/DNS or enumerating it as a virtual host.",
+                "If unresolved but tied to this target, use curl --resolve '{trigger.1.name}:<PORT>:{trigger.1.host}' 'http://{trigger.1.name}:<PORT>/' for a single comparison request."
+            ]
+        }
+    },
+    {
+        "name": "Server Filesystem Path Disclosed",
+        "priority": 60,
+        "host_scope": "same_host",
+        "triggers": [
+            { "id": 1, "entity_type": "filesystem_path_candidate", "name_match": { "type": "regex", "value": ".*" } }
+        ],
+        "suggestion": {
+            "description": "A web response disclosed server path '{trigger.1.attributes.path}'.",
+            "rationale": "Document roots, upload paths, logs, and configuration paths make later traversal, upload, and file-write validation substantially more precise.",
+            "commands": [
+                "Record the path and correlate it with any file-read, upload, backup, or command-execution primitive on the same host."
             ]
         }
     },
@@ -1314,7 +1548,7 @@
         }
     },
     {
-        "name": "ACL Abuse Right - ForceChangePassword / WriteDacl / WriteOwner",
+        "name": "ACL Abuse Right - Direct Object Control",
         "priority": 89,
         "host_scope": "same_host",
         "suppress_if_host_has": [
@@ -1331,7 +1565,11 @@
                 "If WriteDacl: Grant yourself GenericAll, then add to Domain Admins",
                 "If WriteOwner: Take ownership, then grant yourself full control",
                 "If AddMember: Add yourself to the target group directly",
-                "If GenericAll on user: Set SPN for Kerberoasting, or reset password"
+                "If AddSelf: Add the named principal only when the target is a group",
+                "If AddKeyCredentialLink: Validate and use the shadow-credential path against the target user/computer",
+                "If WriteSPN: Temporarily add a unique SPN, request the service ticket, then restore the original SPNs",
+                "If GenericAll on user: Set SPN for Kerberoasting, or reset password",
+                "If the target is a GPO: Verify live links and affected scope before changing it"
             ],
             "references": ["https://book.hacktricks.wiki/en/windows-hardening/active-directory-methodology/acl-persistence-abuse/index.html"]
         }
@@ -2585,6 +2823,81 @@
                 "Review the machine PATH order and confirm effective ACLs with icacls '<PATH>'.",
                 "Search service, scheduled-task, autorun and application command lines for unqualified executable names.",
                 "Do not plant an executable until a specific privileged consumer and trigger have been confirmed."
+            ]
+        }
+    },
+    {
+        "name": "Mini-PEAS - One-Hop Reachable Subnet",
+        "priority": 74,
+        "host_scope": "same_host",
+        "max_paths_per_host": 50,
+        "triggers": [
+            { "id": 1, "entity_type": "reachable_subnet" }
+        ],
+        "suggestion": {
+            "description": "The compromised host {trigger.1.attributes.pivot_origin} has a collected route to {trigger.1.attributes.subnet}: {trigger.1.attributes.route_summary}",
+            "rationale": "This is bounded one-hop topology evidence, not proof that every address is live or in scope. It identifies a subnet that may only be reachable through the current foothold.",
+            "commands": [
+                "Verify the collected route from the existing shell on {trigger.1.attributes.pivot_origin} and confirm that the destination subnet is explicitly in scope.",
+                "Choose an engagement-approved operator-managed SOCKS tunnel or narrowly scoped port forward and establish it manually outside PathFinder.",
+                "After the manual pivot is working, enumerate only explicitly authorized targets in {trigger.1.attributes.subnet}; do not recursively scan further networks from this finding.",
+                "Treat any newly compromised system as a separate ingestion point before considering another hop."
+            ]
+        }
+    },
+    {
+        "name": "Mini-PEAS - Internal-Only Service",
+        "priority": 82,
+        "host_scope": "same_host",
+        "max_paths_per_host": 100,
+        "triggers": [
+            { "id": 1, "entity_type": "internal_service" }
+        ],
+        "suggestion": {
+            "description": "The compromised host {trigger.1.attributes.pivot_origin} exposes {trigger.1.attributes.endpoint} only on a local or internal interface ({trigger.1.attributes.process_display}).",
+            "rationale": "A service hidden from the original scan may expose an administrative, database, development, or application surface from the foothold. The binding is evidence of reachability, not evidence of vulnerability.",
+            "commands": [
+                "Validate the exact service locally on {trigger.1.attributes.pivot_origin} using a protocol-appropriate read-only request and record its banner or response.",
+                "If remote interaction is necessary and authorized, create a manual single-port forward for {trigger.1.attributes.endpoint}; avoid exposing the listener broadly.",
+                "Feed any saved response or tool output back into PathFinder, and stop at this one-hop service unless a new foothold is independently established."
+            ]
+        }
+    },
+    {
+        "name": "OpenAPI Surface - Bounded Manual Triage",
+        "priority": 70,
+        "host_scope": "same_host",
+        "max_paths_per_host": 10,
+        "triggers": [
+            { "id": 1, "entity_type": "api_surface" }
+        ],
+        "suggestion": {
+            "description": "{trigger.1.attributes.description} Schema: {trigger.1.attributes.schema_url}",
+            "rationale": "A documented API provides exact routes, methods, parameters, and often authentication expectations. Treat the schema as an inventory: validate authorization and input handling manually without invoking state-changing operations by default.",
+            "commands": [
+                "Review the saved schema and identify security schemes, unauthenticated GET/HEAD operations, administrative routes, uploads, callbacks, object identifiers, and file/path inputs.",
+                "Use OPTIONS or a benign GET only where documented and in scope; do not automatically call POST, PUT, PATCH, or DELETE operations.",
+                "Follow the separate parameter-triage findings for high-signal inputs and preserve required authentication and content types."
+            ]
+        }
+    },
+    {
+        "name": "Unhandled Open Service - Manual Protocol Triage",
+        "priority": 45,
+        "host_scope": "same_host",
+        "fallback_only": true,
+        "max_paths_per_host": 100,
+        "triggers": [
+            { "id": 1, "entity_type": "service", "name_match": { "type": "regex", "value": ".*" } }
+        ],
+        "suggestion": {
+            "description": "No dedicated PathFinder workflow matched service '{trigger.1.name}' on {trigger.1.host}:{trigger.1.port}.",
+            "rationale": "Uncommon services still require deliberate protocol triage, but adding a product-specific parser for every daemon would create noise and brittle maintenance. This fallback appears only when no other service trigger matches.",
+            "commands": [
+                "Confirm the banner and protocol with: nmap -sV -sC -p {trigger.1.port} {trigger.1.host}",
+                "List locally available protocol-specific NSE coverage with: nmap --script-help '{trigger.1.name}-*'",
+                "Select only safe/read-only checks, review the exact product and version, and preserve any response as loot for re-ingestion.",
+                "Do not assume a default credential, brute-force route, or exploit solely from the port number."
             ]
         }
     }

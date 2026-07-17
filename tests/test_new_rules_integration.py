@@ -93,24 +93,23 @@ class NewRuleTests(unittest.TestCase):
         self.assertGreaterEqual(len(cve), 1)
         self.assertIn("CVE-2021-41773", cve[0]["suggestion"]["description"])
 
-    def test_parameterized_url_fires_sqlmap_triage_candidate(self):
-        findings = [_f("10.10.10.10", 80, "ffuf", "web_parameterized_url",
-                       "http://10.10.10.10/item.php?id=1",
-                       url="http://10.10.10.10/item.php?id=1", parameters=["id"], score=45)]
+    def test_query_parameter_fires_contextual_sqli_triage(self):
+        findings = [_f("10.10.10.10", 80, "ffuf", "web_parameter_candidate",
+                       "sqli:search_query", url="http://10.10.10.10/item.php?search_query=x",
+                       parameter="search_query", triage_category="sqli", score=45)]
         paths = _synth().generate_attack_paths(findings)
-        triage = [p for p in paths if p["name"] == "Parameterized URL - SQLi Triage Candidate"]
+        triage = [p for p in paths if p["name"] == "Query/Filter Parameter - SQLi Triage"]
         self.assertEqual(len(triage), 1)
-        self.assertIn("sqlmap -u 'http://10.10.10.10/item.php?id=1'", triage[0]["suggestion"]["commands"][0])
+        self.assertIn("-p 'search_query'", triage[0]["suggestion"]["commands"][1])
 
-    def test_parameterized_post_form_fires_sqlmap_triage_candidate(self):
+    def test_id_parameter_fires_idor_not_generic_sqli(self):
         findings = [_f("10.10.10.10", 80, "webpage_parameter_extractor",
-                       "web_parameterized_request", "POST http://10.10.10.10/login",
-                       url="http://10.10.10.10/login", method="POST",
-                       data="username=1&password=1", parameters=["password", "username"], score=45)]
+                       "web_parameter_candidate", "idor:account_id",
+                       url="http://10.10.10.10/account?account_id=1", method="GET",
+                       parameter="account_id", triage_category="idor", score=45)]
         paths = _synth().generate_attack_paths(findings)
-        triage = [p for p in paths if p["name"] == "Parameterized POST Form - SQLi Triage Candidate"]
-        self.assertEqual(len(triage), 1)
-        self.assertIn("--data='username=1&password=1'", triage[0]["suggestion"]["commands"][0])
+        self.assertIn("Object Identifier Parameter - IDOR Triage", _names(paths))
+        self.assertNotIn("Query/Filter Parameter - SQLi Triage", _names(paths))
 
     def test_smb_service_enum_fallback_fires_with_service_only(self):
         findings = [_f("10.10.10.10", 445, "nmap", "service", "microsoft-ds", score=10)]
@@ -125,6 +124,7 @@ class NewRuleTests(unittest.TestCase):
         paths = _synth().generate_attack_paths(findings)
         self.assertNotIn("SMB Service - Enumerate Shares and Users", _names(paths))
         self.assertIn("SMB Share Accessible - Enumerate for Sensitive Files", _names(paths))
+        self.assertNotIn("Unhandled Open Service - Manual Protocol Triage", _names(paths))
 
     def test_smb_service_enum_fallback_is_suppressed_after_user_enumeration(self):
         findings = [

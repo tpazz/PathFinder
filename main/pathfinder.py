@@ -590,7 +590,7 @@ def _sniff_file_type_details(path):
         return None, "ZIP archive without core SharpHound collections"
 
     ffuf_capture = bool(re.fullmatch(
-        r"ffuf_pages_(?:https?)_\d{1,5}",
+        r"ffuf_(?:recursive_)?pages_(?:https?)_\d{1,5}",
         os.path.basename(os.path.dirname(os.path.abspath(path))),
         re.IGNORECASE,
     ))
@@ -608,12 +608,16 @@ def _sniff_file_type_details(path):
         return None, "empty or whitespace-only content"
 
     # ffuf -od stores the raw request and raw response in one capture rather
-    # than writing a bare response body. Recognise HTML inside that wrapper so
-    # the saved page reaches the webpage parser.
+    # than writing a bare response body. Route bounded textual formats through
+    # the generic response evidence parser while leaving binary bodies alone.
     if ffuf_capture and "Request ---- Response" in sanitized_head.replace("↑", "").replace("↓", ""):
-        if (re.search(r"(?i)content-type:\s*text/html", sanitized_head)
-                or re.search(r"(?i)<!doctype\s+html|<html(?:\s|>)|<body(?:\s|>)", sanitized_head)):
-            return 'webpage_html', 'matched HTML response inside ffuf -od capture'
+        textual_type = re.search(
+            r"(?i)content-type:\s*(?:text/[^;\s]+|application/(?:json|[^;\s+]+\+json|xml|[^;\s+]+\+xml|javascript|x-javascript|yaml|x-yaml|graphql))",
+            sanitized_head,
+        )
+        content_type_present = re.search(r"(?i)content-type\s*:", sanitized_head)
+        if textual_type or (not content_type_present and "\x00" not in sanitized_head):
+            return 'webpage_html', 'matched bounded textual response inside ffuf -od capture'
 
     # XML -> nmap
     if stripped.startswith('<'):
@@ -625,6 +629,12 @@ def _sniff_file_type_details(path):
         return None, 'XML-like content but no supported XML parser signature'
     if os.path.splitext(path)[1].lower() in {'.html', '.htm'}:
         return 'webpage_html', 'matched saved webpage file extension'
+
+    basename = os.path.basename(path).lower()
+    if basename.startswith("dns_") and (
+            re.search(r"(?m)^\S+\s+\d+\s+IN\s+(?:A|AAAA|CNAME|NS|MX|SRV|PTR|TXT)\s+", sanitized_head)
+            or "DiG" in sanitized_head):
+        return 'dns_txt', 'matched dig DNS output filename and record signature'
 
     # JSON formats. Be careful not to misclassify plain-text logs that start
     # with bracketed tokens like [INFO], [*], or [+].
@@ -649,6 +659,12 @@ def _sniff_file_type_details(path):
         # one-shot-enum LLM/AI enumeration output (self-identifying).
         if '"ai_surfaces"' in sanitized_head or '"type": "llm_enum"' in sanitized_head or '"type":"llm_enum"' in sanitized_head:
             return 'llm_enum_json', 'matched one-shot-enum LLM enum signature'
+        if ('"type": "openapi_enum"' in sanitized_head
+                or '"type":"openapi_enum"' in sanitized_head):
+            return 'openapi_json', 'matched one-shot-enum OpenAPI enum signature'
+        if (re.search(r'"openapi"\s*:\s*"3(?:\.|\")', sanitized_head)
+                or re.search(r'"swagger"\s*:\s*"2(?:\.0)?"', sanitized_head)):
+            return 'openapi_json', 'matched raw OpenAPI/Swagger document signature'
         # nuclei JSONL: one JSON object per line, before the broad checks below.
         if '"template-id"' in sanitized_head or '"matched-at"' in sanitized_head:
             return 'nuclei_jsonl', 'matched nuclei JSONL signature'
@@ -672,7 +688,6 @@ def _sniff_file_type_details(path):
         return None, 'JSON-like content but no supported top-level JSON parser signature'
 
     # Plain-text formats (order matters; more specific patterns first)
-    basename = os.path.basename(path).lower()
     if basename.endswith(".pot") and re.search(r'(?m)^.+:.+$', sanitized_head):
         return 'potfile_txt', 'matched john/hashcat potfile extension and hash:plaintext shape'
     if re.search(r'VALID\s+USERNAME', sanitized_head, re.IGNORECASE):
@@ -894,10 +909,11 @@ def _inherited_ffuf_provenance(relative_path, provenance_by_file):
     """Use the producer record for ffuf JSON when parsing a stored -od body."""
     parts = re.split(r"[\\/]", str(relative_path))
     for index, part in enumerate(parts):
-        match = re.fullmatch(r"ffuf_pages_(?:https?)_(\d{1,5})", part, re.IGNORECASE)
+        match = re.fullmatch(r"ffuf_(?:(recursive)_)?pages_(?:https?)_(\d{1,5})", part, re.IGNORECASE)
         if not match:
             continue
-        ffuf_json = "/".join(parts[:index] + [f"ffuf_{match.group(1)}.json"])
+        prefix = "ffuf_recursive" if match.group(1) else "ffuf"
+        ffuf_json = "/".join(parts[:index] + [f"{prefix}_{match.group(2)}.json"])
         return provenance_by_file.get(_normalise_provenance_path(ffuf_json))
     return None
 

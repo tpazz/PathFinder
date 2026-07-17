@@ -1,7 +1,7 @@
 import re
 
 from parsers.ansi import ANSI_ESCAPE_PATTERN, warn
-from parsers.initial_foothold.web_url_helpers import parameterized_url_finding
+from parsers.initial_foothold.web_url_helpers import parameter_triage_findings, parameterized_url_finding
 
 
 def parse_gobuster_output(gobuster_output_file, target_host, target_port=None, mode='dir'):
@@ -123,6 +123,7 @@ def parse_gobuster_output(gobuster_output_file, target_host, target_port=None, m
                             )
                             if param_finding:
                                 findings.append(param_finding)
+                                findings.extend(parameter_triage_findings(param_finding))
                 
                 elif mode == 'vhost':
                     match = vhost_pattern.match(line)

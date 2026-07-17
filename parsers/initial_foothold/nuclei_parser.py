@@ -1,7 +1,7 @@
 import json
 from parsers.ansi import warn
 from urllib.parse import urlparse
-from parsers.initial_foothold.web_url_helpers import parameterized_url_finding
+from parsers.initial_foothold.web_url_helpers import parameter_triage_findings, parameterized_url_finding
 
 # Severities that warrant a high-signal "vulnerability" finding; everything else
 # (low/info/unknown) is recorded as an information_leak for context.
@@ -98,5 +98,6 @@ def parse_nuclei_jsonl(file_path):
         )
         if param_finding:
             findings.append(param_finding)
+            findings.extend(parameter_triage_findings(param_finding))
 
     return findings
