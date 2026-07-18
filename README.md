@@ -241,6 +241,10 @@ export GITHUB_TOKEN=...
 Local files such as `main/credentials.json` and `main/github_cache.json` are
 created as needed and are gitignored.
 
+## Codex Usage 
+
+Codex was used as a development partner throughout the project. It helped review the codebase, identify parser and attack-rule coverage gaps, implement and test improvements, analyze edge cases, strengthen the integration between one-shot-enum and PathFinder, and refine documentation. Human judgement remained central: I defined the tool’s purpose, validated recommendations in labs, and decided which changes matched its next-step-focused design.
+
 ## Ethics
 
 Use PathFinder only on systems you own or have explicit written permission to
