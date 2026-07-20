@@ -8,6 +8,63 @@ first.
 It is built for authorised labs, CTFs, and pentest workflows where you want fast
 triage without losing the underlying evidence.
 
+## Install and verify
+
+### Requirements
+
+- Python 3.11, 3.12, or 3.13
+- Linux, Kali Linux, or Windows
+- Git
+
+PathFinder itself requires only the Python dependency in `requirements.txt`.
+External security tools are not required to analyse existing loot. Searchsploit
+and GitHub enrichment are optional.
+
+### Installation
+
+```bash
+git clone https://github.com/tpazz/PathFinder.git
+cd PathFinder
+
+python3 -m venv .venv
+source .venv/bin/activate             # Linux / Kali
+# .venv\Scripts\Activate.ps1          # Windows PowerShell
+
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+python -m main.pathfinder --help
+```
+
+The virtual environment is recommended but not required. On Windows, use
+`python` in place of `python3` where appropriate.
+
+### Smoke test with bundled sample data
+
+The following command performs an offline analysis using fixtures included in
+the repository. It does not scan a live target:
+
+```bash
+python -m main.pathfinder scan tests/fixtures --offline --top 5 \
+  --report pathfinder-smoke-test.html
+```
+
+A successful run detects parseable sources, prints prioritised next steps, and
+creates `pathfinder-smoke-test.html`.
+
+### Optional exploit enrichment
+
+Install Searchsploit on platforms that package it and optionally provide a
+GitHub token for higher API rate limits:
+
+```bash
+sudo apt install exploitdb
+export GITHUB_TOKEN="your-token"       # optional; never commit this value
+```
+
+Use `--offline` to disable both GitHub and Searchsploit lookups. Local files such
+as `main/credentials.json` and `main/github_cache.json` are created as needed
+and are gitignored.
+
 ## Quick Start
 
 ```bash
@@ -222,24 +279,6 @@ Total Findings: 20 (Public Exploits limited to --max-vulns, total discovered: 12
       Host: 192.168.56.10   Port: 80
       URL: https://www.exploit-db.com/exploits/50383
 ```
-
-## Install
-
-```bash
-git clone https://github.com/tpazz/PathFinder.git
-cd PathFinder
-python3 -m pip install -r requirements.txt
-```
-
-Optional enrichment:
-
-```bash
-sudo apt install exploitdb
-export GITHUB_TOKEN=...
-```
-
-Local files such as `main/credentials.json` and `main/github_cache.json` are
-created as needed and are gitignored.
 
 ## Ethics
 
