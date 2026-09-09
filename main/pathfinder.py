@@ -933,6 +933,33 @@ def _save_findings(args, findings):
         print(f"\n{C.BOLD}{C.YELLOW}[!] Error saving to JSON file: {e}{C.END}")
 
 
+def _save_attack_paths(path, paths):
+    """Saves the synthesized attack paths to disk as JSON.
+
+    Findings already have --output-json; the synthesized attack paths are the
+    headline output and were previously only ever printed or rendered into the
+    HTML report. This exports them so downstream consumers (a CI report, a
+    ticketing sync) can read them as data. Each path is annotated with the
+    triage ``likelihood`` computed by _path_likelihood so consumers do not have
+    to re-derive it. This is a plain, tool-agnostic dump; it embeds no knowledge
+    of any particular consumer's schema.
+    """
+    if not path:
+        return
+    try:
+        enriched = []
+        for p in paths:
+            item = dict(p)
+            item.setdefault("likelihood", _path_likelihood(p))
+            enriched.append(item)
+        print(f"{C.BOLD}{C.CYAN}[*] Saving attack paths to: {path}{C.END}")
+        with open(path, 'w') as f:
+            json.dump(enriched, f, indent=4, default=str)
+        print(f"    {C.GREEN}[+]{C.END} Successfully saved {len(enriched)} attack path(s).")
+    except IOError as e:
+        print(f"{C.BOLD}{C.YELLOW}[!] Error saving attack paths to JSON file: {e}{C.END}")
+
+
 def _is_ai_related_finding(finding):
     if finding.get("entity_type") in ("ai_service", "ai_post_exploitation"):
         return True
@@ -1746,6 +1773,7 @@ def _display_results(args, synthesizer, prioritized_findings):
     display_paths = suggested_paths
     min_likelihood = getattr(args, 'min_likelihood', 'low')
     display_paths = [p for p in display_paths if _passes_min_likelihood(p, min_likelihood)]
+    _save_attack_paths(getattr(args, 'output_paths_json', None), display_paths)
 
     report_path = getattr(args, "report", None)
     if report_path:
@@ -2002,6 +2030,7 @@ def main():
     scan_p.add_argument('loot_dir', help='Path to directory containing tool output files.')
     scan_p.add_argument('--target-host', help='Target host IP or domain (inferred from nmap XML if omitted).')
     scan_p.add_argument('-o', '--output-json', help='Save prioritized findings to a JSON file.')
+    scan_p.add_argument('--output-paths-json', help='Save synthesized attack paths to a JSON file.')
     scan_p.add_argument('--report', nargs='?', const=DEFAULT_REPORT_NAME, metavar='HTML', help=f'Write a self-contained HTML engagement report (default path: {DEFAULT_REPORT_NAME}).')
     scan_p.add_argument('--report-redact-secrets', action='store_true', help='Redact credential secrets in the HTML report (unredacted by default).')
     scan_p.add_argument('--report-include-secrets', action='store_true', help=argparse.SUPPRESS)
@@ -2035,6 +2064,7 @@ def main():
     io_group = main_parser.add_argument_group('Data I/O Arguments')
     io_group.add_argument("-i", "--input-json", help="Load prioritized findings from a JSON file (can be used with other inputs).")
     io_group.add_argument("-o", "--output-json", help="Save the final prioritized findings to a JSON file.")
+    io_group.add_argument("--output-paths-json", help="Save the synthesized attack paths to a JSON file.")
     io_group.add_argument("--report", nargs="?", const=DEFAULT_REPORT_NAME, metavar="HTML", help=f"Write a self-contained HTML engagement report (default path: {DEFAULT_REPORT_NAME}).")
     io_group.add_argument("--report-redact-secrets", action="store_true", help="Redact credential secrets in the HTML report (unredacted by default).")
     io_group.add_argument("--report-include-secrets", action="store_true", help=argparse.SUPPRESS)
