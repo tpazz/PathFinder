@@ -994,6 +994,33 @@ def _path_text(path):
     return " ".join(str(p) for p in parts if p).lower()
 
 
+# Triage-signal terms are matched on word boundaries, not as raw substrings, so
+# a short token like "rce" cannot false-match inside an unrelated word such as
+# "brute-force" (fo-RCE) and wrongly promote a path's likelihood.
+_LOW_VALIDATION_TERMS = (
+    "triage candidate", "parameterized url", "manual validation",
+    "interesting but", "review manually", "protocol triage",
+)
+_HIGH_ACTION_TERMS = (
+    "confirmed", "credential reuse", "pass-the-hash", "pwn3d", "dcsync",
+    "secretsdump", "webshell", "rce", "remote code execution", "writable",
+    "write-to-rce", "artifact write to code execution", "no_root_squash",
+    "kerberoast", "as-rep", "admin access",
+)
+
+
+def _compile_terms(terms):
+    return tuple(re.compile(r"\b" + re.escape(term) + r"\b") for term in terms)
+
+
+_LOW_VALIDATION_PATTERNS = _compile_terms(_LOW_VALIDATION_TERMS)
+_HIGH_ACTION_PATTERNS = _compile_terms(_HIGH_ACTION_TERMS)
+
+
+def _matches_any(text, patterns):
+    return any(pattern.search(text) for pattern in patterns)
+
+
 def _path_likelihood(path):
     """Actionability estimate used only for human triage output.
 
@@ -1004,20 +1031,10 @@ def _path_likelihood(path):
     evidence_score = path.get("evidence_score", 0) or 0
     text = _path_text(path)
 
-    low_validation_terms = (
-        "triage candidate", "parameterized url", "manual validation",
-        "interesting but", "review manually",
-    )
-    if effective < 80 and any(term in text for term in low_validation_terms):
+    if effective < 80 and _matches_any(text, _LOW_VALIDATION_PATTERNS):
         return "low"
 
-    high_action_terms = (
-        "confirmed", "credential reuse", "pass-the-hash", "pwn3d", "dcsync",
-        "secretsdump", "webshell", "rce", "remote code execution", "writable",
-        "write-to-rce", "artifact write to code execution", "no_root_squash",
-        "kerberoast", "as-rep", "admin access",
-    )
-    if effective >= 90 or any(term in text for term in high_action_terms):
+    if effective >= 90 or _matches_any(text, _HIGH_ACTION_PATTERNS):
         return "high"
     if effective >= 75 or evidence_score >= 80:
         return "medium"

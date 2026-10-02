@@ -197,6 +197,36 @@ class TriageDisplayTests(unittest.TestCase):
         path = self._path("Credential Reuse on Login Service", priority=82)
         self.assertEqual(_path_likelihood(path), "high")
 
+    def test_unhandled_open_service_fallback_is_low_likelihood(self):
+        # Regression: the fallback rule's own guidance contains "brute-force",
+        # whose substring "rce" previously false-matched the high-action term
+        # "rce" and wrongly promoted this triage lead to high / High severity.
+        rules_path = Path(__file__).resolve().parents[1] / "main" / "attack_rules.json"
+        rules = json.loads(rules_path.read_text(encoding="utf-8"))
+        fallback = next(
+            r for r in rules
+            if r.get("name") == "Unhandled Open Service - Manual Protocol Triage"
+        )
+        path = {
+            "name": fallback["name"],
+            "priority": fallback["priority"],
+            "effective_priority": fallback["priority"],
+            "evidence_score": 0,
+            "host": "H",
+            "suggestion": fallback["suggestion"],
+            "evidence": ["Trigger 1: http (service)"],
+        }
+        self.assertEqual(_path_likelihood(path), "low")
+
+    def test_rce_term_does_not_match_inside_brute_force(self):
+        path = self._path("Open Service Triage", priority=45)
+        path["suggestion"]["commands"] = ["Do not brute-force or spray this service."]
+        self.assertEqual(_path_likelihood(path), "low")
+
+    def test_standalone_rce_signal_still_promotes_to_high(self):
+        path = self._path("Writable Share to RCE", priority=60)
+        self.assertEqual(_path_likelihood(path), "high")
+
     def test_grouping_collapses_repeated_rule_hits(self):
         groups = _group_attack_paths([
             self._path("Known Vulnerable Software with Public Exploit", host="10.0.0.1", priority=85),
