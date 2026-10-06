@@ -2900,5 +2900,221 @@
                 "Do not assume a default credential, brute-force route, or exploit solely from the port number."
             ]
         }
+    },
+    {
+        "_comment": "=== CROSS-TOOL CORRELATION: reachable surface + matching code sink (Omega DAST+SAST) ===",
+        "name": "Reachable SQL injection - exposed surface with a matching code sink",
+        "priority": 85,
+        "host_scope": "same_host",
+        "triggers": [
+            {
+                "id": 1,
+                "entity_type": "web_finding",
+                "name_match": {
+                    "type": "exact",
+                    "value": "sql-injection"
+                }
+            },
+            {
+                "id": 2,
+                "entity_type": "code_finding",
+                "name_match": {
+                    "type": "exact",
+                    "value": "sql-injection"
+                }
+            }
+        ],
+        "suggestion": {
+            "description": "SQL injection: DAST exposes a reachable surface ({trigger.1.attributes.route}) and SAST finds a matching SQL injection sink at {trigger.2.attributes.file}:{trigger.2.attributes.line} on {trigger.1.host}.",
+            "rationale": "The surface is externally reachable (DAST) and the code path has a corresponding sink (SAST). Correlated, they indicate a reachable, likely-exploitable weakness rather than a theoretical one - prioritise manual confirmation.",
+            "commands": [
+                "# Exercise {trigger.1.attributes.url} and trace it to the sink in {trigger.2.attributes.file}:{trigger.2.attributes.line}"
+            ]
+        }
+    },
+    {
+        "_comment": "=== CROSS-TOOL CORRELATION: reachable surface + matching code sink (Omega DAST+SAST) ===",
+        "name": "Reachable command injection - exposed surface with a matching code sink",
+        "priority": 85,
+        "host_scope": "same_host",
+        "triggers": [
+            {
+                "id": 1,
+                "entity_type": "web_finding",
+                "name_match": {
+                    "type": "exact",
+                    "value": "command-injection"
+                }
+            },
+            {
+                "id": 2,
+                "entity_type": "code_finding",
+                "name_match": {
+                    "type": "exact",
+                    "value": "command-injection"
+                }
+            }
+        ],
+        "suggestion": {
+            "description": "command injection: DAST exposes a reachable surface ({trigger.1.attributes.route}) and SAST finds a matching command injection sink at {trigger.2.attributes.file}:{trigger.2.attributes.line} on {trigger.1.host}.",
+            "rationale": "The surface is externally reachable (DAST) and the code path has a corresponding sink (SAST). Correlated, they indicate a reachable, likely-exploitable weakness rather than a theoretical one - prioritise manual confirmation.",
+            "commands": [
+                "# Exercise {trigger.1.attributes.url} and trace it to the sink in {trigger.2.attributes.file}:{trigger.2.attributes.line}"
+            ]
+        }
+    },
+    {
+        "_comment": "=== CROSS-TOOL CORRELATION: reachable surface + matching code sink (Omega DAST+SAST) ===",
+        "name": "Reachable insecure deserialization - exposed surface with a matching code sink",
+        "priority": 84,
+        "host_scope": "same_host",
+        "triggers": [
+            {
+                "id": 1,
+                "entity_type": "web_finding",
+                "name_match": {
+                    "type": "exact",
+                    "value": "deserialization"
+                }
+            },
+            {
+                "id": 2,
+                "entity_type": "code_finding",
+                "name_match": {
+                    "type": "exact",
+                    "value": "deserialization"
+                }
+            }
+        ],
+        "suggestion": {
+            "description": "insecure deserialization: DAST exposes a reachable surface ({trigger.1.attributes.route}) and SAST finds a matching insecure deserialization sink at {trigger.2.attributes.file}:{trigger.2.attributes.line} on {trigger.1.host}.",
+            "rationale": "The surface is externally reachable (DAST) and the code path has a corresponding sink (SAST). Correlated, they indicate a reachable, likely-exploitable weakness rather than a theoretical one - prioritise manual confirmation.",
+            "commands": [
+                "# Exercise {trigger.1.attributes.url} and trace it to the sink in {trigger.2.attributes.file}:{trigger.2.attributes.line}"
+            ]
+        }
+    },
+    {
+        "_comment": "=== CROSS-TOOL CORRELATION: reachable surface + matching code sink (Omega DAST+SAST) ===",
+        "name": "Reachable path traversal - exposed surface with a matching code sink",
+        "priority": 80,
+        "host_scope": "same_host",
+        "triggers": [
+            {
+                "id": 1,
+                "entity_type": "web_finding",
+                "name_match": {
+                    "type": "exact",
+                    "value": "path-traversal"
+                }
+            },
+            {
+                "id": 2,
+                "entity_type": "code_finding",
+                "name_match": {
+                    "type": "exact",
+                    "value": "path-traversal"
+                }
+            }
+        ],
+        "suggestion": {
+            "description": "path traversal: DAST exposes a reachable surface ({trigger.1.attributes.route}) and SAST finds a matching path traversal sink at {trigger.2.attributes.file}:{trigger.2.attributes.line} on {trigger.1.host}.",
+            "rationale": "The surface is externally reachable (DAST) and the code path has a corresponding sink (SAST). Correlated, they indicate a reachable, likely-exploitable weakness rather than a theoretical one - prioritise manual confirmation.",
+            "commands": [
+                "# Exercise {trigger.1.attributes.url} and trace it to the sink in {trigger.2.attributes.file}:{trigger.2.attributes.line}"
+            ]
+        }
+    },
+    {
+        "_comment": "=== CROSS-TOOL CORRELATION: reachable surface + matching code sink (Omega DAST+SAST) ===",
+        "name": "Reachable SSRF - exposed surface with a matching code sink",
+        "priority": 80,
+        "host_scope": "same_host",
+        "triggers": [
+            {
+                "id": 1,
+                "entity_type": "web_finding",
+                "name_match": {
+                    "type": "exact",
+                    "value": "ssrf"
+                }
+            },
+            {
+                "id": 2,
+                "entity_type": "code_finding",
+                "name_match": {
+                    "type": "exact",
+                    "value": "ssrf"
+                }
+            }
+        ],
+        "suggestion": {
+            "description": "SSRF: DAST exposes a reachable surface ({trigger.1.attributes.route}) and SAST finds a matching SSRF sink at {trigger.2.attributes.file}:{trigger.2.attributes.line} on {trigger.1.host}.",
+            "rationale": "The surface is externally reachable (DAST) and the code path has a corresponding sink (SAST). Correlated, they indicate a reachable, likely-exploitable weakness rather than a theoretical one - prioritise manual confirmation.",
+            "commands": [
+                "# Exercise {trigger.1.attributes.url} and trace it to the sink in {trigger.2.attributes.file}:{trigger.2.attributes.line}"
+            ]
+        }
+    },
+    {
+        "_comment": "=== CROSS-TOOL CORRELATION: reachable surface + matching code sink (Omega DAST+SAST) ===",
+        "name": "Reachable cross-site scripting - exposed surface with a matching code sink",
+        "priority": 72,
+        "host_scope": "same_host",
+        "triggers": [
+            {
+                "id": 1,
+                "entity_type": "web_finding",
+                "name_match": {
+                    "type": "exact",
+                    "value": "xss"
+                }
+            },
+            {
+                "id": 2,
+                "entity_type": "code_finding",
+                "name_match": {
+                    "type": "exact",
+                    "value": "xss"
+                }
+            }
+        ],
+        "suggestion": {
+            "description": "cross-site scripting: DAST exposes a reachable surface ({trigger.1.attributes.route}) and SAST finds a matching cross-site scripting sink at {trigger.2.attributes.file}:{trigger.2.attributes.line} on {trigger.1.host}.",
+            "rationale": "The surface is externally reachable (DAST) and the code path has a corresponding sink (SAST). Correlated, they indicate a reachable, likely-exploitable weakness rather than a theoretical one - prioritise manual confirmation.",
+            "commands": [
+                "# Exercise {trigger.1.attributes.url} and trace it to the sink in {trigger.2.attributes.file}:{trigger.2.attributes.line}"
+            ]
+        }
+    },
+    {
+        "_comment": "=== CROSS-TOOL CORRELATION: high-impact dependency behind a reachable web surface (Omega Dependency+DAST) ===",
+        "name": "High-impact vulnerable dependency behind a reachable web surface",
+        "priority": 78,
+        "host_scope": "same_host",
+        "triggers": [
+            {
+                "id": 1,
+                "entity_type": "dependency_finding",
+                "attributes_match": {
+                    "high_impact": "true"
+                }
+            },
+            {
+                "id": 2,
+                "entity_type": "web_finding",
+                "name_match": {
+                    "type": "regex",
+                    "value": ".+"
+                }
+            }
+        ],
+        "suggestion": {
+            "description": "A {trigger.1.attributes.severity} dependency advisory ({trigger.1.attributes.package} {trigger.1.attributes.installed_version} / {trigger.1.attributes.advisory_ids}) ships in an app with a reachable web surface on {trigger.1.host}.",
+            "rationale": "DAST confirms the application is live and reachable, so a critical/high dependency advisory is exposed rather than dormant. Confirm whether the vulnerable code path is invoked by the running app.",
+            "commands": [
+                "# Review advisory {trigger.1.attributes.advisory_ids} and whether {trigger.1.attributes.package} is reachable from {trigger.2.attributes.url}"
+            ]
+        }
     }
 ]
