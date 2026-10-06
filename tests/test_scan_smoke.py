@@ -227,6 +227,42 @@ class ScanSmokeTests(unittest.TestCase):
         self.assertIn("You own 'SVC_WEB@CORP.LOCAL'", result.stdout)
         self.assertNotIn("ACL Abuse Right - Direct Object Control", result.stdout)
 
+    def test_scan_cli_accepts_input_json_and_merges_base_findings(self):
+        """Regression: `scan --input-json <file>` must be accepted (the flag lives on
+        the scan subparser, not only manual mode) and the imported pre-prioritized
+        findings must merge into synthesis — even over an empty loot directory, which
+        is how cross-tool correlation feeds SAST/DAST/dependency findings in."""
+        host = "omega.glc-cloud.net"
+        imported = [
+            {"host": host, "port": 443, "source_tool": "omega-dast", "entity_type": "web_finding",
+             "name": "sql-injection", "version": None,
+             "attributes": {"class": "sql-injection", "route": "/search", "url": f"https://{host}/search"}},
+            {"host": host, "port": None, "source_tool": "omega-sast", "entity_type": "code_finding",
+             "name": "sql-injection", "version": None,
+             "attributes": {"class": "sql-injection", "file": "api/search.py", "line": 42}},
+        ]
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            loot = root / "loot"
+            loot.mkdir()
+            imported_path = root / "imported-findings.json"
+            imported_path.write_text(json.dumps(imported), encoding="utf-8")
+            paths_json = root / "paths.json"
+
+            result = self._run_scan(
+                loot, "--no-color", "--input-json", str(imported_path),
+                "--output-paths-json", str(paths_json),
+            )
+
+            self.assertEqual(result.returncode, 0, result.stdout + "\n" + result.stderr)
+            self.assertIn("imported base finding", result.stdout)
+            self.assertTrue(paths_json.is_file())
+            synthesized = json.loads(paths_json.read_text(encoding="utf-8"))
+            self.assertTrue(
+                any("Reachable SQL injection" in p.get("name", "") for p in synthesized),
+                "imported DAST+SAST findings of the same class should synthesize a correlated path",
+            )
+
     def test_scan_cli_multihost_per_host_directories(self):
         """Per-host subdirectories: every file is ingested and stamped with the
         correct host from its directory name, with no --target-host needed."""

@@ -1899,6 +1899,18 @@ def run_scan_mode(args):
     loot_dir = os.path.abspath(args.loot_dir)
     provenance_by_file = _load_provenance_manifest(loot_dir)
 
+    # Cross-tool correlation: optional pre-prioritized base findings (e.g. the
+    # SAST/DAST/dependency findings an orchestrator adapted into PathFinder's
+    # schema) are merged into synthesis alongside the scanned loot.
+    base_prioritized_findings = []
+    if getattr(args, 'input_json', None):
+        try:
+            base_prioritized_findings = load_base_findings(args.input_json)
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            print(f"\n{C.BOLD}{C.YELLOW}[!] Error loading {args.input_json}: {e}{C.END}")
+            logger.exception("Failed to load input-json")
+            sys.exit(1)
+
     print(f"\n{C.BOLD}{C.CYAN}[*] Scanning loot directory: {loot_dir}{C.END}")
 
     if args.verbose > 0:
@@ -1906,10 +1918,13 @@ def run_scan_mode(args):
 
     detections = auto_detect_loot(loot_dir, verbose=args.verbose)
 
-    if not detections:
+    if not detections and not base_prioritized_findings:
         print(f"{C.BOLD}{C.YELLOW}[!] No recognizable tool output files found in '{loot_dir}'.{C.END}")
         print(f"    Tip: Use manual flags (--nmap-xml, --gobuster-txt, etc.) if auto-detection fails.")
         sys.exit(1)
+    if not detections:
+        print(f"\n{C.BOLD}{C.CYAN}[*] No loot files detected; proceeding with "
+              f"{len(base_prioritized_findings)} imported base finding(s) only.{C.END}")
 
     # Summarise detections grouped by host (None = flat/loose files).
     hosts_seen = sorted({d['host'] for d in detections if d['host']})
@@ -2002,20 +2017,29 @@ def run_scan_mode(args):
     if skipped_hostless and not global_target:
         print(f"\n{C.BOLD}{C.YELLOW}[!] Some host-dependent files were skipped for lack of host context.{C.END}")
 
-    if not all_raw_findings:
+    if not all_raw_findings and not base_prioritized_findings:
         print(f"\n{C.BOLD}{C.YELLOW}[!] No findings produced from any parser. Exiting.{C.END}")
         sys.exit(0)
 
-    print(f"\n{C.BOLD}{C.CYAN}[*] Running Vulnerability Mapper...{C.END}")
-    use_github = not (getattr(args, 'offline', False) or getattr(args, 'skip_github', False))
-    use_searchsploit = not (getattr(args, 'offline', False) or getattr(args, 'skip_searchsploit', False))
-    vuln_mapper = VulnerabilityMapper(
-        use_github=use_github,
-        use_searchsploit=use_searchsploit,
-        github_cache_file=args.github_cache,
-    )
-    prioritized = vuln_mapper.map_and_prioritize(all_raw_findings)
-    prioritized = deduplicate_findings(prioritized)
+    if all_raw_findings:
+        print(f"\n{C.BOLD}{C.CYAN}[*] Running Vulnerability Mapper...{C.END}")
+        use_github = not (getattr(args, 'offline', False) or getattr(args, 'skip_github', False))
+        use_searchsploit = not (getattr(args, 'offline', False) or getattr(args, 'skip_searchsploit', False))
+        vuln_mapper = VulnerabilityMapper(
+            use_github=use_github,
+            use_searchsploit=use_searchsploit,
+            github_cache_file=args.github_cache,
+        )
+        mapped = vuln_mapper.map_and_prioritize(all_raw_findings)
+    else:
+        mapped = []
+
+    # Imported base findings (already prioritized) + freshly mapped scan findings,
+    # deduplicated together so a surface two tools both saw collapses to one.
+    combined = base_prioritized_findings + mapped
+    prioritized = deduplicate_findings(combined)
+    if base_prioritized_findings:
+        print(f"    {C.GREEN}[+]{C.END} Merged {len(base_prioritized_findings)} imported base finding(s) with {len(mapped)} scanned.")
     print(f"    {C.GREEN}[+]{C.END} Mapper prioritized {len(prioritized)} findings.")
 
     _save_findings(args, prioritized)
@@ -2047,6 +2071,7 @@ def main():
     scan_p.add_argument('loot_dir', help='Path to directory containing tool output files.')
     scan_p.add_argument('--target-host', help='Target host IP or domain (inferred from nmap XML if omitted).')
     scan_p.add_argument('-o', '--output-json', help='Save prioritized findings to a JSON file.')
+    scan_p.add_argument('-i', '--input-json', help='Load pre-prioritized base findings from a JSON file (e.g. cross-tool SAST/DAST/dependency findings) and merge them into synthesis.')
     scan_p.add_argument('--output-paths-json', help='Save synthesized attack paths to a JSON file.')
     scan_p.add_argument('--report', nargs='?', const=DEFAULT_REPORT_NAME, metavar='HTML', help=f'Write a self-contained HTML engagement report (default path: {DEFAULT_REPORT_NAME}).')
     scan_p.add_argument('--report-redact-secrets', action='store_true', help='Redact credential secrets in the HTML report (unredacted by default).')
