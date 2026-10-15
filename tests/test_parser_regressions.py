@@ -42,6 +42,29 @@ class ParserRegressionTests(unittest.TestCase):
         self.assertTrue(all(f["attributes"]["discovery_command"] ==
                             "nmap -sC -sV 10.10.10.10" for f in findings))
 
+    def test_nmap_hostname_provenance_distinguishes_dns_from_scraped_text(self):
+        # A hostname from a <hostname> DNS record is a confirmed name (high); one
+        # scraped from NSE script output text (where the scan target, a probe path,
+        # or an edge trace value often appears) is attributed and down-weighted.
+        xml = (
+            '<nmaprun><host><status state="up"/><address addr="10.0.0.5" addrtype="ipv4"/>'
+            '<hostnames><hostname name="real.example.com" type="PTR"/></hostnames>'
+            '<ports><port protocol="tcp" portid="443"><state state="open"/>'
+            '<service name="https"/>'
+            '<script id="ssl-cert" output="Issuer: cdn-edge-trace.fastly.net observed in transit"/>'
+            '</port></ports></host></nmaprun>'
+        )
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".xml", delete=False, encoding="utf-8") as h:
+            h.write(xml)
+            path = Path(h.name)
+        self.addCleanup(lambda: path.unlink(missing_ok=True))
+        findings = parse_nmap_xml(str(path))
+        hostnames = {f["name"]: f["attributes"] for f in findings if f["entity_type"] == "hostname_candidate"}
+        self.assertEqual(hostnames["real.example.com"]["provenance"], "dns_record")
+        self.assertEqual(hostnames["real.example.com"]["confidence"], "high")
+        self.assertEqual(hostnames["cdn-edge-trace.fastly.net"]["provenance"], "script_text")
+        self.assertEqual(hostnames["cdn-edge-trace.fastly.net"]["confidence"], "low")
+
     def test_gobuster_parser_extracts_web_content_findings(self):
         findings = parse_gobuster_output(str(FIXTURES / "gobuster_sample.txt"), "10.10.10.10", 80, "dir")
         self.assertEqual(len(findings), 2)

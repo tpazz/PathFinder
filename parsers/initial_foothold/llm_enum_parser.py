@@ -198,4 +198,22 @@ def parse_llm_enum_json(json_file_path):
     if isinstance(discovery_command, str) and discovery_command:
         for finding in findings:
             finding.setdefault("attributes", {})["discovery_command"] = discovery_command
+
+    # The host resolved to a CDN/edge (Cloudflare, Railway, ...). An AI surface
+    # seen at the edge may belong to the edge or a shared tenant, not this origin,
+    # so annotate every finding and down-weight it - the mapper then scores it as
+    # Info. Never dropped: a real exposed surface behind a CDN is still reported,
+    # just flagged for manual confirmation against the origin.
+    cdn = data.get("cdn")
+    if isinstance(cdn, str) and cdn:
+        for finding in findings:
+            attrs = finding.setdefault("attributes", {})
+            attrs["edge_fronted"] = cdn
+            attrs["requires_manual_validation"] = True
+            # severity=info drives the score scaler to its floor (the mapper ranks
+            # ai_service at 70 * 0.4), so an edge-fronted surface sorts to the
+            # bottom as informational rather than a confirmed origin finding.
+            attrs["severity"] = "info"
+            attrs["confidence"] = "low"
+            attrs.setdefault("edge_note", f"Observed behind {cdn}; may be the edge, not the origin service.")
     return findings

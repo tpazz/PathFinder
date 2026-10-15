@@ -8,19 +8,27 @@ _FQDN = re.compile(
 )
 
 
-def _hostname_finding(host_ip, hostname, source, port=None):
+def _hostname_finding(host_ip, hostname, source, port=None, *, kind="dns_record"):
+    name = hostname.lower().rstrip(".")
+    # A hostname from a DNS/cert record is a real name for this host. One scraped
+    # from free-text NSE script output may instead be the scan target echoed back,
+    # the scanner's own probe path, an edge/CDN trace value, or an example domain
+    # in a banner - so it is tagged with its provenance and down-weighted rather
+    # than presented as a confirmed hostname with equal confidence.
+    confidence = "high" if kind == "dns_record" else "low"
     return {
         "host": host_ip,
         "port": port,
         "source_tool": "nmap",
         "entity_type": "hostname_candidate",
-        "name": hostname.lower().rstrip("."),
+        "name": name,
         "version": None,
         "attributes": {
-            "hostname": hostname.lower().rstrip("."),
-            "confidence": "high",
+            "hostname": name,
+            "confidence": confidence,
             "requires_manual_validation": True,
             "extraction_source": source,
+            "provenance": kind,
         },
     }
 
@@ -234,6 +242,7 @@ def parse_nmap_xml(xml_file_path):
                         seen_hostnames.add(hostname)
                         findings.append(_hostname_finding(
                             host_ip, hostname, f"nmap NSE script {script_id}", port_id,
+                            kind="script_text",
                         ))
     commandline = root.get("args")
     if commandline:

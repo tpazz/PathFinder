@@ -69,6 +69,51 @@ class AiServiceScoringTests(unittest.TestCase):
         self.assertGreater(scored["ollama"], scored["gradio"])
 
 
+class CdnFrontedDowngradeTests(unittest.TestCase):
+    """An AI surface seen behind a CDN/edge may be the edge, not the origin, so it
+    is annotated and down-weighted to informational - never dropped."""
+
+    def _loot(self, cdn=None):
+        payload = {
+            "tool": "one-shot-enum", "type": "llm_enum", "host": "h", "port": 443,
+            "base_url": "https://h", "ai_surfaces": [
+                {"key": "openai-compatible", "label": "OpenAI-compatible", "confidence": "high", "evidence": []}],
+        }
+        if cdn is not None:
+            payload["cdn"] = cdn
+        path = _write(json.dumps(payload))
+        try:
+            return parse_llm_enum_json(path)
+        finally:
+            Path(path).unlink(missing_ok=True)
+
+    def test_cdn_flag_annotates_and_downgrades_findings(self):
+        findings = self._loot(cdn="Cloudflare")
+        self.assertTrue(findings)
+        attrs = findings[0]["attributes"]
+        self.assertEqual(attrs["edge_fronted"], "Cloudflare")
+        self.assertTrue(attrs["requires_manual_validation"])
+        self.assertEqual(attrs["severity"], "info")
+        self.assertEqual(attrs["confidence"], "low")
+
+    def test_no_cdn_leaves_findings_untouched(self):
+        attrs = self._loot(cdn=None)[0]["attributes"]
+        self.assertNotIn("edge_fronted", attrs)
+        self.assertEqual(attrs["confidence"], "high")
+
+    def test_edge_fronted_surface_scores_below_an_origin_surface(self):
+        mapper = VulnerabilityMapper(use_github=False, use_searchsploit=False)
+        origin = {"host": "h", "port": 80, "source_tool": "one-shot-enum-llm", "entity_type": "ai_service",
+                  "name": "ollama", "version": None, "attributes": {"confidence": "high"}}
+        edge = {"host": "e", "port": 443, "source_tool": "one-shot-enum-llm", "entity_type": "ai_service",
+                "name": "openai-compatible", "version": None,
+                "attributes": {"confidence": "low", "severity": "info", "edge_fronted": "Cloudflare"}}
+        scored = {f["name"]: f["attributes"]["score"] for f in mapper.map_and_prioritize([origin, edge])}
+        self.assertGreater(scored["ollama"], scored["openai-compatible"])
+        # The edge finding is still present (annotated, not dropped).
+        self.assertIn("openai-compatible", scored)
+
+
 class AiRuleTests(unittest.TestCase):
     def setUp(self):
         self.synth = AttackPathSynthesizer(rules_file_path=RULES_FILE)
