@@ -283,6 +283,23 @@ def _dedup_key(finding):
             "manual_privilege_escalation", finding.get("host"), finding.get("port"),
             finding.get("name"), discriminator, evidence,
         )
+    # Generic branch. host+port+name+type alone is too coarse for rich vuln/web
+    # findings: one scanner can legitimately fire the SAME rule name at several
+    # distinct locations (e.g. a nuclei template matching three different URLs on
+    # one port), and collapsing them merges distinct leads into a single card so
+    # drill-down shows only the first one's detail. Fold in the advisory/rule, the
+    # CVE set, the detected version, and the specific match location when the
+    # finding carries them, so distinct instances stay distinct. Findings without
+    # any of these keep the classic coarse key, so genuine cross-tool duplicates of
+    # the same simple service/web finding still merge and corroborate.
+    attrs = finding.get("attributes") or {}
+    cves = attrs.get("cves")
+    if isinstance(cves, (list, tuple)):
+        cves = tuple(sorted(str(c) for c in cves))
+    location = attrs.get("matched_at") or attrs.get("url")
+    discriminator = (attrs.get("template_id"), cves, finding.get("version"), location)
+    if any(part not in (None, "", (), []) for part in discriminator):
+        return (finding.get("host"), finding.get("port"), finding.get("name"), entity_type, discriminator)
     return (finding.get("host"), finding.get("port"), finding.get("name"), entity_type)
 
 

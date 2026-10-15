@@ -101,6 +101,56 @@ class ProvenanceMergeTests(unittest.TestCase):
         self.assertEqual(set(out[0]["attributes"]["source_files"]), {"a.xml", "b.txt"})
 
 
+class VulnerabilityDistinctnessTests(unittest.TestCase):
+    """A rich finding with a location/advisory/version must not collapse into one
+    card just because another distinct finding shares host+port+name+type."""
+
+    def _nuclei(self, host, port, name, matched_at, **attrs):
+        a = {"template_id": name, "matched_at": matched_at}
+        a.update(attrs)
+        return {"host": host, "port": port, "source_tool": "nuclei",
+                "entity_type": "vulnerability", "name": name, "version": None, "attributes": a}
+
+    def test_same_template_different_location_stays_distinct(self):
+        # The reported drill-down bug: one template firing at two URLs on one port
+        # must remain two findings, not merge into one (losing the second's detail).
+        findings = [self._nuclei("h", 443, "exposed-config", "https://h/a/config.json"),
+                    self._nuclei("h", 443, "exposed-config", "https://h/b/config.json")]
+        out = deduplicate_findings(findings)
+        self.assertEqual(len(out), 2)
+        self.assertEqual({f["attributes"]["matched_at"] for f in out},
+                         {"https://h/a/config.json", "https://h/b/config.json"})
+
+    def test_same_template_same_location_still_merges(self):
+        # Genuine cross-tool corroboration of the SAME instance must still collapse.
+        findings = [self._nuclei("h", 443, "exposed-config", "https://h/a/config.json", tool="nuclei"),
+                    {"host": "h", "port": 443, "source_tool": "naabu", "entity_type": "vulnerability",
+                     "name": "exposed-config", "version": None,
+                     "attributes": {"template_id": "exposed-config", "matched_at": "https://h/a/config.json",
+                                    "source_file": "b.json"}}]
+        self.assertEqual(len(deduplicate_findings(findings)), 1)
+
+    def test_same_name_different_version_stays_distinct(self):
+        findings = [
+            {"host": "h", "port": 80, "source_tool": "whatweb", "entity_type": "vulnerability",
+             "name": "CVE-2021-1234", "version": "1.0", "attributes": {}},
+            {"host": "h", "port": 80, "source_tool": "whatweb", "entity_type": "vulnerability",
+             "name": "CVE-2021-1234", "version": "2.0", "attributes": {}},
+        ]
+        self.assertEqual(len(deduplicate_findings(findings)), 2)
+
+    def test_plain_findings_without_discriminators_still_merge(self):
+        # No advisory/version/location: classic coarse key preserved, so simple
+        # duplicates from two tools still corroborate rather than double up.
+        findings = [
+            {"host": "h", "port": 22, "source_tool": "nmap", "entity_type": "service",
+             "name": "ssh", "version": None, "attributes": {"source_file": "a.xml"}},
+            {"host": "h", "port": 22, "source_tool": "netexec", "entity_type": "service",
+             "name": "ssh", "version": None, "attributes": {"source_file": "b.txt"}},
+        ]
+        self.assertEqual(len(deduplicate_findings(findings)), 1)
+
+
 class PerFindingValidationTests(unittest.TestCase):
     def test_keeps_good_drops_bad(self):
         good = {"host": "h", "port": 80, "source_tool": "t", "entity_type": "service",
