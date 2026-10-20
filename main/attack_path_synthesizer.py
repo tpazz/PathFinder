@@ -571,6 +571,9 @@ class AttackPathSynthesizer:
                 seen.add(dedup_key)
 
                 suggested_paths.append({
+                    "evidence_state": "Suspected",
+                    "relationship": "inferred",
+                    "assessment_reason": "Candidate relationship from contributing signals; reachability and exploitation require validation.",
                     "name": rule['name'],
                     "priority": rule['priority'],
                     "effective_priority": effective_priority,
