@@ -52,6 +52,31 @@ def parse_llm_enum_json(json_file_path):
         c for t in confirmed_tools if isinstance(t, dict) for c in (t.get("categories") or [])
     })
     agent_card_paths = [c.get("path") for c in agent_cards if isinstance(c, dict) and c.get("path")]
+    usable_hits = [h for h in probe_hits if isinstance(h, dict) and not h.get('baseline_match')]
+
+    def verified_surface(key):
+        if 'mcp' in key and confirmed_tool_names:
+            return True
+        if 'agent' in key and agent_card_paths:
+            return True
+        paths = [str(h.get('path', '')).lower() for h in usable_hits if h.get('protocol_verified') is True]
+        if key == 'mlflow' and any('mlflow' in path for path in paths):
+            return True
+        if key in ('agent-mcp', 'ai-agent-a2a', 'ai-agent'):
+            return any('agent' in path or path in ('/a2a', '/mcp') for path in paths)
+        # A parsed OpenAPI document or exact product banner corroborates service
+        # presence. Neither establishes write access or successful exploitation.
+        banner = str(service.get('product', '')).lower()
+        if key and key in banner.split():
+            return True
+        expected = {'ollama': ('/api/tags', '/api/chat', '/api/generate'),
+                    'openai-compatible': ('/v1/models', '/v1/chat/completions', '/v1/completions'),
+                    'mlflow': ('/api/2.0/mlflow/',), 'jupyter': ('/api/kernels', '/api/sessions'),
+                    'gradio': ('/gradio_api/',), 'langserve': ('/invoke', '/batch', '/stream')}
+        relevant = expected.get(key, ())
+        parsed = [str(e.get('path', '')) for e in endpoints if isinstance(e, dict)] if not data.get('openapi_error') else []
+        return any(path == prefix or prefix.endswith('/') and path.startswith(prefix)
+                   for path in [*paths, *parsed] for prefix in relevant)
     # Attributes added to every finding from this service when active (--ai-active)
     # confirmation ran, so the confirmed capabilities travel with the finding.
     active_attrs = {
@@ -64,11 +89,12 @@ def parse_llm_enum_json(json_file_path):
         if not isinstance(surface, dict):
             continue
         key = surface.get("key") or "ai_service"
+        verified = verified_surface(key)
         findings.append({
             "host": host,
             "port": port,
             "source_tool": "one-shot-enum-llm",
-            "entity_type": "ai_service",
+            "entity_type": "ai_service" if verified else "ai_service_candidate",
             "name": key,
             "version": None,
             "attributes": {
@@ -78,6 +104,9 @@ def parse_llm_enum_json(json_file_path):
                 "next_steps": surface.get("next_steps"),
                 "base_url": base_url,
                 "framework": key,
+                "protocol_verified": verified,
+                "evidence_state": 'Suspected' if verified else 'Not assessed',
+                "assessment_role": 'finding' if verified else 'validation',
                 "endpoints": endpoints,
                 "probe_hits": probe_hits,
                 "probe_count": data.get("probe_count"),
@@ -115,17 +144,21 @@ def parse_llm_enum_json(json_file_path):
         elif not findings:
             archetype = "ai-agent"
     if archetype and archetype not in {f["name"] for f in findings}:
+        verified = verified_surface(archetype)
         findings.append({
             "host": host,
             "port": port,
             "source_tool": "one-shot-enum-llm",
-            "entity_type": "ai_service",
+            "entity_type": "ai_service" if verified else "ai_service_candidate",
             "name": archetype,
             "version": None,
             "attributes": {
                 "label": agent.get("role"),
                 "confidence": "medium",
                 "framework": agent.get("framework") or "ai-agent",
+                "protocol_verified": verified,
+                "evidence_state": 'Suspected' if verified else 'Not assessed',
+                "assessment_role": 'finding' if verified else 'validation',
                 "base_url": base_url,
                 "endpoints": endpoints,
                 "probe_hits": probe_hits,
@@ -209,6 +242,9 @@ def parse_llm_enum_json(json_file_path):
         for finding in findings:
             attrs = finding.setdefault("attributes", {})
             attrs["edge_fronted"] = cdn
+            attrs["observed_hostname"] = base_url
+            attrs["observed_ip"] = host
+            attrs["infrastructure_scope"] = 'edge_fronted'
             attrs["requires_manual_validation"] = True
             # severity=info drives the score scaler to its floor (the mapper ranks
             # ai_service at 70 * 0.4), so an edge-fronted surface sorts to the

@@ -8,6 +8,15 @@ first.
 It is built for authorised labs, CTFs, and pentest workflows where you want fast
 triage without losing the underlying evidence.
 
+Service-route matches without protocol, schema or product corroboration remain
+validation inventory. MLflow artifact-write and Jupyter kernel RCE paths require
+verified capabilities, rather than service presence alone. Explicit validation
+tasks and observations do not seed attack paths. Build-only dependency advisories
+retain their CI/build risk but do not seed HTTP runtime correlations; unknown
+scope remains eligible. NSE dotted text is observation inventory unless DNS or
+certificate context corroborates a hostname. An IP service does not establish
+application origin ownership, particularly on shared CDN infrastructure.
+
 ## Install and verify
 
 ### Requirements

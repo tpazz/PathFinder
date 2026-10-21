@@ -44,7 +44,8 @@ class LlmEnumParserTests(unittest.TestCase):
 
         validate_findings(findings)
         self.assertEqual(len(findings), 2)
-        self.assertTrue(all(f["entity_type"] == "ai_service" for f in findings))
+        self.assertEqual({f['name']: f['entity_type'] for f in findings},
+                         {'ollama': 'ai_service', 'openai-compatible': 'ai_service_candidate'})
         ollama = next(f for f in findings if f["name"] == "ollama")
         self.assertEqual(ollama["host"], "10.10.10.10")
         self.assertEqual(ollama["port"], 11434)
@@ -132,7 +133,7 @@ class AiRuleTests(unittest.TestCase):
 
     def test_notebook_rce_rule_fires(self):
         self.assertIn("Exposed Jupyter - Unauthenticated Kernel = RCE",
-                      self._names([self._f("notebook", score=70)]))
+                      self._names([self._f("notebook", score=70, kernel_creation_verified=True)]))
 
     def test_openai_compatible_rule_fires(self):
         paths = self.synth.generate_attack_paths([self._f("openai-compatible", score=70)])
@@ -141,7 +142,7 @@ class AiRuleTests(unittest.TestCase):
         self.assertIn("http://10.10.10.10:8000", hit[0]["suggestion"]["description"])
 
     def test_agent_and_rag_and_mlflow_rules_fire(self):
-        names = self._names([self._f("agent-mcp", score=70), self._f("rag-vector", score=70), self._f("mlflow", score=70)])
+        names = self._names([self._f("agent-mcp", score=70), self._f("rag-vector", score=70), self._f("mlflow", score=70, artifact_write_verified=True)])
         self.assertIn("Agent/MCP Surface - Excessive Agency & Tool Abuse", names)
         self.assertIn("RAG / Vector Store - Indirect Injection & Data Extraction", names)
         self.assertIn("MLflow Exposed - Artifact Write to Code Execution", names)

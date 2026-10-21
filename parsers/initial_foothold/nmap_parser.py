@@ -15,12 +15,13 @@ def _hostname_finding(host_ip, hostname, source, port=None, *, kind="dns_record"
     # the scanner's own probe path, an edge/CDN trace value, or an example domain
     # in a banner - so it is tagged with its provenance and down-weighted rather
     # than presented as a confirmed hostname with equal confidence.
-    confidence = "high" if kind == "dns_record" else "low"
+    corroborated = kind in ('dns_record', 'certificate_dns')
+    confidence = "high" if corroborated else "low"
     return {
         "host": host_ip,
         "port": port,
         "source_tool": "nmap",
-        "entity_type": "hostname_candidate",
+        "entity_type": "hostname_candidate" if corroborated else "hostname_observation",
         "name": name,
         "version": None,
         "attributes": {
@@ -29,6 +30,8 @@ def _hostname_finding(host_ip, hostname, source, port=None, *, kind="dns_record"
             "requires_manual_validation": True,
             "extraction_source": source,
             "provenance": kind,
+            "evidence_state": 'Suspected' if corroborated else 'Observation',
+            "assessment_role": 'finding' if corroborated else 'observation',
         },
     }
 
@@ -237,14 +240,25 @@ def parse_nmap_xml(xml_file_path):
                         if len(seen_hostnames) >= 100:
                             break
                         hostname = hostname_match.group("host").lower().rstrip(".")
+                        cert_name = script_id == 'ssl-cert' and bool(re.search(
+                            r'(?:DNS:|Subject:[^\n]*\b(?:commonName|CN)=)\s*' + re.escape(hostname) + r'\b',
+                            str(output_text), re.I))
                         if hostname in seen_hostnames:
+                            if cert_name:
+                                for previous in findings:
+                                    if previous.get('host') == host_ip and previous.get('name') == hostname and previous.get('entity_type') == 'hostname_observation':
+                                        previous.update(_hostname_finding(host_ip, hostname, f'nmap NSE script {script_id}', port_id, kind='certificate_dns'))
                             continue
                         seen_hostnames.add(hostname)
                         findings.append(_hostname_finding(
                             host_ip, hostname, f"nmap NSE script {script_id}", port_id,
-                            kind="script_text",
+                            kind="certificate_dns" if cert_name else "script_text",
                         ))
     commandline = root.get("args")
+    for finding in findings:
+        attrs = finding.setdefault('attributes', {})
+        attrs['observed_ip'] = finding.get('host')
+        attrs['origin_attribution'] = 'Not assessed: an IP service is not proof of application origin ownership; shared CDN infrastructure may expose unrelated ports.'
     if commandline:
         for finding in findings:
             finding.setdefault("attributes", {})["discovery_command"] = commandline

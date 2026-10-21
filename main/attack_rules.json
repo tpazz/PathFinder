@@ -1996,11 +1996,12 @@
         "priority": 88,
         "host_scope": "same_host",
         "triggers": [
-            { "id": 1, "entity_type": "ai_service", "name_match": { "type": "exact", "value": "mlflow" } }
+            { "id": 1, "entity_type": "ai_service",
+            "attributes_match": {"artifact_write_verified": true}, "name_match": { "type": "exact", "value": "mlflow" } }
         ],
         "suggestion": {
             "description": "MLflow tracking/registry exposed at {trigger.1.attributes.base_url} ({trigger.1.host}).",
-            "rationale": "Exposed MLflow often allows artifact writes and unsafe model loaders (pickle/pyfunc/joblib/torch); a tampered artifact consumed downstream yields code execution (OWASP LLM05 Supply Chain).",
+            "rationale": "Artifact-write capability was corroborated. Code execution remains a hypothesis until a reachable downstream loader is shown to consume attacker-controlled serialized content (pickle/pyfunc/joblib/torch); service presence alone does not establish this path.",
             "commands": [
                 "List experiments and registered models via the MLflow REST API.",
                 "Inspect artifact URIs for writable stores, credentials, or local filesystem paths.",
@@ -2054,11 +2055,11 @@
         "priority": 90,
         "host_scope": "same_host",
         "triggers": [
-            { "id": 1, "entity_type": "ai_service", "name_match": { "type": "exact", "value": "notebook" } }
+            { "id": 1, "entity_type": "ai_service", "attributes_match": {"kernel_creation_verified": true}, "name_match": { "type": "exact", "value": "notebook" } }
         ],
         "suggestion": {
             "description": "Jupyter notebook/server exposed at {trigger.1.attributes.base_url} ({trigger.1.host}).",
-            "rationale": "An unauthenticated Jupyter server is remote code execution - kernel creation runs arbitrary code. Even token-protected instances may leak files, environment variables, and credentials.",
+            "rationale": "Kernel-creation capability was corroborated. Validate the authentication boundary and execution context; this candidate path does not prove that arbitrary code was executed or that a token-protected server is exploitable.",
             "commands": [
                 "curl -s {trigger.1.attributes.base_url}/api/status   # is token auth enforced?",
                 "If unauthenticated: create a kernel and execute code (treat as RCE; preserve evidence).",

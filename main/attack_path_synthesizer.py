@@ -329,6 +329,13 @@ class AttackPathSynthesizer:
 
     def _check_finding_against_trigger(self, finding, trigger):
         if finding.get('entity_type') != trigger.get('entity_type'): return False
+        attrs = finding.get('attributes') or {}
+        if attrs.get('correlation_eligible') is False or attrs.get('assessment_role') in ('validation', 'observation'):
+            return False
+        # Build/CI advisories remain findings, but cannot establish an HTTP
+        # runtime relationship. Explicit build rules may opt in independently.
+        if finding.get('entity_type') == 'dependency_finding' and attrs.get('dependency_scope') in ('build', 'test', 'docs', 'generated') and not trigger.get('allow_build_dependency', False):
+            return False
         if trigger.get('entity_type') == "credential" \
                 and not trigger.get("allow_anonymous_credential", False) \
                 and not _credential_has_actionable_identity(finding):

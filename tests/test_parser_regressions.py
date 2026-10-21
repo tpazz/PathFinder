@@ -59,11 +59,12 @@ class ParserRegressionTests(unittest.TestCase):
             path = Path(h.name)
         self.addCleanup(lambda: path.unlink(missing_ok=True))
         findings = parse_nmap_xml(str(path))
-        hostnames = {f["name"]: f["attributes"] for f in findings if f["entity_type"] == "hostname_candidate"}
+        hostnames = {f["name"]: f["attributes"] for f in findings if f["entity_type"] in ("hostname_candidate", "hostname_observation")}
         self.assertEqual(hostnames["real.example.com"]["provenance"], "dns_record")
         self.assertEqual(hostnames["real.example.com"]["confidence"], "high")
         self.assertEqual(hostnames["cdn-edge-trace.fastly.net"]["provenance"], "script_text")
         self.assertEqual(hostnames["cdn-edge-trace.fastly.net"]["confidence"], "low")
+        self.assertEqual(hostnames['cdn-edge-trace.fastly.net']['assessment_role'], 'observation')
 
     def test_gobuster_parser_extracts_web_content_findings(self):
         findings = parse_gobuster_output(str(FIXTURES / "gobuster_sample.txt"), "10.10.10.10", 80, "dir")
