@@ -15,8 +15,8 @@ def _hostname_finding(host_ip, hostname, source, port=None, *, kind="dns_record"
     # the scanner's own probe path, an edge/CDN trace value, or an example domain
     # in a banner - so it is tagged with its provenance and down-weighted rather
     # than presented as a confirmed hostname with equal confidence.
-    corroborated = kind in ('dns_record', 'certificate_dns')
-    confidence = "high" if corroborated else "low"
+    corroborated = kind in ('dns_record', 'certificate_dns', 'http_redirect')
+    confidence = 'medium' if kind == 'http_redirect' else "high" if corroborated else "low"
     return {
         "host": host_ip,
         "port": port,
@@ -243,16 +243,19 @@ def parse_nmap_xml(xml_file_path):
                         cert_name = script_id == 'ssl-cert' and bool(re.search(
                             r'(?:DNS:|Subject:[^\n]*\b(?:commonName|CN)=)\s*' + re.escape(hostname) + r'\b',
                             str(output_text), re.I))
+                        redirect_name = script_id in ('http-title', 'http-headers') and bool(re.search(
+                            r'(?:Location:\s*|redirect(?:ed|ing)?\s+to\s+)https?://' + re.escape(hostname) + r'(?=[:/\s]|$)',
+                            str(output_text), re.I))
                         if hostname in seen_hostnames:
-                            if cert_name:
+                            if cert_name or redirect_name:
                                 for previous in findings:
                                     if previous.get('host') == host_ip and previous.get('name') == hostname and previous.get('entity_type') == 'hostname_observation':
-                                        previous.update(_hostname_finding(host_ip, hostname, f'nmap NSE script {script_id}', port_id, kind='certificate_dns'))
+                                        previous.update(_hostname_finding(host_ip, hostname, f'nmap NSE script {script_id}', port_id, kind='certificate_dns' if cert_name else 'http_redirect'))
                             continue
                         seen_hostnames.add(hostname)
                         findings.append(_hostname_finding(
                             host_ip, hostname, f"nmap NSE script {script_id}", port_id,
-                            kind="certificate_dns" if cert_name else "script_text",
+                            kind="certificate_dns" if cert_name else 'http_redirect' if redirect_name else "script_text",
                         ))
     commandline = root.get("args")
     for finding in findings:

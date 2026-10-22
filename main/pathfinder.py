@@ -847,6 +847,8 @@ def _detect_dir_based_parsers(scan_root, host, detections, dir_parser_paths, ver
 
 
 def _sniff_and_record(path, label, host, detections, verbose):
+    if str(path).endswith('.xml.raw'):
+        return  # Original evidence accompanies the normalized XML, not a second scan.
     """Content-sniff a single file and append a detection record if recognised."""
     file_type, reason = _sniff_file_type_details(path)
     if file_type:

@@ -67,11 +67,13 @@ def parse_llm_enum_json(json_file_path):
         # A parsed OpenAPI document or exact product banner corroborates service
         # presence. Neither establishes write access or successful exploitation.
         banner = str(service.get('product', '')).lower()
+        if key == 'notebook' and ('jupyter' in banner or any(path in ('/api/kernels', '/api/sessions', '/api/status') for path in paths)):
+            return True
         if key and key in banner.split():
             return True
         expected = {'ollama': ('/api/tags', '/api/chat', '/api/generate'),
                     'openai-compatible': ('/v1/models', '/v1/chat/completions', '/v1/completions'),
-                    'mlflow': ('/api/2.0/mlflow/',), 'jupyter': ('/api/kernels', '/api/sessions'),
+                    'mlflow': ('/api/2.0/mlflow/',), 'notebook': ('/api/kernels', '/api/sessions', '/api/status'), 'jupyter': ('/api/kernels', '/api/sessions'),
                     'gradio': ('/gradio_api/',), 'langserve': ('/invoke', '/batch', '/stream')}
         relevant = expected.get(key, ())
         parsed = [str(e.get('path', '')) for e in endpoints if isinstance(e, dict)] if not data.get('openapi_error') else []
@@ -84,6 +86,14 @@ def parse_llm_enum_json(json_file_path):
         "confirmed_mcp_categories": confirmed_categories or None,
         "agent_card_paths": agent_card_paths or None,
     }
+    # Explicit externally-collected capability evidence; presence is not proof.
+    capability_evidence = data.get('capability_evidence')
+    capability_evidence = capability_evidence if isinstance(capability_evidence, dict) else {}
+    for flag in ('artifact_write_verified', 'kernel_creation_verified'):
+        evidence = capability_evidence.get(flag, {})
+        if isinstance(evidence, dict) and evidence.get('verified') is True and evidence.get('evidence'):
+            active_attrs[flag] = True
+            active_attrs.setdefault('capability_evidence', {})[flag] = evidence
 
     for surface in data.get("ai_surfaces", []):
         if not isinstance(surface, dict):
@@ -249,7 +259,8 @@ def parse_llm_enum_json(json_file_path):
             # severity=info drives the score scaler to its floor (the mapper ranks
             # ai_service at 70 * 0.4), so an edge-fronted surface sorts to the
             # bottom as informational rather than a confirmed origin finding.
-            attrs["severity"] = "info"
-            attrs["confidence"] = "low"
+            if not (attrs.get('protocol_verified') or attrs.get('confirmed_mcp_tools') or attrs.get('agent_card_paths')):
+                attrs["severity"] = "info"
+                attrs["confidence"] = "low"
             attrs.setdefault("edge_note", f"Observed behind {cdn}; may be the edge, not the origin service.")
     return findings

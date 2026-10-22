@@ -13,9 +13,13 @@ validation inventory. MLflow artifact-write and Jupyter kernel RCE paths require
 verified capabilities, rather than service presence alone. Explicit validation
 tasks and observations do not seed attack paths. Build-only dependency advisories
 retain their CI/build risk but do not seed HTTP runtime correlations; unknown
-scope remains eligible. NSE dotted text is observation inventory unless DNS or
-certificate context corroborates a hostname. An IP service does not establish
+scope remains eligible. NSE dotted text is observation inventory unless DNS,
+certificate or structured HTTP-redirect context corroborates a hostname. An IP service does not establish
 application origin ownership, particularly on shared CDN infrastructure.
+
+See [discovery and redacted credential evidence](docs/credential-and-discovery-evidence.md)
+for retained AI-service investigation leads, explicit capability evidence and
+credential-pattern input that cannot trigger login validation.
 
 ## Install and verify
 

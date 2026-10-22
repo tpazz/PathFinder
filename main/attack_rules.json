@@ -3117,5 +3117,98 @@
                 "# Review advisory {trigger.1.attributes.advisory_ids} and whether {trigger.1.attributes.package} is reachable from {trigger.2.attributes.url}"
             ]
         }
+    },
+    {
+        "name": "MLflow service - investigate artifact access",
+        "priority": 55,
+        "host_scope": "same_host",
+        "triggers": [
+            {
+                "id": 1,
+                "entity_type": "ai_service",
+                "name_match": {
+                    "type": "exact",
+                    "value": "mlflow"
+                }
+            }
+        ],
+        "suggestion": {
+            "description": "MLflow service at {trigger.1.attributes.base_url}; investigate authentication and artifact access.",
+            "rationale": "Corroborated service presence is an investigation lead. Artifact writes, downstream loading and execution are not established.",
+            "commands": [
+                "Review authentication, experiment metadata and artifact permissions using authorized read-only checks."
+            ]
+        }
+    },
+    {
+        "name": "Jupyter service - investigate authentication and kernel access",
+        "priority": 60,
+        "host_scope": "same_host",
+        "triggers": [
+            {
+                "id": 1,
+                "entity_type": "ai_service",
+                "name_match": {
+                    "type": "regex",
+                    "value": "^(notebook|jupyter)$"
+                }
+            }
+        ],
+        "suggestion": {
+            "description": "Jupyter service at {trigger.1.attributes.base_url}; investigate authentication and kernel access.",
+            "rationale": "Service presence does not establish unauthenticated kernel creation or execution. Retain this lead for manual validation.",
+            "commands": [
+                "Inspect authentication requirements and read-only status/session metadata; do not execute code without explicit authorization."
+            ]
+        }
+    },
+    {
+        "name": "Source credential candidate - assess exposure and rotation",
+        "priority": 55,
+        "host_scope": "same_host",
+        "triggers": [
+            {
+                "id": 1,
+                "entity_type": "secret_finding",
+                "name_match": {
+                    "type": "exact",
+                    "value": "source-secret"
+                }
+            }
+        ],
+        "suggestion": {
+            "description": "Credential pattern {trigger.1.attributes.rule_id} at {trigger.1.attributes.file}:{trigger.1.attributes.line}.",
+            "rationale": "A source pattern is an investigation lead. Credential validity, deployment, public exposure and privileges are not established. No secret material is available for authentication.",
+            "commands": [
+                "Review the source location, identify the credential owner, rotate/revoke genuine credentials and check access logs."
+            ]
+        }
+    },
+    {
+        "name": "Source SSH private key and reachable SSH - validate ownership and authorization",
+        "priority": 65,
+        "host_scope": "same_host",
+        "triggers": [
+            {
+                "id": 1,
+                "entity_type": "secret_finding",
+                "attributes_match": {"credential_type": "ssh-private-key"}
+            },
+            {
+                "id": 2,
+                "entity_type": "service",
+                "name_match": {
+                    "type": "regex",
+                    "value": "(?i)^ssh$"
+                }
+            }
+        ],
+        "suggestion": {
+            "description": "An OpenSSH private-key candidate and SSH on {trigger.2.host}:{trigger.2.port} share a target context; validate the key owner and intended use.",
+            "rationale": "Co-occurrence does not prove that the candidate is deployed or usable for this service. Establish ownership, scope and authorization before any validation; no plaintext credential is passed to this tool.",
+            "commands": [
+                "Trace the credential reference to its intended service and owner. Review permissions and rotate if genuine; do not infer successful access."
+            ]
+        }
     }
 ]
