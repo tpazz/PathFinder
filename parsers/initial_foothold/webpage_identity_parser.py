@@ -5,6 +5,7 @@ import ipaddress
 import json
 import os
 import re
+from functools import lru_cache
 from html.parser import HTMLParser
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
@@ -267,6 +268,25 @@ def _response_body(content):
     return response
 
 
+@lru_cache(maxsize=16)
+def _ffuf_result_index(results_path, mtime_ns, ctime_ns, size):
+    """Index each unchanged ffuf result file once, rather than once per body.
+
+    The stat fields invalidate the cache when a recon result file is updated.
+    Keep every row for a body: host checks still apply separately at lookup.
+    """
+    with open(results_path, "r", encoding="utf-8-sig") as handle:
+        payload = json.load(handle)
+    index = {}
+    for result in payload.get("results", []) if isinstance(payload, dict) else []:
+        if not isinstance(result, dict):
+            continue
+        name = os.path.basename(str(result.get("resultfile") or ""))
+        if name:
+            index.setdefault(name, []).append(str(result.get("url") or ""))
+    return index
+
+
 def _ffuf_result_source(path, target_host):
     """Resolve an ffuf -od response hash back to the URL recorded in its JSON."""
     response_path = os.path.abspath(path)
@@ -282,15 +302,12 @@ def _ffuf_result_source(path, target_host):
     results_path = os.path.join(os.path.dirname(os.path.dirname(response_path)),
                                 f"{prefix}_{match.group(2)}.json")
     try:
-        with open(results_path, "r", encoding="utf-8-sig") as handle:
-            payload = json.load(handle)
+        stat = os.stat(results_path)
+        index = _ffuf_result_index(results_path, stat.st_mtime_ns, stat.st_ctime_ns, stat.st_size)
     except (OSError, json.JSONDecodeError):
         return None
     response_name = os.path.basename(response_path)
-    for result in payload.get("results", []) if isinstance(payload, dict) else []:
-        if not isinstance(result, dict) or os.path.basename(str(result.get("resultfile") or "")) != response_name:
-            continue
-        url = str(result.get("url") or "")
+    for url in index.get(response_name, []):
         try:
             parsed = urlparse(url)
         except ValueError:
