@@ -3,6 +3,7 @@ import re
 import itertools
 from copy import deepcopy
 import os
+from urllib.parse import urlsplit
 
 from parsers.ansi import C
 from parsers.credential_routing import credential_usages
@@ -211,6 +212,12 @@ class AttackPathSynthesizer:
             return False, f"Rule has invalid host_scope '{rule_scope}'"
 
         max_paths = rule.get("max_paths_per_host")
+        if not isinstance(rule.get('requires_runtime_link', False), bool):
+            return False, "Rule 'requires_runtime_link' must be a boolean"
+        if rule.get('requires_runtime_link'):
+            entities = {trigger.get('entity_type') for trigger in triggers}
+            if 'web_finding' not in entities or not entities.intersection({'code_finding', 'dependency_finding'}):
+                return False, 'Runtime linkage requires web and source/dependency triggers'
         if max_paths is not None and (not isinstance(max_paths, int) or isinstance(max_paths, bool)
                                       or not 1 <= max_paths <= 5000):
             return False, "Rule 'max_paths_per_host' must be an integer from 1 to 5000"
@@ -363,6 +370,36 @@ class AttackPathSynthesizer:
                 return False
         return True
 
+    @staticmethod
+    def _verified_runtime_link(combination):
+        """A shared host/class is not a route-to-source relationship.
+
+        Accept an explicit, evidence-backed binding to this exact route and
+        source instance. A bare verified flag, another route or another package
+        version cannot promote a correlation question into a candidate path.
+        """
+        web = next((f for f in combination if f.get('entity_type') == 'web_finding'), None)
+        source = next((f for f in combination if f.get('entity_type') in ('code_finding', 'dependency_finding')), None)
+        if not web or not source:
+            return False
+        attrs, web_attrs = source.get('attributes') or {}, web.get('attributes') or {}
+        proof = attrs.get('runtime_relationship')
+        if (not isinstance(proof, dict) or proof.get('verified') is not True
+                or not isinstance(proof.get('evidence'), str) or not proof['evidence'].strip()
+                or str(proof.get('host', '')).lower() != str(web.get('host', '')).lower()):
+            return False
+        try:
+            route = urlsplit(str(web_attrs.get('route') or web_attrs.get('url') or '')).path
+            if not route or proof.get('route') != route:
+                return False
+        except ValueError:
+            return False
+        if source['entity_type'] == 'code_finding':
+            return (bool(attrs.get('file')) and proof.get('file') == attrs['file']
+                    and attrs.get('line') is not None and str(proof.get('line')) == str(attrs['line']))
+        return (bool(attrs.get('package')) and proof.get('package') == attrs['package']
+                and bool(attrs.get('installed_version')) and proof.get('installed_version') == attrs['installed_version'])
+
     def _format_suggestion(self, suggestion_template, matched_findings_by_id):
         """
         Replaces placeholders in the suggestion text with actual finding data,
@@ -495,6 +532,8 @@ class AttackPathSynthesizer:
         suggested_paths = []
         seen = set()  # dedup by (rule name, host, resolved description + commands)
         nonfallback_workflow_cache = {}
+        validation_groups = {}
+        validation_members = {}
 
         def has_nonfallback_workflow(finding, fallback_rule):
             key = (id(finding), id(fallback_rule))
@@ -545,6 +584,20 @@ class AttackPathSynthesizer:
                 host = self._target_host_for_combination(combination)
                 if self._rule_suppressed_for_host(rule, host, prioritized_findings):
                     continue
+                needs_link = rule.get('requires_runtime_link', False) and not self._verified_runtime_link(combination)
+                validation_key = None
+                if needs_link:
+                    source = next(f for f in combination if f.get('entity_type') in ('code_finding', 'dependency_finding'))
+                    validation_key = (rule['name'], host, json.dumps(source, sort_keys=True, default=str))
+                    if validation_key in validation_groups:
+                        existing = validation_groups[validation_key]
+                        for i, (trigger, finding) in enumerate(zip(triggers, combination)):
+                            identity = json.dumps([trigger.get('id', i + 1), finding], sort_keys=True, default=str)
+                            if identity not in validation_members[validation_key]:
+                                validation_members[validation_key].add(identity)
+                                existing['matched_findings'].append({'trigger_id': trigger.get('id', i + 1), 'finding': deepcopy(finding)})
+                        existing['occurrence_count'] += 1
+                        continue
                 if host_path_counts.get(host, 0) >= max_paths_per_host:
                     capped_hosts.add(host)
                     continue
@@ -572,16 +625,22 @@ class AttackPathSynthesizer:
                 # Dedup near-identical paths (same rule + host + resolved commands),
                 # which itertools.product can otherwise emit many times.
                 dedup_key = (rule['name'], host, suggestion.get('description'),
-                             tuple(suggestion.get('commands') or []))
+                             tuple(suggestion.get('commands') or []), validation_key)
                 if dedup_key in seen:
                     continue
                 seen.add(dedup_key)
 
+                if needs_link:
+                    suggestion['description'] = 'Source and web signals share a host, but their runtime relationship has not been established. Trace the exact route to the source component before treating them as a connected path.'
+                    suggestion['rationale'] = 'Retained as a validation question. No route-to-sink or deployed-package linkage is recorded; the original findings remain independently actionable.'
                 suggested_paths.append({
-                    "evidence_state": "Suspected",
-                    "relationship": "inferred",
-                    "assessment_reason": "Candidate relationship from contributing signals; reachability and exploitation require validation.",
-                    "name": rule['name'],
+                    "evidence_state": "Not assessed" if needs_link else "Suspected",
+                    "assessment_role": "validation" if needs_link else "finding",
+                    "relationship": "unverified" if needs_link else "inferred",
+                    "assessment_reason": "Route-to-source runtime linkage is not established; contributing evidence is retained for validation." if needs_link else "Candidate relationship from contributing signals; reachability and exploitation require validation.",
+                    "name": ("Dependency runtime relationship to validate" if source['entity_type'] == 'dependency_finding' else f"{source.get('name', 'Code')} route-to-source relationship to validate") if needs_link else rule['name'],
+                    "rule_name": rule['name'],
+                    "occurrence_count": 1,
                     "priority": rule['priority'],
                     "effective_priority": effective_priority,
                     "evidence_score": evidence_score,
@@ -601,6 +660,12 @@ class AttackPathSynthesizer:
                         for i, (trigger, finding) in enumerate(zip(triggers, combination))
                     ],
                 })
+                if validation_key is not None:
+                    validation_groups[validation_key] = suggested_paths[-1]
+                    validation_members[validation_key] = {
+                        json.dumps([trigger.get('id', i + 1), finding], sort_keys=True, default=str)
+                        for i, (trigger, finding) in enumerate(zip(triggers, combination))
+                    }
                 host_path_counts[host] = host_path_counts.get(host, 0) + 1
 
             if capped_hosts:

@@ -259,8 +259,8 @@ class ScanSmokeTests(unittest.TestCase):
             self.assertTrue(paths_json.is_file())
             synthesized = json.loads(paths_json.read_text(encoding="utf-8"))
             self.assertTrue(
-                any("Reachable SQL injection" in p.get("name", "") for p in synthesized),
-                "imported DAST+SAST findings of the same class should synthesize a correlated path",
+                any("Reachable SQL injection" in p.get('rule_name', '') and p.get('assessment_role')=='validation' for p in synthesized),
+                "unlinked imported DAST+SAST findings should retain a correlation validation question",
             )
 
     def test_scan_cli_multihost_per_host_directories(self):

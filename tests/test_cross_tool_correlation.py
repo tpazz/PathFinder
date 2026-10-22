@@ -42,15 +42,20 @@ def _names(paths):
 class CrossToolCorrelationTests(unittest.TestCase):
     def test_matching_class_chains_dast_and_sast(self):
         findings = [_web("sql-injection", route="/search", url="https://x/search"),
-                    _code("sql-injection", file="api/search.py", line=42)]
+                    _code("sql-injection", file="api/search.py", line=42, runtime_relationship={
+                        'verified':True,'evidence':'Fixture route-to-handler trace','host':HOST,
+                        'route':'/search','file':'api/search.py','line':42})]
         paths = _synth().generate_attack_paths(findings)
         hit = [p for p in paths if "Reachable SQL injection" in p["name"]]
         self.assertTrue(hit, "DAST+SAST same-class should synthesize a correlated path")
         self.assertIn("api/search.py", hit[0]["suggestion"]["description"])
+        self.assertEqual(hit[0]['assessment_role'], 'finding')
 
     def test_command_injection_class_also_chains(self):
         findings = [_web("command-injection", route="/run"), _code("command-injection", file="x.py", line=9)]
-        self.assertTrue(any("command injection" in n for n in _names(_synth().generate_attack_paths(findings))))
+        paths = _synth().generate_attack_paths(findings)
+        self.assertTrue(any("command injection" in p.get('rule_name', '') for p in paths))
+        self.assertTrue(all(p['assessment_role']=='validation' for p in paths))
 
     def test_mismatched_classes_do_not_chain(self):
         # DAST SQLi + SAST XSS on the same host must NOT produce a correlated path.
@@ -60,7 +65,9 @@ class CrossToolCorrelationTests(unittest.TestCase):
 
     def test_high_impact_dependency_behind_web_surface_chains(self):
         findings = [_dep("Critical", "true", package="lodash", installed_version="4.17.1",
-                         advisory_ids=["CVE-2021-23337"]),
+                         advisory_ids=["CVE-2021-23337"], runtime_relationship={
+                             'verified':True,'evidence':'Fixture deployed-package handler trace',
+                             'host':HOST,'route':'/','package':'lodash','installed_version':'4.17.1'}),
                     _web("xss", route="/")]
         paths = _synth().generate_attack_paths(findings)
         self.assertTrue(any("High-impact vulnerable dependency" in n for n in _names(paths)))

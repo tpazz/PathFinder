@@ -17,6 +17,18 @@ scope remains eligible. NSE dotted text is observation inventory unless DNS,
 certificate or structured HTTP-redirect context corroborates a hostname. An IP service does not establish
 application origin ownership, particularly on shared CDN infrastructure.
 
+Cross-tool source/dependency and web matches require an explicit runtime binding
+before becoming candidate paths. Same-host co-occurrence becomes one validation
+question per rule and source instance, retaining all contributing routes and the
+original findings. Binding requires `attributes.runtime_relationship` with
+`verified: true`, nonempty `evidence`, exact `host` and URL-path `route`, plus
+matching `file`/`line` or `package`/`installed_version`. Even bound paths remain
+Suspected; standalone recon and box workflows retain their existing rules.
+
+Successful Searchsploit queries, including valid empty results, are cached per
+mapper instance and copied for each caller. Failed/malformed lookups are retried;
+cache misses are logged immediately. No persistent cache or finding limit is added.
+
 See [discovery and redacted credential evidence](docs/credential-and-discovery-evidence.md)
 for retained AI-service investigation leads, explicit capability evidence and
 credential-pattern input that cannot trigger login validation.

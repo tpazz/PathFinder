@@ -2905,6 +2905,7 @@
     {
         "_comment": "=== CROSS-TOOL CORRELATION: reachable surface + matching code sink (Omega DAST+SAST) ===",
         "name": "Reachable SQL injection - exposed surface with a matching code sink",
+        "requires_runtime_link": true,
         "priority": 85,
         "host_scope": "same_host",
         "triggers": [
@@ -2936,6 +2937,7 @@
     {
         "_comment": "=== CROSS-TOOL CORRELATION: reachable surface + matching code sink (Omega DAST+SAST) ===",
         "name": "Reachable command injection - exposed surface with a matching code sink",
+        "requires_runtime_link": true,
         "priority": 85,
         "host_scope": "same_host",
         "triggers": [
@@ -2967,6 +2969,7 @@
     {
         "_comment": "=== CROSS-TOOL CORRELATION: reachable surface + matching code sink (Omega DAST+SAST) ===",
         "name": "Reachable insecure deserialization - exposed surface with a matching code sink",
+        "requires_runtime_link": true,
         "priority": 84,
         "host_scope": "same_host",
         "triggers": [
@@ -2998,6 +3001,7 @@
     {
         "_comment": "=== CROSS-TOOL CORRELATION: reachable surface + matching code sink (Omega DAST+SAST) ===",
         "name": "Reachable path traversal - exposed surface with a matching code sink",
+        "requires_runtime_link": true,
         "priority": 80,
         "host_scope": "same_host",
         "triggers": [
@@ -3029,6 +3033,7 @@
     {
         "_comment": "=== CROSS-TOOL CORRELATION: reachable surface + matching code sink (Omega DAST+SAST) ===",
         "name": "Reachable SSRF - exposed surface with a matching code sink",
+        "requires_runtime_link": true,
         "priority": 80,
         "host_scope": "same_host",
         "triggers": [
@@ -3060,6 +3065,7 @@
     {
         "_comment": "=== CROSS-TOOL CORRELATION: reachable surface + matching code sink (Omega DAST+SAST) ===",
         "name": "Reachable cross-site scripting - exposed surface with a matching code sink",
+        "requires_runtime_link": true,
         "priority": 72,
         "host_scope": "same_host",
         "triggers": [
@@ -3091,6 +3097,7 @@
     {
         "_comment": "=== CROSS-TOOL CORRELATION: high-impact dependency behind a reachable web surface (Omega Dependency+DAST) ===",
         "name": "High-impact vulnerable dependency behind a reachable web surface",
+        "requires_runtime_link": true,
         "priority": 78,
         "host_scope": "same_host",
         "triggers": [
