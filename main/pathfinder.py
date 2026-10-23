@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import time
 import xml.etree.ElementTree as ET
+from collections import Counter
 
 # Import the core logic components and the single parser registry.
 from .attack_path_synthesizer import AttackPathSynthesizer
@@ -303,51 +304,51 @@ def _dedup_key(finding):
     return (finding.get("host"), finding.get("port"), finding.get("name"), entity_type)
 
 
-def _merge_provenance(kept, duplicate):
+def _merge_provenance(kept, duplicate, indexes=None):
     """Record that another tool/file corroborated the same finding (no data lost)."""
     kept_attrs = kept.setdefault("attributes", {})
     dup_attrs = duplicate.get("attributes") or {}
-
-    sources = kept_attrs.get("corroborating_sources")
-    if not isinstance(sources, list):
-        sources = [kept.get("source_tool")] if kept.get("source_tool") else []
-    dup_tool = duplicate.get("source_tool")
-    if dup_tool and dup_tool not in sources:
-        sources.append(dup_tool)
-    if len(sources) > 1:
-        kept_attrs["corroborating_sources"] = sources
-
-    files = kept_attrs.get("source_files")
-    if not isinstance(files, list):
-        files = [kept_attrs["source_file"]] if kept_attrs.get("source_file") else []
-    dup_file = dup_attrs.get("source_file")
-    if dup_file and dup_file not in files:
-        files.append(dup_file)
-    if len(files) > 1:
-        kept_attrs["source_files"] = files
-
-    provenance = kept_attrs.get("discovery_provenance")
-    if not isinstance(provenance, list):
-        provenance = []
-    identities = {
-        (p.get("tool"), p.get("command"), p.get("source_file"), p.get("status"))
-        for p in provenance if isinstance(p, dict)
-    }
-    for record in dup_attrs.get("discovery_provenance") or []:
-        if not isinstance(record, dict):
-            continue
-        identity = (
-            record.get("tool"), record.get("command"),
-            record.get("source_file"), record.get("status"),
+    # The index lives only for one merge pass, never in serialized findings.
+    # Rebuilding a set from the growing provenance on every duplicate made
+    # repeated ffuf pages quadratic in the number of captures.
+    if indexes is None:
+        indexes = {}
+    state = indexes.setdefault(id(kept), {})
+    for plural, singular, initial, records in (
+        ("corroborating_sources", None, kept.get("source_tool"), False),
+        ("source_files", "source_file", None, False),
+        ("source_pages", "source_page", None, False),
+        ("discovery_provenance", None, None, True),
+    ):
+        if plural not in state:
+            values = kept_attrs.get(plural)
+            values = list(values) if isinstance(values, list) else []
+            first = kept_attrs.get(singular) if singular else initial
+            if first and first not in values:
+                values.insert(0, first)
+            identities = {
+                json.dumps(value, sort_keys=True, default=str) if records else value
+                for value in values
+            }
+            state[plural] = (values, identities)
+        values, identities = state[plural]
+        incoming = dup_attrs.get(plural)
+        incoming = incoming if isinstance(incoming, list) else []
+        first = dup_attrs.get(singular) if singular else (
+            duplicate.get("source_tool") if plural == "corroborating_sources" else None
         )
-        if identity not in identities:
-            provenance.append(record)
-            identities.add(identity)
-    if provenance:
-        kept_attrs["discovery_provenance"] = provenance
+        for value in ([first] if first else []) + incoming:
+            if records and not isinstance(value, dict):
+                continue
+            identity = json.dumps(value, sort_keys=True, default=str) if records else value
+            if identity not in identities:
+                values.append(value)
+                identities.add(identity)
+        if len(values) > 1 or (records and values):
+            kept_attrs[plural] = values
 
 
-def _merge_credential(kept, duplicate):
+def _merge_credential(kept, duplicate, indexes=None):
     """Merge a duplicate credential into the kept one: fill in any missing secret
     material and attributes (never overwrite an existing value), keep the max score,
     and record provenance."""
@@ -360,7 +361,7 @@ def _merge_credential(kept, duplicate):
                 and kept_value != duplicate_value):
             return False
     for field, value in dup_attrs.items():
-        if field in ("score", "source_file", "corroborating_sources", "source_files",
+        if field in ("score", "source_file", "corroborating_sources", "source_files", "source_pages",
                      "discovery_provenance"):
             continue
         if value in (None, "") or kept_attrs.get(field) not in (None, ""):
@@ -369,7 +370,7 @@ def _merge_credential(kept, duplicate):
     dup_score = dup_attrs.get("score")
     if isinstance(dup_score, (int, float)):
         kept_attrs["score"] = max(kept_attrs.get("score") or 0, dup_score)
-    _merge_provenance(kept, duplicate)
+    _merge_provenance(kept, duplicate, indexes)
     return True
 
 
@@ -378,6 +379,7 @@ def deduplicate_findings(findings_list):
     their secret material (password + hash for one identity), and all findings merge
     corroborating tool/file provenance."""
     seen = {}
+    provenance_indexes = {}
     unique_findings = []
     for finding in findings_list:
         key = _dedup_key(finding)
@@ -387,14 +389,38 @@ def deduplicate_findings(findings_list):
             unique_findings.append(finding)
         elif finding.get("entity_type") == "credential":
             for kept in kept_candidates:
-                if _merge_credential(kept, finding):
+                if _merge_credential(kept, finding, provenance_indexes):
                     break
             else:
                 kept_candidates.append(finding)
                 unique_findings.append(finding)
         else:
-            _merge_provenance(kept_candidates[0], finding)
+            _merge_provenance(kept_candidates[0], finding, provenance_indexes)
     return unique_findings
+
+
+def coalesce_mapping_inputs(findings):
+    """Map exact semantic repeats once, retaining all producer provenance.
+
+    Unlike final cross-tool deduplication, every non-provenance field is part of
+    this key. Different URLs, source pages, evidence, secrets, versions, scores,
+    or parser tools must still be mapped independently.
+    """
+    provenance_fields = {"source_file", "source_files", "source_pages",
+                         "discovery_provenance", "corroborating_sources"}
+    unique, seen, indexes = [], {}, {}
+    for finding in findings:
+        semantic = {**finding, "attributes": {
+            key: value for key, value in (finding.get("attributes") or {}).items()
+            if key not in provenance_fields
+        }}
+        key = json.dumps(semantic, sort_keys=True, default=str)
+        if key in seen:
+            _merge_provenance(seen[key], finding, indexes)
+        else:
+            seen[key] = finding
+            unique.append(finding)
+    return unique
 
 
 def validate_parser_output(parser_name, findings):
@@ -1159,10 +1185,23 @@ def _path_discovery_provenance(path):
     return _deduplicate_provenance(records)
 
 
+def _console_provenance(records, args):
+    records = _deduplicate_provenance(records)
+    if getattr(args, "verbose", 0) > 0:
+        return records
+    commands = {}
+    for record in records:
+        key = (record.get("tool"), record.get("command"), record.get("status"))
+        if key not in commands:
+            commands[key] = {**record, "source_count": 0}
+        commands[key]["source_count"] += 1
+    return list(commands.values())
+
+
 def _print_discovery_provenance(records, args, indent="  ", limit=None):
     if getattr(args, "hide_discovery", False):
         return
-    records = _deduplicate_provenance(records)
+    records = _console_provenance(records, args)
     if not records:
         return
     print(f"\n{indent}{C.BOLD}{C.GREEN}[+]{C.END} {C.BOLD}Discovery Provenance:{C.END}")
@@ -1171,6 +1210,8 @@ def _print_discovery_provenance(records, args, indent="  ", limit=None):
         command = record.get("command") or "not recorded"
         print(f"{indent}    {C.GREEN}-{C.END} Tool: {record['tool']}")
         print(f"{indent}      Command: {command}")
+        if record.get("source_count", 0) > 1:
+            print(f"{indent}      Evidence: {record['source_count']} source records (use -v for each file)")
         if getattr(args, "verbose", 0) > 0:
             if record.get("source_file"):
                 print(f"{indent}      Source: {record['source_file']}")
@@ -1184,11 +1225,13 @@ def _print_discovery_provenance(records, args, indent="  ", limit=None):
 def _print_finding_discovery(finding, args):
     if getattr(args, "hide_discovery", False):
         return
-    records = _deduplicate_provenance(_finding_discovery_provenance(finding))
+    records = _console_provenance(_finding_discovery_provenance(finding), args)
     for index, record in enumerate(records):
         label = "Discovery:" if index == 0 else "Corroborated:"
         print(f"      {_label(label, 14)}{record['tool']}")
         print(f"      {_label('Command:', 14)}{record.get('command') or 'not recorded'}")
+        if record.get("source_count", 0) > 1:
+            print(f"      {_label('Evidence:', 14)}{record['source_count']} source records (use -v for each file)")
         if getattr(args, "verbose", 0) > 0:
             if record.get("source_file"):
                 print(f"      {_label('Source:', 14)}{record['source_file']}")
@@ -1957,14 +2000,24 @@ def run_scan_mode(args):
                 continue
             header = f"host {group}" if group else "loose files (host inferred)"
             print(f"    {C.BOLD}{header}{C.END}")
-            for d in group_records:
-                rel = os.path.relpath(d['path'], loot_dir)
-                print(f"      {C.GREEN}[+]{C.END} {d['key']:<25} -> {rel}")
+            if args.verbose > 0 or len(detections) <= 50:
+                for d in group_records:
+                    rel = os.path.relpath(d['path'], loot_dir)
+                    print(f"      {C.GREEN}[+]{C.END} {d['key']:<25} -> {rel}")
+            else:
+                for key, count in sorted(Counter(d['key'] for d in group_records).items()):
+                    print(f"      {C.GREEN}[+]{C.END} {key:<25} -> {count} source(s)")
     else:
         # Flat single-host loot: list sources directly.
-        for d in detections:
-            rel = os.path.relpath(d['path'], loot_dir)
-            print(f"    {C.GREEN}[+]{C.END} {d['key']:<25} -> {rel}")
+        if args.verbose > 0 or len(detections) <= 50:
+            for d in detections:
+                rel = os.path.relpath(d['path'], loot_dir)
+                print(f"    {C.GREEN}[+]{C.END} {d['key']:<25} -> {rel}")
+        else:
+            for key, count in sorted(Counter(d['key'] for d in detections).items()):
+                print(f"    {C.GREEN}[+]{C.END} {key:<25} -> {count} source(s)")
+    if len(detections) > 50 and not args.verbose:
+        print("    Per-file listing available with -v; every detected source is still parsed.")
 
     if getattr(args, 'oscp', False):
         flagged = sorted({OSCP_PROHIBITED_PARSER_KEYS[d['key']]
@@ -1993,8 +2046,9 @@ def run_scan_mode(args):
     print(f"\n{C.BOLD}{C.CYAN}[*] Parsing detected files...{C.END}")
     all_raw_findings = []
     skipped_hostless = False
+    parse_started = last_progress = time.monotonic()
 
-    for d in detections:
+    for source_number, d in enumerate(detections, start=1):
         key, path = d['key'], d['path']
         spec = SPEC_BY_KEY.get(key)
         if spec is None:
@@ -2030,7 +2084,13 @@ def run_scan_mode(args):
                                          manifest_record=manifest_record)
         all_raw_findings.extend(validated)
         host_tag = f" [{host}]" if host else ""
-        print(f"    {C.GREEN}[+]{C.END} {key:<25} -> {len(validated)} findings  ({rel}){host_tag}")
+        if args.verbose > 0 or len(detections) <= 50:
+            print(f"    {C.GREEN}[+]{C.END} {key:<25} -> {len(validated)} findings  ({rel}){host_tag}")
+        now = time.monotonic()
+        if source_number % 500 == 0 or source_number == len(detections) or now - last_progress >= 5:
+            print(f"[*] Parsed {source_number}/{len(detections)} sources; "
+                  f"{len(all_raw_findings)} raw findings; {now - parse_started:.1f}s elapsed", flush=True)
+            last_progress = now
         logger.info("Scan parser %s (%s) produced %s validated findings", key, rel, len(validated))
 
     if skipped_hostless and not global_target:
@@ -2041,6 +2101,10 @@ def run_scan_mode(args):
         sys.exit(0)
 
     if all_raw_findings:
+        print(f"[*] Consolidating {len(all_raw_findings)} raw findings before mapping...", flush=True)
+        mapping_inputs = coalesce_mapping_inputs(all_raw_findings)
+        print(f"[*] Mapping {len(mapping_inputs)} distinct input(s); "
+              f"{len(all_raw_findings) - len(mapping_inputs)} exact repeats merged with provenance.", flush=True)
         print(f"\n{C.BOLD}{C.CYAN}[*] Running Vulnerability Mapper...{C.END}")
         use_github = not (getattr(args, 'offline', False) or getattr(args, 'skip_github', False))
         use_searchsploit = not (getattr(args, 'offline', False) or getattr(args, 'skip_searchsploit', False))
@@ -2049,14 +2113,17 @@ def run_scan_mode(args):
             use_searchsploit=use_searchsploit,
             github_cache_file=args.github_cache,
         )
-        mapped = vuln_mapper.map_and_prioritize(all_raw_findings)
+        mapped = vuln_mapper.map_and_prioritize(mapping_inputs)
     else:
         mapped = []
 
     # Imported base findings (already prioritized) + freshly mapped scan findings,
     # deduplicated together so a surface two tools both saw collapses to one.
     combined = base_prioritized_findings + mapped
+    print(f"[*] Merging provenance for {len(combined)} mapped/imported findings...", flush=True)
+    merge_started = time.monotonic()
     prioritized = deduplicate_findings(combined)
+    print(f"[*] Finding merge completed in {time.monotonic() - merge_started:.1f}s.", flush=True)
     if base_prioritized_findings:
         print(f"    {C.GREEN}[+]{C.END} Merged {len(base_prioritized_findings)} imported base finding(s) with {len(mapped)} scanned.")
     print(f"    {C.GREEN}[+]{C.END} Mapper prioritized {len(prioritized)} findings.")

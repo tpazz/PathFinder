@@ -29,6 +29,15 @@ Successful Searchsploit queries, including valid empty results, are cached per
 mapper instance and copied for each caller. Failed/malformed lookups are retried;
 cache misses are logged immediately. No persistent cache or finding limit is added.
 
+Large loot scans summarize source counts and parsing/mapping progress instead of
+printing every input file; use `-v` for per-file detail. Repeated discovery
+commands are grouped in the console, with every producer file and command record
+retained in JSON/HTML artifacts. Provenance merging uses per-pass indexes so
+thousands of repeated page observations do not repeatedly scan growing lists.
+Exact semantic duplicates are consolidated before exploit mapping; different
+URLs, request context, evidence, credentials and versions remain separate inputs.
+Every detected source is still parsed; no file or finding cap is introduced.
+
 See [discovery and redacted credential evidence](docs/credential-and-discovery-evidence.md)
 for retained AI-service investigation leads, explicit capability evidence and
 credential-pattern input that cannot trigger login validation.
